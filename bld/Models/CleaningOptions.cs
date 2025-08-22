@@ -1,0 +1,54 @@
+namespace bld.Models;
+
+/// <summary>
+/// Configuration options for cleaning operations
+/// </summary>
+internal record CleaningOptions {
+
+    internal string Filter => "*.sln?";
+
+    public bool UseVSInstance { get; init; } = false;
+
+    // public bool DryRun => true; // { get; init; } = true;
+    public bool CleanOnlyNonCurrentTfms { get; init; } = false;
+    public bool CleanObjDirectory { get; init; } = true;
+    public bool CleanNupkgFiles { get; init; } = false;
+    public bool Force { get; init; } = false;
+    public LogLevel LogLevel { get; init; } = LogLevel.Warning;
+    public int Depth { get; init; } = 4;
+    public bool Delete { get; internal set; }
+
+
+    internal Predicate<string> FileNameFilter { get; init; } = FilterSupportedSlnFileFormats;
+    public string? OutputFile { get; internal set; }
+    //public string? LogFile { get; internal set; }
+    public string? VSToolsPath { get; internal set; }
+    public string? VSRootPath { get; internal set; }
+    public bool NoResolveVSToolsPath { get; internal set; } = false;
+    public ConfirmLevel? ConfirmLevel { get; internal set; }
+
+    private static bool FilterSupportedSlnFileFormats(string file) =>
+        // no support for slnx
+        file.EndsWith(".sln", StringComparison.OrdinalIgnoreCase)
+        || file.EndsWith(".slnf", StringComparison.OrdinalIgnoreCase)
+        || file.EndsWith(".slnx", StringComparison.OrdinalIgnoreCase);
+}
+
+/// <summary>
+/// Log levels for output control
+/// </summary>
+internal enum LogLevel {
+    Debug,
+    Verbose,
+    Info,
+    Warning,
+    Error
+}
+
+internal enum ConfirmLevel {
+    None, // none
+
+    Sln,
+    Project,
+    Directory,
+}
