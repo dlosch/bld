@@ -5,6 +5,7 @@ using Microsoft.Build.Locator;
 using NuGet.Frameworks;
 using NuGet.Packaging;
 using NuGet.Packaging.Core;
+using System.Runtime.CompilerServices;
 using System.Xml.Linq;
 
 namespace bld.Services;
@@ -18,7 +19,11 @@ internal class CleanupService {
         _options = options;
     }
 
+    [MethodImpl(MethodImplOptions.NoInlining)]
     public async Task<int> AnalyzePackageReferencesAsync(string rootPath, bool removeRedundant, CancellationToken cancellationToken) {
+        // Initialize MSBuild before any Microsoft.Build.* types are loaded
+        MSBuildInitializer.Initialize(_console, _options);
+        
         _console.WriteInfo("Analyzing package references for redundant dependencies...");
 
         var errorSink = new ErrorSink(_console);

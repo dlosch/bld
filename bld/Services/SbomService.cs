@@ -1,5 +1,6 @@
 using bld.Infrastructure;
 using bld.Models;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 
 namespace bld.Services;
@@ -13,7 +14,11 @@ internal class SbomService {
         _options = options;
     }
 
+    [MethodImpl(MethodImplOptions.NoInlining)]
     public async Task GenerateSbomAsync(string rootPath, string outputPath, string format, bool includeTests, CancellationToken cancellationToken) {
+        // Initialize MSBuild before any Microsoft.Build.* types are loaded
+        MSBuildInitializer.Initialize(_console, _options);
+        
         _console.WriteInfo("Starting SBOM generation...");
 
         // Ensure output directory exists
@@ -24,65 +29,112 @@ internal class SbomService {
         var slnScanner = new SlnScanner(_options, errorSink);
         var slnParser = new SlnParser(_console, errorSink);
 
-        var projects = new List<ProjectInfo>();
+        var projects = new List<SbomProjectInfo>();
+        var allPackageReferences = new Dictionary<string, SbomPackageInfo>();
 
         await foreach (var slnPath in slnScanner.Enumerate(rootPath)) {
             _console.WriteVerbose($"Processing solution: {slnPath}");
             
             await foreach (var projCfg in slnParser.ParseSolution(slnPath)) {
-                var projParser = new ProjParser(_console, errorSink, _options);
-                var projectInfo = projParser.LoadProject(projCfg, Array.Empty<string>());
-                
-                if (projectInfo != null) {
-                    // Filter out test projects if not included
-                    if (!includeTests && IsTestProject(projectInfo)) {
-                        continue;
-                    }
+                try {
+                    var projParser = new ProjParser(_console, errorSink, _options);
+                    var projectInfo = projParser.LoadProject(projCfg, Array.Empty<string>());
+                    
+                    if (projectInfo != null) {
+                        // Filter out test projects if not included
+                        if (!includeTests && IsTestProject(projectInfo)) {
+                            continue;
+                        }
 
-                    // Only include output projects (executables, libraries, containers, packages, tools)
-                    if (IsOutputProject(projectInfo)) {
-                        projects.Add(projectInfo);
+                        // Only include output projects (executables, libraries, containers, packages, tools)
+                        if (IsOutputProject(projectInfo)) {
+                            var sbomProject = new SbomProjectInfo {
+                                Name = projectInfo.AssemblyName ?? projectInfo.ProjectName ?? Path.GetFileNameWithoutExtension(projectInfo.ProjectPath),
+                                Path = projectInfo.ProjectPath,
+                                TargetFramework = projectInfo.TargetFramework ?? string.Join(", ", projectInfo.TargetFrameworks ?? Array.Empty<string>()),
+                                PackageId = projectInfo.PackageId,
+                                PackageReferences = await ExtractPackageReferencesAsync(projectInfo.ProjectPath, cancellationToken)
+                            };
+                            
+                            projects.Add(sbomProject);
+                            
+                            // Collect all unique package references
+                            foreach (var packageRef in sbomProject.PackageReferences) {
+                                if (!allPackageReferences.ContainsKey(packageRef.Id)) {
+                                    allPackageReferences[packageRef.Id] = packageRef;
+                                }
+                            }
+                        }
                     }
+                }
+                catch (Exception ex) {
+                    _console.WriteWarning($"Failed to process project {projCfg.Path}: {ex.Message}");
                 }
             }
         }
 
         _console.WriteInfo($"Found {projects.Count} projects for SBOM generation");
+        _console.WriteInfo($"Found {allPackageReferences.Count} unique package references");
 
         // Generate SBOM in requested format(s)
         if (format.Equals("spdx", StringComparison.OrdinalIgnoreCase) || format.Equals("both", StringComparison.OrdinalIgnoreCase)) {
-            await GenerateSpdxSbomAsync(projects, outputPath, cancellationToken);
+            await GenerateSpdxSbomAsync(projects, allPackageReferences.Values.ToList(), outputPath, cancellationToken);
         }
 
         if (format.Equals("cyclonedx", StringComparison.OrdinalIgnoreCase) || format.Equals("both", StringComparison.OrdinalIgnoreCase)) {
-            await GenerateCycloneDxSbomAsync(projects, outputPath, cancellationToken);
+            await GenerateCycloneDxSbomAsync(projects, allPackageReferences.Values.ToList(), outputPath, cancellationToken);
         }
     }
 
-    private async Task GenerateSpdxSbomAsync(List<ProjectInfo> projects, string outputPath, CancellationToken cancellationToken) {
+    private async Task GenerateSpdxSbomAsync(List<SbomProjectInfo> projects, List<SbomPackageInfo> packages, string outputPath, CancellationToken cancellationToken) {
         _console.WriteInfo("Generating SPDX SBOM...");
 
         try {
-            // For now, create a simple text-based SBOM listing projects
+            // Create a comprehensive SPDX SBOM document
             var sbomContent = new List<string> {
-                "# SPDX Software Bill of Materials",
-                $"# Generated on: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss} UTC",
-                $"# Total projects: {projects.Count}",
+                "SPDXVersion: SPDX-2.3",
+                "DataLicense: CC0-1.0",
+                "SPDXID: SPDXRef-DOCUMENT",
+                $"Name: {Path.GetFileName(Path.GetFullPath(outputPath))}-SBOM",
+                $"DocumentNamespace: https://bld.tool/sbom/{Guid.NewGuid()}",
+                $"Creator: Tool: bld-0.1.1",
+                $"Created: {DateTime.UtcNow:yyyy-MM-ddTHH:mm:ssZ}",
                 "",
-                "## Projects:"
+                "# Package Information",
+                ""
             };
 
+            // Add projects as packages
             foreach (var project in projects) {
-                sbomContent.Add($"- {project.AssemblyName ?? project.ProjectName ?? Path.GetFileNameWithoutExtension(project.ProjectPath)}");
-                sbomContent.Add($"  Path: {project.ProjectPath}");
-                sbomContent.Add($"  Target Framework: {project.TargetFramework ?? string.Join(", ", project.TargetFrameworks)}");
+                sbomContent.Add($"PackageName: {project.Name}");
+                sbomContent.Add($"SPDXID: SPDXRef-{project.Name.Replace(" ", "-").Replace(".", "-")}");
+                sbomContent.Add($"PackageDownloadLocation: NOASSERTION");
+                sbomContent.Add($"FilesAnalyzed: false");
+                sbomContent.Add($"PackageLicenseConcluded: NOASSERTION");
+                sbomContent.Add($"PackageLicenseDeclared: NOASSERTION");
+                sbomContent.Add($"PackageCopyrightText: NOASSERTION");
+                sbomContent.Add($"# Project Path: {project.Path}");
+                sbomContent.Add($"# Target Framework: {project.TargetFramework}");
                 if (!string.IsNullOrEmpty(project.PackageId)) {
-                    sbomContent.Add($"  Package ID: {project.PackageId}");
+                    sbomContent.Add($"# Package ID: {project.PackageId}");
                 }
                 sbomContent.Add("");
             }
 
-            var spdxPath = Path.Combine(outputPath, "spdx-sbom.txt");
+            // Add NuGet packages
+            foreach (var package in packages.OrderBy(p => p.Id)) {
+                sbomContent.Add($"PackageName: {package.Id}");
+                sbomContent.Add($"SPDXID: SPDXRef-{package.Id.Replace(".", "-")}");
+                sbomContent.Add($"PackageVersion: {package.Version}");
+                sbomContent.Add($"PackageDownloadLocation: https://www.nuget.org/packages/{package.Id}/{package.Version}");
+                sbomContent.Add($"FilesAnalyzed: false");
+                sbomContent.Add($"PackageLicenseConcluded: NOASSERTION");
+                sbomContent.Add($"PackageLicenseDeclared: NOASSERTION");
+                sbomContent.Add($"PackageCopyrightText: NOASSERTION");
+                sbomContent.Add("");
+            }
+
+            var spdxPath = Path.Combine(outputPath, "spdx-sbom.spdx");
             await File.WriteAllLinesAsync(spdxPath, sbomContent, cancellationToken);
 
             _console.WriteInfo($"SPDX SBOM generated successfully at: {spdxPath}");
@@ -92,11 +144,11 @@ internal class SbomService {
         }
     }
 
-    private async Task GenerateCycloneDxSbomAsync(List<ProjectInfo> projects, string outputPath, CancellationToken cancellationToken) {
+    private async Task GenerateCycloneDxSbomAsync(List<SbomProjectInfo> projects, List<SbomPackageInfo> packages, string outputPath, CancellationToken cancellationToken) {
         _console.WriteInfo("Generating CycloneDX SBOM...");
 
         try {
-            // Create a simple JSON structure for CycloneDX SBOM
+            // Create a simple CycloneDX-compatible JSON structure
             var bom = new {
                 bomFormat = "CycloneDX",
                 specVersion = "1.5",
@@ -112,18 +164,25 @@ internal class SbomService {
                 },
                 components = projects.Select(project => new {
                     type = "library",
-                    name = project.AssemblyName ?? project.ProjectName ?? Path.GetFileNameWithoutExtension(project.ProjectPath),
-                    version = "1.0.0", // Could be extracted from project properties
+                    name = project.Name,
+                    version = "1.0.0",
                     scope = "required",
                     purl = string.IsNullOrEmpty(project.PackageId) 
                         ? null 
                         : $"pkg:nuget/{project.PackageId}@1.0.0"
-                }).ToArray()
+                }).Concat(packages.Select(package => new {
+                    type = "library",
+                    name = package.Id,
+                    version = package.Version,
+                    scope = "required",
+                    purl = (string?)$"pkg:nuget/{package.Id}@{package.Version}"
+                })).ToArray()
             };
 
             var json = JsonSerializer.Serialize(bom, new JsonSerializerOptions {
                 WriteIndented = true,
-                PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+                PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+                DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
             });
 
             var cycloneDxPath = Path.Combine(outputPath, "cyclonedx-sbom.json");
@@ -134,6 +193,33 @@ internal class SbomService {
         catch (Exception ex) {
             _console.WriteError($"Error generating CycloneDX SBOM: {ex.Message}");
         }
+    }
+
+    private async Task<List<SbomPackageInfo>> ExtractPackageReferencesAsync(string projectPath, CancellationToken cancellationToken) {
+        var packageReferences = new List<SbomPackageInfo>();
+
+        try {
+            using var stream = File.OpenRead(projectPath);
+            var doc = await System.Xml.Linq.XDocument.LoadAsync(stream, System.Xml.Linq.LoadOptions.None, cancellationToken);
+            var packageRefElements = doc.Descendants("PackageReference");
+
+            foreach (var element in packageRefElements) {
+                var includeAttr = element.Attribute("Include");
+                var versionAttr = element.Attribute("Version");
+
+                if (includeAttr?.Value != null && versionAttr?.Value != null) {
+                    packageReferences.Add(new SbomPackageInfo {
+                        Id = includeAttr.Value,
+                        Version = versionAttr.Value
+                    });
+                }
+            }
+        }
+        catch (Exception ex) {
+            _console.WriteWarning($"Failed to parse project file {projectPath}: {ex.Message}");
+        }
+
+        return packageReferences;
     }
 
     private static bool IsTestProject(ProjectInfo project) {
@@ -150,7 +236,7 @@ internal class SbomService {
     private static bool IsOutputProject(ProjectInfo project) {
         // Consider projects that produce output artifacts
         var targetFrameworks = project.TargetFrameworks?.Any() == true ? project.TargetFrameworks : 
-                              new[] { project.TargetFramework }.Where(tf => !string.IsNullOrEmpty(tf)).ToArray();
+                              new[] { project.TargetFramework }.Where(tf => !string.IsNullOrEmpty(tf)).ToList();
         
         // Skip if no target framework (probably not a valid .NET project)
         if (!targetFrameworks.Any()) {
@@ -171,5 +257,18 @@ internal class SbomService {
         }
 
         return true;
+    }
+
+    private class SbomProjectInfo {
+        public string Name { get; set; } = string.Empty;
+        public string Path { get; set; } = string.Empty;
+        public string TargetFramework { get; set; } = string.Empty;
+        public string? PackageId { get; set; }
+        public List<SbomPackageInfo> PackageReferences { get; set; } = new();
+    }
+
+    private class SbomPackageInfo {
+        public string Id { get; set; } = string.Empty;
+        public string Version { get; set; } = string.Empty;
     }
 }
