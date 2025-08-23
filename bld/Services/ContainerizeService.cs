@@ -1,5 +1,6 @@
 using bld.Infrastructure;
 using bld.Models;
+using System.Runtime.CompilerServices;
 using System.Text.RegularExpressions;
 using System.Xml.Linq;
 
@@ -14,7 +15,11 @@ internal class ContainerizeService {
         _options = options;
     }
 
+    [MethodImpl(MethodImplOptions.NoInlining)]
     public async Task ContainerizeProjectsAsync(string rootPath, bool applyChanges, CancellationToken cancellationToken) {
+        // Initialize MSBuild before any Microsoft.Build.* types are loaded
+        MSBuildInitializer.Initialize(_console, _options);
+        
         _console.WriteInfo("Starting containerization process...");
 
         // Discover solutions and projects

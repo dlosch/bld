@@ -1,5 +1,6 @@
 using bld.Infrastructure;
 using bld.Models;
+using System.Runtime.CompilerServices;
 using System.Xml.Linq;
 
 namespace bld.Services;
@@ -13,7 +14,11 @@ internal class CpmService {
         _options = options;
     }
 
+    [MethodImpl(MethodImplOptions.NoInlining)]
     public async Task ConvertToCentralPackageManagementAsync(string rootPath, bool applyChanges, bool overwrite, CancellationToken cancellationToken) {
+        // Initialize MSBuild before any Microsoft.Build.* types are loaded
+        MSBuildInitializer.Initialize(_console, _options);
+        
         _console.WriteInfo("Starting Central Package Management conversion...");
 
         // Find solution file(s) to determine the root
@@ -95,7 +100,8 @@ internal class CpmService {
         var packageReferences = new List<(string, string)>();
 
         try {
-            var doc = await XDocument.LoadAsync(File.OpenRead(projectPath), LoadOptions.None, cancellationToken);
+            using var stream = File.OpenRead(projectPath);
+            var doc = await XDocument.LoadAsync(stream, LoadOptions.None, cancellationToken);
             var packageRefElements = doc.Descendants("PackageReference");
 
             foreach (var element in packageRefElements) {
@@ -137,7 +143,11 @@ internal class CpmService {
 
     private async Task UpdateProjectFileAsync(string projectPath, CancellationToken cancellationToken) {
         try {
-            var doc = await XDocument.LoadAsync(File.OpenRead(projectPath), LoadOptions.None, cancellationToken);
+            XDocument doc;
+            using (var readStream = File.OpenRead(projectPath)) {
+                doc = await XDocument.LoadAsync(readStream, LoadOptions.None, cancellationToken);
+            }
+            
             var packageRefElements = doc.Descendants("PackageReference");
             var modified = false;
 
@@ -150,8 +160,8 @@ internal class CpmService {
             }
 
             if (modified) {
-                await using var stream = new FileStream(projectPath, FileMode.Create, FileAccess.Write);
-                await doc.SaveAsync(stream, SaveOptions.None, cancellationToken);
+                using var writeStream = new FileStream(projectPath, FileMode.Create, FileAccess.Write);
+                await doc.SaveAsync(writeStream, SaveOptions.None, cancellationToken);
             }
         }
         catch (Exception ex) {

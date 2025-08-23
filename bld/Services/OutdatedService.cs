@@ -4,6 +4,7 @@ using NuGet.Common;
 using NuGet.Protocol;
 using NuGet.Protocol.Core.Types;
 using NuGet.Versioning;
+using System.Runtime.CompilerServices;
 using System.Xml.Linq;
 
 namespace bld.Services;
@@ -21,7 +22,11 @@ internal class OutdatedService {
         _logger = new NuGetLogger(_console);
     }
 
+    [MethodImpl(MethodImplOptions.NoInlining)]
     public async Task<int> CheckOutdatedPackagesAsync(string rootPath, bool updatePackages, CancellationToken cancellationToken) {
+        // Initialize MSBuild before any Microsoft.Build.* types are loaded
+        MSBuildInitializer.Initialize(_console, _options);
+        
         _console.WriteInfo("Checking for outdated packages...");
 
         var errorSink = new ErrorSink(_console);
@@ -136,7 +141,8 @@ internal class OutdatedService {
         var packageReferences = new List<PackageInfo>();
 
         try {
-            var doc = await XDocument.LoadAsync(File.OpenRead(projectPath), LoadOptions.None, cancellationToken);
+            using var stream = File.OpenRead(projectPath);
+            var doc = await XDocument.LoadAsync(stream, LoadOptions.None, cancellationToken);
             var packageRefElements = doc.Descendants("PackageReference");
 
             foreach (var element in packageRefElements) {
@@ -162,7 +168,11 @@ internal class OutdatedService {
 
     private async Task UpdatePackageVersionAsync(string projectPath, string packageId, string newVersion, CancellationToken cancellationToken) {
         try {
-            var doc = await XDocument.LoadAsync(File.OpenRead(projectPath), LoadOptions.PreserveWhitespace, cancellationToken);
+            XDocument doc;
+            using (var readStream = File.OpenRead(projectPath)) {
+                doc = await XDocument.LoadAsync(readStream, LoadOptions.PreserveWhitespace, cancellationToken);
+            }
+            
             var packageRefElements = doc.Descendants("PackageReference")
                 .Where(e => e.Attribute("Include")?.Value == packageId);
 
@@ -177,8 +187,8 @@ internal class OutdatedService {
                 }
             }
 
-            await using var stream = File.Create(projectPath);
-            await doc.SaveAsync(stream, SaveOptions.None, cancellationToken);
+            using var writeStream = File.Create(projectPath);
+            await doc.SaveAsync(writeStream, SaveOptions.None, cancellationToken);
         }
         catch (Exception ex) {
             _console.WriteError($"Failed to update {projectPath}: {ex.Message}");
