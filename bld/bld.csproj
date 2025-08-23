@@ -35,6 +35,7 @@
     <PackageReference Include="NuGet.Protocol" />
     <PackageReference Include="NuGet.Versioning" />
     <PackageReference Include="NuGet.Packaging" />
+    <PackageReference Include="NuGet.Frameworks" />
   </ItemGroup>
 
   <PropertyGroup>
