@@ -14,5 +14,7 @@ internal class RootCommand : System.CommandLine.RootCommand {
         Add(new SbomCommand(console));
         Add(new ContainerizeCommand(console));
         Add(new CpmCommand(console));
+        Add(new OutdatedCommand(console));
+        Add(new CleanupCommand(console));
     }
 }
