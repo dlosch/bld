@@ -12,5 +12,8 @@
     <PackageVersion Include="Microsoft.Sbom.Api" Version="2.2.8" />
     <PackageVersion Include="CycloneDX.Core" Version="4.0.0" />
     <PackageVersion Include="System.Text.Json" Version="9.0.0" />
+    <PackageVersion Include="NuGet.Protocol" Version="6.12.1" />
+    <PackageVersion Include="NuGet.Versioning" Version="6.12.1" />
+    <PackageVersion Include="NuGet.Packaging" Version="6.12.1" />
   </ItemGroup>
 </Project>
