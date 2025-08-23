@@ -26,15 +26,15 @@ internal class CpmService {
         var slnScanner = new SlnScanner(_options, errorSink);
         var slnParser = new SlnParser(_console, errorSink);
 
-        var allPackageReferences = new Dictionary<string, string>(); // PackageId -> Version
-        var projectFiles = new List<string>();
-
-        string? solutionDir = null;
+        var solutionData = new List<SolutionData>();
 
         await foreach (var slnPath in slnScanner.Enumerate(rootPath)) {
             _console.WriteVerbose($"Processing solution: {slnPath}");
-            solutionDir = Path.GetDirectoryName(slnPath);
+            var solutionDir = Path.GetDirectoryName(slnPath)!;
             
+            var allPackageReferences = new Dictionary<string, string>(); // PackageId -> Version
+            var projectFiles = new List<string>();
+
             await foreach (var projCfg in slnParser.ParseSolution(slnPath)) {
                 var projectPath = projCfg.Path;
                 projectFiles.Add(projectPath);
@@ -54,45 +54,57 @@ internal class CpmService {
                     }
                 }
             }
+
+            solutionData.Add(new SolutionData {
+                SolutionPath = slnPath,
+                SolutionDirectory = solutionDir,
+                PackageReferences = allPackageReferences,
+                ProjectFiles = projectFiles
+            });
         }
 
-        if (solutionDir == null) {
+        if (solutionData.Count == 0) {
             _console.WriteError("No solution files found. Central Package Management requires a solution file.");
             return;
         }
 
-        _console.WriteInfo($"Found {allPackageReferences.Count} unique package references across {projectFiles.Count} projects");
+        _console.WriteInfo($"Found {solutionData.Count} solution(s) to process");
 
-        var directoryPackagesPath = Path.Combine(solutionDir, "Directory.Packages.props");
+        foreach (var solution in solutionData) {
+            _console.WriteInfo($"\nProcessing solution: {Path.GetFileName(solution.SolutionPath)}");
+            _console.WriteInfo($"Found {solution.PackageReferences.Count} unique package references across {solution.ProjectFiles.Count} projects");
 
-        // Check if Directory.Packages.props already exists
-        if (File.Exists(directoryPackagesPath) && !overwrite) {
-            _console.WriteError($"Directory.Packages.props already exists at {directoryPackagesPath}. Use --overwrite to replace it.");
-            return;
-        }
+            var directoryPackagesPath = Path.Combine(solution.SolutionDirectory, "Directory.Packages.props");
 
-        if (applyChanges) {
-            // Create Directory.Packages.props
-            await CreateDirectoryPackagesPropsAsync(directoryPackagesPath, allPackageReferences, cancellationToken);
-            _console.WriteInfo($"Created Directory.Packages.props with {allPackageReferences.Count} package versions");
-
-            // Update all project files to remove versions
-            foreach (var projectPath in projectFiles) {
-                await UpdateProjectFileAsync(projectPath, cancellationToken);
-                _console.WriteVerbose($"Updated project file: {Path.GetFileName(projectPath)}");
+            // Check if Directory.Packages.props already exists
+            if (File.Exists(directoryPackagesPath) && !overwrite) {
+                _console.WriteError($"Directory.Packages.props already exists at {directoryPackagesPath}. Use --overwrite to replace it.");
+                continue;
             }
 
-            _console.WriteInfo($"Updated {projectFiles.Count} project files to use central package management");
-        } else {
-            _console.WriteInfo("Dry run - showing what would be created:");
-            _console.WriteInfo($"Directory.Packages.props would be created at: {directoryPackagesPath}");
-            _console.WriteInfo("Package versions that would be centralized:");
-            
-            foreach (var (packageId, version) in allPackageReferences.OrderBy(x => x.Key)) {
-                _console.WriteInfo($"  {packageId} = {version}");
+            if (applyChanges) {
+                // Create Directory.Packages.props
+                await CreateDirectoryPackagesPropsAsync(directoryPackagesPath, solution.PackageReferences, cancellationToken);
+                _console.WriteInfo($"Created Directory.Packages.props with {solution.PackageReferences.Count} package versions");
+
+                // Update all project files to remove versions
+                foreach (var projectPath in solution.ProjectFiles) {
+                    await UpdateProjectFileAsync(projectPath, cancellationToken);
+                    _console.WriteVerbose($"Updated project file: {Path.GetFileName(projectPath)}");
+                }
+
+                _console.WriteInfo($"Updated {solution.ProjectFiles.Count} project files to use central package management");
+            } else {
+                _console.WriteInfo("Dry run - showing what would be created:");
+                _console.WriteInfo($"Directory.Packages.props would be created at: {directoryPackagesPath}");
+                _console.WriteInfo("Package versions that would be centralized:");
+                
+                foreach (var (packageId, version) in solution.PackageReferences.OrderBy(x => x.Key)) {
+                    _console.WriteInfo($"  {packageId} = {version}");
+                }
+                
+                _console.WriteInfo($"\n{solution.ProjectFiles.Count} project files would be updated to remove version attributes");
             }
-            
-            _console.WriteInfo($"\n{projectFiles.Count} project files would be updated to remove version attributes");
         }
     }
 
@@ -200,5 +212,12 @@ internal class CpmService {
         }
 
         return version;
+    }
+
+    private class SolutionData {
+        public string SolutionPath { get; set; } = string.Empty;
+        public string SolutionDirectory { get; set; } = string.Empty;
+        public Dictionary<string, string> PackageReferences { get; set; } = new();
+        public List<string> ProjectFiles { get; set; } = new();
     }
 }

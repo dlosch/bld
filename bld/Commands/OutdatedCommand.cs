@@ -13,10 +13,16 @@ internal sealed class OutdatedCommand : BaseCommand {
         DefaultValueFactory = _ => false
     };
 
+    private readonly Option<bool> _skipTfmCheckOption = new Option<bool>("--skip-tfm-check") {
+        Description = "Skip target framework compatibility checking when suggesting package updates.",
+        DefaultValueFactory = _ => false
+    };
+
     public OutdatedCommand(IConsoleOutput console) : base("outdated", "Check for outdated NuGet packages and optionally update them to latest versions.", console) {
         Add(_rootOption);
         Add(_depthOption);
         Add(_updateOption);
+        Add(_skipTfmCheckOption);
         Add(_logLevelOption);
         Add(_vsToolsPath);
         Add(_noResolveVsToolsPath);
@@ -44,8 +50,9 @@ internal sealed class OutdatedCommand : BaseCommand {
         }
 
         var updatePackages = parseResult.GetValue(_updateOption);
+        var skipTfmCheck = parseResult.GetValue(_skipTfmCheckOption);
 
         var service = new OutdatedService(Console, options);
-        return await service.CheckOutdatedPackagesAsync(rootValue, updatePackages, cancellationToken);
+        return await service.CheckOutdatedPackagesAsync(rootValue, updatePackages, skipTfmCheck, cancellationToken);
     }
 }

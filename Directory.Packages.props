@@ -14,5 +14,6 @@
     <PackageVersion Include="NuGet.Protocol" Version="6.12.1" />
     <PackageVersion Include="NuGet.Versioning" Version="6.12.1" />
     <PackageVersion Include="NuGet.Packaging" Version="6.12.1" />
+    <PackageVersion Include="NuGet.Frameworks" Version="6.12.1" />
   </ItemGroup>
 </Project>
