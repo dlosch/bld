@@ -178,74 +178,102 @@ internal class ContainerizeService {
     private void ParseLabelContent(string labelContent, Dictionary<string, string> properties) {
         // Parse multiple key=value pairs in a single LABEL instruction
         // Support both LABEL key1=value1 key2=value2 and LABEL key="value"
-        var pairs = new List<(string key, string value)>();
+        // Handle complex cases with spaces in values and quoted strings
         
-        // Simple parsing - split by spaces but respect quoted values
-        var parts = new List<string>();
-        var currentPart = "";
-        bool inQuotes = false;
+        var keyValuePairs = new List<(string key, string value)>();
         
-        for (int i = 0; i < labelContent.Length; i++) {
+        // More robust parsing that handles quoted values and spaces
+        var currentKey = "";
+        var currentValue = "";
+        var inQuotes = false;
+        var parsingValue = false;
+        var i = 0;
+        
+        while (i < labelContent.Length) {
             var c = labelContent[i];
             
+            // Handle quotes
             if (c == '"' && (i == 0 || labelContent[i - 1] != '\\')) {
                 inQuotes = !inQuotes;
+                i++;
                 continue;
             }
             
-            if (c == ' ' && !inQuotes && !string.IsNullOrEmpty(currentPart)) {
-                parts.Add(currentPart);
-                currentPart = "";
+            // Handle equals sign
+            if (c == '=' && !inQuotes && !parsingValue) {
+                parsingValue = true;
+                i++;
                 continue;
             }
             
-            currentPart += c;
-        }
-        
-        if (!string.IsNullOrEmpty(currentPart)) {
-            parts.Add(currentPart);
-        }
-        
-        // Parse each part as key=value
-        foreach (var part in parts) {
-            var equalIndex = part.IndexOf('=');
-            if (equalIndex > 0) {
-                var key = part.Substring(0, equalIndex).Trim();
-                var value = part.Substring(equalIndex + 1).Trim().Trim('"');
-                
-                // Convert OCI and common labels to container properties
-                switch (key.ToLowerInvariant()) {
-                    case "org.opencontainers.image.title":
-                        properties["ContainerImageName"] = value;
-                        break;
-                    case "org.opencontainers.image.description":
-                        properties["ContainerDescription"] = value;
-                        break;
-                    case "org.opencontainers.image.version":
-                        properties["ContainerImageTag"] = value;
-                        break;
-                    case "org.opencontainers.image.authors":
-                        properties["ContainerAuthor"] = value;
-                        break;
-                    case "version":
-                        properties["ContainerImageTag"] = value;
-                        break;
-                    case "description":
-                        properties["ContainerDescription"] = value;
-                        break;
-                    case "maintainer":
-                    case "author":
-                        properties["ContainerAuthor"] = value;
-                        break;
-                    default:
-                        // Add custom labels
-                        if (!properties.ContainsKey("ContainerLabel")) {
-                            properties["ContainerLabel"] = $"{key}={value}";
-                        } else {
-                            properties["ContainerLabel"] += $";{key}={value}";
-                        }
-                        break;
+            // Handle spaces
+            if (c == ' ' && !inQuotes) {
+                if (parsingValue && !string.IsNullOrEmpty(currentValue)) {
+                    // End of current key=value pair
+                    keyValuePairs.Add((currentKey.Trim(), currentValue.Trim()));
+                    currentKey = "";
+                    currentValue = "";
+                    parsingValue = false;
+                } else if (!parsingValue && !string.IsNullOrEmpty(currentKey)) {
+                    // Space in key (shouldn't happen in well-formed labels)
+                    currentKey += c;
                 }
+                i++;
+                continue;
+            }
+            
+            // Add character to current key or value
+            if (parsingValue) {
+                currentValue += c;
+            } else {
+                currentKey += c;
+            }
+            
+            i++;
+        }
+        
+        // Add the final pair if we have one
+        if (!string.IsNullOrEmpty(currentKey) && parsingValue) {
+            keyValuePairs.Add((currentKey.Trim(), currentValue.Trim()));
+        }
+        
+        // Convert parsed key-value pairs to container properties
+        foreach (var (key, value) in keyValuePairs) {
+            var cleanKey = key.Trim();
+            var cleanValue = value.Trim().Trim('"');
+            
+            // Convert OCI and common labels to container properties
+            switch (cleanKey.ToLowerInvariant()) {
+                case "org.opencontainers.image.title":
+                    properties["ContainerImageName"] = cleanValue;
+                    break;
+                case "org.opencontainers.image.description":
+                    properties["ContainerDescription"] = cleanValue;
+                    break;
+                case "org.opencontainers.image.version":
+                    properties["ContainerImageTag"] = cleanValue;
+                    break;
+                case "org.opencontainers.image.authors":
+                    properties["ContainerAuthor"] = cleanValue;
+                    break;
+                case "version":
+                    properties["ContainerImageTag"] = cleanValue;
+                    break;
+                case "description":
+                    properties["ContainerDescription"] = cleanValue;
+                    break;
+                case "maintainer":
+                case "author":
+                    properties["ContainerAuthor"] = cleanValue;
+                    break;
+                default:
+                    // Add custom labels
+                    if (!properties.ContainsKey("ContainerLabel")) {
+                        properties["ContainerLabel"] = $"{cleanKey}={cleanValue}";
+                    } else {
+                        properties["ContainerLabel"] += $";{cleanKey}={cleanValue}";
+                    }
+                    break;
             }
         }
     }
@@ -254,31 +282,78 @@ internal class ContainerizeService {
         // Parse ENV key=value or ENV key value pairs
         var envVars = new List<(string key, string value)>();
         
-        // Try to parse as key=value first
+        // Improved parsing that handles both formats and quoted values
         if (envContent.Contains('=')) {
-            var pairs = envContent.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-            foreach (var pair in pairs) {
-                var equalIndex = pair.IndexOf('=');
-                if (equalIndex > 0) {
-                    var key = pair.Substring(0, equalIndex).Trim();
-                    var value = pair.Substring(equalIndex + 1).Trim().Trim('"');
-                    envVars.Add((key, value));
+            // Format: ENV KEY1=value1 KEY2=value2 or ENV KEY="value with spaces"
+            var currentKey = "";
+            var currentValue = "";
+            var inQuotes = false;
+            var parsingValue = false;
+            
+            for (int i = 0; i < envContent.Length; i++) {
+                var c = envContent[i];
+                
+                // Handle quotes
+                if (c == '"' && (i == 0 || envContent[i - 1] != '\\')) {
+                    inQuotes = !inQuotes;
+                    continue;
+                }
+                
+                // Handle equals sign
+                if (c == '=' && !inQuotes && !parsingValue) {
+                    parsingValue = true;
+                    continue;
+                }
+                
+                // Handle spaces
+                if (c == ' ' && !inQuotes) {
+                    if (parsingValue && !string.IsNullOrEmpty(currentValue)) {
+                        // End of current key=value pair
+                        envVars.Add((currentKey.Trim(), currentValue.Trim()));
+                        currentKey = "";
+                        currentValue = "";
+                        parsingValue = false;
+                    } else if (!parsingValue) {
+                        // Skip spaces between key=value pairs
+                        continue;
+                    } else {
+                        // Space in unquoted value
+                        currentValue += c;
+                    }
+                    continue;
+                }
+                
+                // Add character to current key or value
+                if (parsingValue) {
+                    currentValue += c;
+                } else {
+                    currentKey += c;
                 }
             }
+            
+            // Add the final pair if we have one
+            if (!string.IsNullOrEmpty(currentKey) && parsingValue) {
+                envVars.Add((currentKey.Trim(), currentValue.Trim()));
+            }
         } else {
-            // Parse as ENV key value format
+            // Format: ENV KEY value (single key-value pair)
             var parts = envContent.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
             if (parts.Length == 2) {
-                envVars.Add((parts[0].Trim(), parts[1].Trim().Trim('"')));
+                var key = parts[0].Trim();
+                var value = parts[1].Trim().Trim('"');
+                envVars.Add((key, value));
             }
         }
         
-        // Convert ENV variables to container environment variables
+        // Convert ENV variables to ContainerEnvironmentVariable properties
         foreach (var (key, value) in envVars) {
+            var cleanKey = key.Trim();
+            var cleanValue = value.Trim().Trim('"');
+            
             if (!properties.ContainsKey("ContainerEnvironmentVariable")) {
-                properties["ContainerEnvironmentVariable"] = $"{key}={value}";
+                properties["ContainerEnvironmentVariable"] = $"{cleanKey}={cleanValue}";
             } else {
-                properties["ContainerEnvironmentVariable"] += $";{key}={value}";
+                properties["ContainerEnvironmentVariable"] += $";{cleanKey}={cleanValue}";
             }
         }
     }

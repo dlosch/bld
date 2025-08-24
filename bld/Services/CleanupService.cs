@@ -230,9 +230,15 @@ internal class CleanupService {
     private async Task<int> RemoveRedundantReferencesAsync(string projectPath, List<RedundantReferenceInfo> redundantRefs, CancellationToken cancellationToken) {
         try {
             XDocument doc;
+            
+            // Read the file with explicit disposal to ensure file handle is released
             using (var readStream = File.OpenRead(projectPath)) {
                 doc = await XDocument.LoadAsync(readStream, LoadOptions.PreserveWhitespace, cancellationToken);
             }
+            
+            // Small delay to ensure file handle is fully released on some file systems
+            await Task.Delay(10, cancellationToken);
+            
             var removedCount = 0;
 
             foreach (var redundantRef in redundantRefs) {
@@ -248,14 +254,19 @@ internal class CleanupService {
             }
 
             if (removedCount > 0) {
-                await using var stream = File.Create(projectPath);
-                using var writer = XmlWriter.Create(stream, new XmlWriterSettings {
+                // Ensure file is not locked by forcing garbage collection
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+                
+                using var writeStream = File.Create(projectPath);
+                using var writer = XmlWriter.Create(writeStream, new XmlWriterSettings {
                     Indent = true,
                     OmitXmlDeclaration = true,
                     Encoding = System.Text.Encoding.UTF8,
                     Async = true
                 });
                 await doc.SaveAsync(writer, cancellationToken);
+                await writer.FlushAsync();
             }
 
             return removedCount;
