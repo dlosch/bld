@@ -8,7 +8,7 @@ namespace bld.Commands;
 
 internal sealed class CleanupCommand : BaseCommand {
 
-    private readonly Option<bool> _removeOption = new Option<bool>("--remove") {
+    private readonly Option<bool> _updateOption = new Option<bool>("--update", "-u") {
         Description = "Remove redundant package references instead of just analyzing them.",
         DefaultValueFactory = _ => false
     };
@@ -16,7 +16,7 @@ internal sealed class CleanupCommand : BaseCommand {
     public CleanupCommand(IConsoleOutput console) : base("cleanup", "Analyze and optionally remove redundant package references that are transitive or not required.", console) {
         Add(_rootOption);
         Add(_depthOption);
-        Add(_removeOption);
+        Add(_updateOption);
         Add(_logLevelOption);
         Add(_vsToolsPath);
         Add(_noResolveVsToolsPath);
@@ -43,7 +43,7 @@ internal sealed class CleanupCommand : BaseCommand {
             rootValue = Directory.GetCurrentDirectory();
         }
 
-        var removeRedundant = parseResult.GetValue(_removeOption);
+        var removeRedundant = parseResult.GetValue(_updateOption);
 
         var service = new CleanupService(Console, options);
         return await service.AnalyzePackageReferencesAsync(rootValue, removeRedundant, cancellationToken);

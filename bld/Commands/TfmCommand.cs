@@ -16,7 +16,7 @@ internal sealed class TfmCommand : BaseCommand {
         Description = "Target framework to migrate to (e.g., net9.0)."
     };
 
-    private readonly Option<bool> _applyOption = new Option<bool>("--apply") {
+    private readonly Option<bool> _updateOption = new Option<bool>("--update", "-u") {
         Description = "Apply changes (default is dry-run).",
         DefaultValueFactory = _ => false
     };
@@ -26,7 +26,7 @@ internal sealed class TfmCommand : BaseCommand {
         Add(_depthOption);
         Add(_fromOption);
         Add(_toOption);
-        Add(_applyOption);
+        Add(_updateOption);
         Add(_logLevelOption);
         Add(_vsToolsPath);
         Add(_noResolveVsToolsPath);
@@ -55,11 +55,21 @@ internal sealed class TfmCommand : BaseCommand {
 
         var from = parseResult.GetValue(_fromOption);
         var to = parseResult.GetValue(_toOption);
-        var apply = parseResult.GetValue(_applyOption);
+        var apply = parseResult.GetValue(_updateOption);
 
-        if (string.IsNullOrEmpty(from) || string.IsNullOrEmpty(to)) {
-            Console.WriteError("Both --from and --to parameters are required.");
+        if (string.IsNullOrEmpty(from)) {
+            Console.WriteError("The --from parameter is required.");
             return 1;
+        }
+
+        // Auto-detect highest SDK version if --to is not specified
+        if (string.IsNullOrEmpty(to)) {
+            to = await DetectHighestSdkVersionAsync();
+            if (string.IsNullOrEmpty(to)) {
+                Console.WriteError("Could not auto-detect highest SDK version. Please specify --to parameter.");
+                return 1;
+            }
+            Console.WriteInfo($"Auto-detected target framework: {to}");
         }
 
         Console.WriteInfo($"Migrating projects from {from} to {to} in: {rootPath}");
@@ -72,6 +82,54 @@ internal sealed class TfmCommand : BaseCommand {
         catch (Exception ex) {
             Console.WriteError($"Error migrating target frameworks: {ex.Message}");
             return 1;
+        }
+    }
+
+    private async Task<string?> DetectHighestSdkVersionAsync() {
+        try {
+            // Run 'dotnet --list-sdks' to get installed SDKs
+            var process = new System.Diagnostics.Process {
+                StartInfo = new System.Diagnostics.ProcessStartInfo {
+                    FileName = "dotnet",
+                    Arguments = "--list-sdks",
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                }
+            };
+
+            process.Start();
+            var output = await process.StandardOutput.ReadToEndAsync();
+            await process.WaitForExitAsync();
+
+            if (process.ExitCode != 0) {
+                Console.WriteVerbose("Failed to list installed SDKs");
+                return null;
+            }
+
+            // Parse output to find highest version
+            var lines = output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+            var versions = new List<Version>();
+
+            foreach (var line in lines) {
+                // Example line: "8.0.100 [C:\Program Files\dotnet\sdk]"
+                var parts = line.Split(' ');
+                if (parts.Length > 0 && Version.TryParse(parts[0], out var version)) {
+                    versions.Add(version);
+                }
+            }
+
+            if (versions.Count == 0) {
+                return null;
+            }
+
+            var highest = versions.Max();
+            return highest != null ? $"net{highest.Major}.{highest.Minor}" : null;
+        }
+        catch (Exception ex) {
+            Console.WriteVerbose($"Error detecting SDK versions: {ex.Message}");
+            return null;
         }
     }
 }

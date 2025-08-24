@@ -8,7 +8,7 @@ namespace bld.Commands;
 
 internal sealed class OutdatedCommand : BaseCommand {
 
-    private readonly Option<bool> _updateOption = new Option<bool>("--update") {
+    private readonly Option<bool> _updateOption = new Option<bool>("--update", "-u") {
         Description = "Update packages to their latest versions instead of just checking.",
         DefaultValueFactory = _ => false
     };
@@ -18,11 +18,17 @@ internal sealed class OutdatedCommand : BaseCommand {
         DefaultValueFactory = _ => false
     };
 
+    private readonly Option<bool> _prereleaseOption = new Option<bool>("--prerelease") {
+        Description = "Include prerelease versions of NuGet packages.",
+        DefaultValueFactory = _ => false
+    };
+
     public OutdatedCommand(IConsoleOutput console) : base("outdated", "Check for outdated NuGet packages and optionally update them to latest versions.", console) {
         Add(_rootOption);
         Add(_depthOption);
         Add(_updateOption);
         Add(_skipTfmCheckOption);
+        Add(_prereleaseOption);
         Add(_logLevelOption);
         Add(_vsToolsPath);
         Add(_noResolveVsToolsPath);
@@ -51,8 +57,9 @@ internal sealed class OutdatedCommand : BaseCommand {
 
         var updatePackages = parseResult.GetValue(_updateOption);
         var skipTfmCheck = parseResult.GetValue(_skipTfmCheckOption);
+        var includePrerelease = parseResult.GetValue(_prereleaseOption);
 
         var service = new OutdatedService(Console, options);
-        return await service.CheckOutdatedPackagesAsync(rootValue, updatePackages, skipTfmCheck, cancellationToken);
+        return await service.CheckOutdatedPackagesAsync(rootValue, updatePackages, skipTfmCheck, includePrerelease, cancellationToken);
     }
 }
