@@ -6,6 +6,7 @@ using NuGet.Frameworks;
 using NuGet.Packaging;
 using NuGet.Packaging.Core;
 using System.Runtime.CompilerServices;
+using System.Xml;
 using System.Xml.Linq;
 
 namespace bld.Services;
@@ -248,7 +249,13 @@ internal class CleanupService {
 
             if (removedCount > 0) {
                 await using var stream = File.Create(projectPath);
-                await doc.SaveAsync(stream, SaveOptions.None, cancellationToken);
+                using var writer = XmlWriter.Create(stream, new XmlWriterSettings {
+                    Indent = true,
+                    OmitXmlDeclaration = true,
+                    Encoding = System.Text.Encoding.UTF8,
+                    Async = true
+                });
+                await doc.SaveAsync(writer, cancellationToken);
             }
 
             return removedCount;

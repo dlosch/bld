@@ -6,6 +6,7 @@ using NuGet.Protocol;
 using NuGet.Protocol.Core.Types;
 using NuGet.Versioning;
 using System.Runtime.CompilerServices;
+using System.Xml;
 using System.Xml.Linq;
 
 namespace bld.Services;
@@ -194,7 +195,13 @@ internal class TfmService {
             }
 
             using var writeStream = File.Create(projectPath);
-            await doc.SaveAsync(writeStream, SaveOptions.None, cancellationToken);
+            using var writer = XmlWriter.Create(writeStream, new XmlWriterSettings {
+                Indent = true,
+                OmitXmlDeclaration = true,
+                Encoding = System.Text.Encoding.UTF8,
+                Async = true
+            });
+            await doc.SaveAsync(writer, cancellationToken);
         }
         catch (Exception ex) {
             _console.WriteError($"Failed to update {projectPath}: {ex.Message}");
@@ -265,7 +272,13 @@ internal class TfmService {
             }
 
             using var writeStream = File.Create(projectPath);
-            await doc.SaveAsync(writeStream, SaveOptions.None, cancellationToken);
+            using var writer = XmlWriter.Create(writeStream, new XmlWriterSettings {
+                Indent = true,
+                OmitXmlDeclaration = true,
+                Encoding = System.Text.Encoding.UTF8,
+                Async = true
+            });
+            await doc.SaveAsync(writer, cancellationToken);
         }
         catch (Exception ex) {
             _console.WriteError($"Failed to update {projectPath}: {ex.Message}");

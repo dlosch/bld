@@ -1,6 +1,7 @@
 using bld.Infrastructure;
 using bld.Models;
 using System.Runtime.CompilerServices;
+using System.Xml;
 using System.Xml.Linq;
 
 namespace bld.Services;
@@ -150,7 +151,13 @@ internal class CpmService {
         );
 
         await using var stream = new FileStream(filePath, FileMode.Create, FileAccess.Write);
-        await doc.SaveAsync(stream, SaveOptions.None, cancellationToken);
+        using var writer = XmlWriter.Create(stream, new XmlWriterSettings {
+            Indent = true,
+            OmitXmlDeclaration = true,
+            Encoding = System.Text.Encoding.UTF8,
+            Async = true
+        });
+        await doc.SaveAsync(writer, cancellationToken);
     }
 
     private async Task UpdateProjectFileAsync(string projectPath, CancellationToken cancellationToken) {
@@ -173,7 +180,13 @@ internal class CpmService {
 
             if (modified) {
                 using var writeStream = new FileStream(projectPath, FileMode.Create, FileAccess.Write);
-                await doc.SaveAsync(writeStream, SaveOptions.None, cancellationToken);
+                using var writer = XmlWriter.Create(writeStream, new XmlWriterSettings {
+                    Indent = true,
+                    OmitXmlDeclaration = true,
+                    Encoding = System.Text.Encoding.UTF8,
+                    Async = true
+                });
+                await doc.SaveAsync(writer, cancellationToken);
             }
         }
         catch (Exception ex) {
