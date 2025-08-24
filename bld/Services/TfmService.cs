@@ -5,6 +5,7 @@ using NuGet.Frameworks;
 using NuGet.Protocol;
 using NuGet.Protocol.Core.Types;
 using NuGet.Versioning;
+using Spectre.Console;
 using System.Runtime.CompilerServices;
 using System.Xml;
 using System.Xml.Linq;
@@ -60,8 +61,12 @@ internal class TfmService {
         if (applyChanges) {
             // Step 1: Update target frameworks
             foreach (var project in projectsToMigrate) {
-                await UpdateProjectTargetFrameworkAsync(project.ProjectPath, fromTfm, toTfm, cancellationToken);
-                _console.WriteInfo($"Updated {Path.GetFileName(project.ProjectPath)} to {toTfm}");
+                if (project.UsesTargetFrameworks) {
+                    await UpdateProjectTargetFrameworksWithPromptAsync(project, toTfm, cancellationToken);
+                } else {
+                    await UpdateProjectTargetFrameworkAsync(project.ProjectPath, fromTfm, toTfm, cancellationToken);
+                    _console.WriteInfo($"Updated {Path.GetFileName(project.ProjectPath)} to {toTfm}");
+                }
             }
 
             // Step 2: Check for package compatibility and update if needed
@@ -205,6 +210,70 @@ internal class TfmService {
         }
         catch (Exception ex) {
             _console.WriteError($"Failed to update {projectPath}: {ex.Message}");
+        }
+    }
+    private async Task UpdateProjectTargetFrameworksWithPromptAsync(ProjectMigrationInfo project, string toTfm, CancellationToken cancellationToken) {
+        try {
+            XDocument doc;
+            using (var readStream = File.OpenRead(project.ProjectPath)) {
+                doc = await XDocument.LoadAsync(readStream, LoadOptions.PreserveWhitespace, cancellationToken);
+            }
+
+            var targetFrameworksElement = doc.Descendants("TargetFrameworks").FirstOrDefault();
+            if (targetFrameworksElement == null) {
+                _console.WriteWarning($"No TargetFrameworks found in {Path.GetFileName(project.ProjectPath)}");
+                return;
+            }
+
+            var tfms = targetFrameworksElement.Value.Split(';').Select(t => t.Trim()).Where(t => !string.IsNullOrEmpty(t)).ToList();
+            
+            _console.WriteInfo($"\nProject: {Path.GetFileName(project.ProjectPath)}");
+            _console.WriteInfo($"Current TargetFrameworks: {string.Join("; ", tfms)}");
+
+            // Create selection prompt for which TFM to update
+            var selectionPrompt = new SelectionPrompt<string>()
+                .Title("Which target framework would you like to update?");
+            
+            selectionPrompt.AddChoices(tfms);
+            selectionPrompt.AddChoice("Skip this project");
+
+            var selectedTfm = _console.Prompt<string>(selectionPrompt);
+
+            if (selectedTfm == "Skip this project") {
+                _console.WriteInfo($"Skipped {Path.GetFileName(project.ProjectPath)}");
+                return;
+            }
+
+            // Replace the selected TFM with the target TFM
+            var newTfms = tfms.Select(tfm => string.Equals(tfm, selectedTfm, StringComparison.OrdinalIgnoreCase) ? toTfm : tfm).ToList();
+            var newTargetFrameworksValue = string.Join(";", newTfms);
+
+            _console.WriteInfo($"New TargetFrameworks: {string.Join("; ", newTfms)}");
+
+            // Prompt for confirmation
+            bool confirmed = _console.Confirm("Apply this change?", false);
+            
+            if (!confirmed) {
+                _console.WriteInfo($"Cancelled update for {Path.GetFileName(project.ProjectPath)}");
+                return;
+            }
+
+            // Apply the change
+            targetFrameworksElement.Value = newTargetFrameworksValue;
+
+            using var writeStream = File.Create(project.ProjectPath);
+            using var writer = XmlWriter.Create(writeStream, new XmlWriterSettings {
+                Indent = true,
+                OmitXmlDeclaration = true,
+                Encoding = System.Text.Encoding.UTF8,
+                Async = true
+            });
+            await doc.SaveAsync(writer, cancellationToken);
+            
+            _console.WriteInfo($"✓ Updated {Path.GetFileName(project.ProjectPath)} TargetFrameworks");
+        }
+        catch (Exception ex) {
+            _console.WriteError($"Failed to update {project.ProjectPath}: {ex.Message}");
         }
     }
 

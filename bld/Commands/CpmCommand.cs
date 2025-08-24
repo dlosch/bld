@@ -8,12 +8,7 @@ namespace bld.Commands;
 
 internal sealed class CpmCommand : BaseCommand {
 
-    private readonly Option<bool> _dryRunOption = new Option<bool>("--dry-run") {
-        Description = "Show what would be changed without modifying files.",
-        DefaultValueFactory = _ => true
-    };
-
-    private readonly Option<bool> _forceOption = new Option<bool>("--force") {
+    private readonly Option<bool> _applyOption = new Option<bool>("--apply") {
         Description = "Apply changes to create Directory.Packages.props and update project files.",
         DefaultValueFactory = _ => false
     };
@@ -26,8 +21,7 @@ internal sealed class CpmCommand : BaseCommand {
     public CpmCommand(IConsoleOutput console) : base("cpm", "Convert all projects in a solution to Central Package Management.", console) {
         Add(_rootOption);
         Add(_depthOption);
-        Add(_dryRunOption);
-        Add(_forceOption);
+        Add(_applyOption);
         Add(_overwriteOption);
         Add(_logLevelOption);
         Add(_vsToolsPath);
@@ -54,21 +48,16 @@ internal sealed class CpmCommand : BaseCommand {
             rootPath = Environment.CurrentDirectory;
         }
 
-        var dryRun = parseResult.GetValue(_dryRunOption);
-        var force = parseResult.GetValue(_forceOption);
+        var apply = parseResult.GetValue(_applyOption);
         var overwrite = parseResult.GetValue(_overwriteOption);
 
-        if (force && dryRun) {
-            dryRun = false; // Force overrides dry-run
-        }
-
         Console.WriteInfo($"Converting projects to Central Package Management in: {rootPath}");
-        Console.WriteInfo($"Mode: {(dryRun ? "Dry run" : "Apply changes")}");
+        Console.WriteInfo($"Mode: {(apply ? "Apply changes" : "Dry run")}");
         Console.WriteInfo($"Overwrite existing Directory.Packages.props: {overwrite}");
 
         try {
             var cpmService = new CpmService(Console, options);
-            await cpmService.ConvertToCentralPackageManagementAsync(rootPath, !dryRun, overwrite, cancellationToken);
+            await cpmService.ConvertToCentralPackageManagementAsync(rootPath, apply, overwrite, cancellationToken);
             
             Console.WriteInfo("Central Package Management conversion completed successfully.");
             return 0;

@@ -17,7 +17,7 @@ internal sealed class TfmCommand : BaseCommand {
         Description = "Target framework to migrate to (e.g., net9.0)."
     };
 
-    private readonly Option<bool> _updateOption = new Option<bool>("--update", "-u") {
+    private readonly Option<bool> _applyOption = new Option<bool>("--apply") {
         Description = "Apply changes (default is dry-run).",
         DefaultValueFactory = _ => false
     };
@@ -27,7 +27,7 @@ internal sealed class TfmCommand : BaseCommand {
         Add(_depthOption);
         Add(_fromOption);
         Add(_toOption);
-        Add(_updateOption);
+        Add(_applyOption);
         Add(_logLevelOption);
         Add(_vsToolsPath);
         Add(_noResolveVsToolsPath);
@@ -56,7 +56,7 @@ internal sealed class TfmCommand : BaseCommand {
 
         var from = parseResult.GetValue(_fromOption);
         var to = parseResult.GetValue(_toOption);
-        var apply = parseResult.GetValue(_updateOption);
+        var apply = parseResult.GetValue(_applyOption);
 
         // Auto-detect highest SDK version if --to is not specified
         if (string.IsNullOrEmpty(to)) {

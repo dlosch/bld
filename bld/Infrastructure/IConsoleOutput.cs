@@ -16,6 +16,7 @@ internal interface IConsoleOutput {
     void WriteRule(string title);
 
     bool Confirm(string message, bool defaultValue = false);
+    T Prompt<T>(SelectionPrompt<T> prompt) where T : notnull;
 
     void StartProgress(string description, Action<ProgressContext> action);
     Task StartProgressAsync(string description, Func<ProgressContext, Task> action);
