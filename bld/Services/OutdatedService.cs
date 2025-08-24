@@ -241,7 +241,7 @@ internal class OutdatedService {
             }
             _console.WriteInfo($"Updated {outdatedPackages.Count} packages in {outdatedPackages.Sum(x => x.ProjectPaths.Count)} project files");
         } else {
-            _console.WriteInfo("\nUse --update to apply these changes.");
+            _console.WriteInfo("\nUse --apply to apply these changes.");
         }
 
         return 0;
