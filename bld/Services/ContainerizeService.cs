@@ -2,6 +2,7 @@ using bld.Infrastructure;
 using bld.Models;
 using System.Runtime.CompilerServices;
 using System.Text.RegularExpressions;
+using System.Xml;
 using System.Xml.Linq;
 
 namespace bld.Services;
@@ -122,15 +123,28 @@ internal class ContainerizeService {
                 }
             }
 
-            // Parse LABEL instructions
+            // Parse LABEL instructions - support both formats: LABEL key="value" and LABEL key=value
             if (trimmedLine.StartsWith("LABEL ", StringComparison.OrdinalIgnoreCase)) {
-                var labelMatch = Regex.Match(trimmedLine, @"LABEL\s+([^=]+)=(.+)", RegexOptions.IgnoreCase);
+                // Try format: LABEL key="value" or LABEL key=value
+                var labelMatch = Regex.Match(trimmedLine, @"LABEL\s+([^\s=]+)(?:\s*=\s*(.+)|(?:\s+(.+)))", RegexOptions.IgnoreCase);
                 if (labelMatch.Success) {
                     var key = labelMatch.Groups[1].Value.Trim();
-                    var value = labelMatch.Groups[2].Value.Trim().Trim('"');
+                    var value = (labelMatch.Groups[2].Value ?? labelMatch.Groups[3].Value).Trim().Trim('"');
                     
-                    // Convert common labels to container properties
+                    // Convert OCI and common labels to container properties
                     switch (key.ToLowerInvariant()) {
+                        case "org.opencontainers.image.title":
+                            properties["ContainerImageName"] = value;
+                            break;
+                        case "org.opencontainers.image.description":
+                            properties["ContainerDescription"] = value;
+                            break;
+                        case "org.opencontainers.image.version":
+                            properties["ContainerImageTag"] = value;
+                            break;
+                        case "org.opencontainers.image.authors":
+                            properties["ContainerAuthor"] = value;
+                            break;
                         case "version":
                             properties["ContainerImageTag"] = value;
                             break;
@@ -143,7 +157,11 @@ internal class ContainerizeService {
                             break;
                         default:
                             // Add custom labels
-                            properties[$"ContainerLabel"] = $"{key}={value}";
+                            if (!properties.ContainsKey("ContainerLabel")) {
+                                properties["ContainerLabel"] = $"{key}={value}";
+                            } else {
+                                properties["ContainerLabel"] += $";{key}={value}";
+                            }
                             break;
                     }
                 }
@@ -200,8 +218,14 @@ internal class ContainerizeService {
             }
         }
 
-        // Save the updated project file
+        // Save the updated project file without XML declaration
         await using var stream = new FileStream(projectPath, FileMode.Create, FileAccess.Write);
-        await doc.SaveAsync(stream, SaveOptions.None, cancellationToken);
+        using var writer = XmlWriter.Create(stream, new XmlWriterSettings {
+            Indent = true,
+            OmitXmlDeclaration = true,
+            Encoding = System.Text.Encoding.UTF8,
+            Async = true
+        });
+        await doc.SaveAsync(writer, cancellationToken);
     }
 }
