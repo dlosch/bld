@@ -32,21 +32,41 @@ internal class TfmService {
         
         _console.WriteInfo($"Migrating projects from {fromTfm} to {toTfm}...");
 
-        var errorSink = new ErrorSink(_console);
-        var slnScanner = new SlnScanner(_options, errorSink);
-        var slnParser = new SlnParser(_console, errorSink);
-
         var projectsToMigrate = new List<ProjectMigrationInfo>();
 
-        await foreach (var slnPath in slnScanner.Enumerate(rootPath)) {
-            _console.WriteVerbose($"Processing solution: {slnPath}");
+        // Check if the root path is a direct .csproj file
+        if (File.Exists(rootPath) && Path.GetExtension(rootPath).Equals(".csproj", StringComparison.OrdinalIgnoreCase)) {
+            _console.WriteVerbose($"Processing direct project file: {rootPath}");
+            var migrationInfo = await AnalyzeProjectForMigrationAsync(rootPath, fromTfm, toTfm, cancellationToken);
             
-            await foreach (var projCfg in slnParser.ParseSolution(slnPath)) {
-                var projectPath = projCfg.Path;
-                var migrationInfo = await AnalyzeProjectForMigrationAsync(projectPath, fromTfm, toTfm, cancellationToken);
+            if (migrationInfo != null) {
+                projectsToMigrate.Add(migrationInfo);
+            }
+        } else {
+            // Use the existing solution-based logic
+            var errorSink = new ErrorSink(_console);
+            var slnScanner = new SlnScanner(_options, errorSink);
+            var slnParser = new SlnParser(_console, errorSink);
+            var processedProjects = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            await foreach (var slnPath in slnScanner.Enumerate(rootPath)) {
+                _console.WriteVerbose($"Processing solution: {slnPath}");
                 
-                if (migrationInfo != null) {
-                    projectsToMigrate.Add(migrationInfo);
+                await foreach (var projCfg in slnParser.ParseSolution(slnPath)) {
+                    var projectPath = projCfg.Path;
+                    
+                    // Skip if we've already processed this project (due to multiple configurations)
+                    if (processedProjects.Contains(projectPath)) {
+                        continue;
+                    }
+                    
+                    processedProjects.Add(projectPath);
+                    
+                    var migrationInfo = await AnalyzeProjectForMigrationAsync(projectPath, fromTfm, toTfm, cancellationToken);
+                    
+                    if (migrationInfo != null) {
+                        projectsToMigrate.Add(migrationInfo);
+                    }
                 }
             }
         }
@@ -497,27 +517,6 @@ internal class TfmService {
 
         tfm = tfm.ToLowerInvariant();
 
-        // .NET Framework (net4x, net48, etc.)
-        if (tfm.StartsWith("net") && tfm.Length >= 4 && char.IsDigit(tfm[3])) {
-            type = TfmType.DotNetFramework;
-            // Extract version from patterns like net48, net472, etc.
-            var versionStr = tfm.Substring(3);
-            if (versionStr.Length == 2) {
-                // net48 -> 4.8
-                if (Version.TryParse($"{versionStr[0]}.{versionStr[1]}", out var parsedVersion)) {
-                    version = parsedVersion;
-                    return true;
-                }
-            } else if (versionStr.Length == 3) {
-                // net472 -> 4.7.2
-                if (Version.TryParse($"{versionStr[0]}.{versionStr[1]}.{versionStr[2]}", out var parsedVersion)) {
-                    version = parsedVersion;
-                    return true;
-                }
-            }
-            return false;
-        }
-
         // .NET Standard
         if (tfm.StartsWith("netstandard")) {
             type = TfmType.DotNetStandard;
@@ -540,14 +539,42 @@ internal class TfmService {
             return false;
         }
 
-        // .NET (5.0+)
+        // .NET (5.0+) and .NET Framework patterns - both start with "net"
         if (tfm.StartsWith("net") && tfm.Length > 3) {
             var versionStr = tfm.Substring(3);
-            // Check if it's a valid .NET version (net5.0, net6.0, etc.)
-            if (Version.TryParse(versionStr, out var parsedVersion) && parsedVersion.Major >= 5) {
-                type = TfmType.DotNet;
-                version = parsedVersion;
-                return true;
+            
+            // Try to parse as a full version (e.g., "8.0" from "net8.0")
+            if (Version.TryParse(versionStr, out var parsedVersion)) {
+                if (parsedVersion.Major >= 5) {
+                    // .NET (5.0+)
+                    type = TfmType.DotNet;
+                    version = parsedVersion;
+                    return true;
+                } else if (parsedVersion.Major == 4) {
+                    // .NET Framework with full version (rare but possible)
+                    type = TfmType.DotNetFramework;
+                    version = parsedVersion;
+                    return true;
+                }
+            }
+            
+            // .NET Framework legacy patterns (net48, net472, etc.)
+            if (versionStr.Length >= 2 && versionStr.Length <= 3 && versionStr.All(char.IsDigit)) {
+                if (versionStr.Length == 2) {
+                    // net48 -> 4.8
+                    if (Version.TryParse($"4.{versionStr[1]}", out var legacyVersion)) {
+                        type = TfmType.DotNetFramework;
+                        version = legacyVersion;
+                        return true;
+                    }
+                } else if (versionStr.Length == 3) {
+                    // net472 -> 4.7.2
+                    if (Version.TryParse($"4.{versionStr[1]}.{versionStr[2]}", out var legacyVersion)) {
+                        type = TfmType.DotNetFramework;
+                        version = legacyVersion;
+                        return true;
+                    }
+                }
             }
         }
 
