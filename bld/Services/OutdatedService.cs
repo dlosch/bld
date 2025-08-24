@@ -24,7 +24,7 @@ internal class OutdatedService {
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    public async Task<int> CheckOutdatedPackagesAsync(string rootPath, bool updatePackages, bool skipTfmCheck, CancellationToken cancellationToken) {
+    public async Task<int> CheckOutdatedPackagesAsync(string rootPath, bool updatePackages, bool skipTfmCheck, bool includePrerelease, CancellationToken cancellationToken) {
         // Initialize MSBuild before any Microsoft.Build.* types are loaded
         MSBuildInitializer.Initialize(_console, _options);
         
@@ -131,19 +131,21 @@ internal class OutdatedService {
                             // Find the latest compatible version
                             var compatibleVersions = new List<IPackageSearchMetadata>();
                             
-                            foreach (var meta in metadata.Where(m => !m.Identity.Version.IsPrerelease).OrderByDescending(m => m.Identity.Version)) {
+                            var versionFilter = includePrerelease ? 
+                                metadata.OrderByDescending(m => m.Identity.Version) :
+                                metadata.Where(m => !m.Identity.Version.IsPrerelease).OrderByDescending(m => m.Identity.Version);
+                            
+                            foreach (var meta in versionFilter) {
                                 bool isCompatible = true;
                                 
                                 if (!skipTfmCheck && targetFramework != null) {
                                     try {
-                                        // For now, we'll do a basic compatibility check based on framework version
-                                        // This is a simplified approach - full compatibility checking would require 
-                                        // downloading and analyzing the package
-                                        var packageTfm = meta.Identity.Version;
-                                        isCompatible = true; // Assume compatible for now
+                                        // Check compatibility using basic framework version rules
+                                        isCompatible = await IsPackageCompatibleWithFrameworkAsync(meta, targetFramework, packageId, cancellationToken);
                                     }
-                                    catch {
-                                        // If we can't determine compatibility, assume it's compatible
+                                    catch (Exception ex) {
+                                        _console.WriteVerbose($"Failed to check compatibility for {packageId} {meta.Identity.Version}: {ex.Message}");
+                                        // If we can't determine compatibility, assume it's compatible to avoid blocking updates
                                         isCompatible = true;
                                     }
                                 }
@@ -447,5 +449,84 @@ internal class OutdatedService {
             Log(message);
             return Task.CompletedTask;
         }
+    }
+
+    private Task<bool> IsPackageCompatibleWithFrameworkAsync(IPackageSearchMetadata packageMetadata, NuGetFramework targetFramework, string packageId, CancellationToken cancellationToken) {
+        try {
+            // For basic compatibility checking, we'll use framework version rules
+            // This is a simplified approach that covers the most common scenarios
+            
+            var packageVersion = packageMetadata.Identity.Version;
+            
+            // Special handling for common Microsoft packages that have specific framework requirements
+            if (packageId.StartsWith("Microsoft.AspNetCore") || packageId.StartsWith("Microsoft.Extensions")) {
+                // ASP.NET Core and Extensions packages often have strict framework requirements
+                
+                // Version 9.x requires .NET 9.0 or higher
+                if (packageVersion.Major >= 9) {
+                    var net9 = NuGetFramework.Parse("net9.0");
+                    return Task.FromResult(IsFrameworkCompatible(targetFramework, net9));
+                }
+                
+                // Version 8.x requires .NET 8.0 or higher  
+                if (packageVersion.Major >= 8) {
+                    var net8 = NuGetFramework.Parse("net8.0");
+                    return Task.FromResult(IsFrameworkCompatible(targetFramework, net8));
+                }
+                
+                // Version 7.x requires .NET 7.0 or higher
+                if (packageVersion.Major >= 7) {
+                    var net7 = NuGetFramework.Parse("net7.0");
+                    return Task.FromResult(IsFrameworkCompatible(targetFramework, net7));
+                }
+                
+                // Version 6.x requires .NET 6.0 or higher
+                if (packageVersion.Major >= 6) {
+                    var net6 = NuGetFramework.Parse("net6.0");
+                    return Task.FromResult(IsFrameworkCompatible(targetFramework, net6));
+                }
+            }
+            
+            // For other packages, we'll be more permissive and assume compatibility
+            // unless we have specific knowledge about incompatibility
+            
+            // If the target framework is older than .NET 5.0, be more restrictive
+            if (targetFramework.Framework == ".NETCoreApp" && targetFramework.Version < new Version(5, 0)) {
+                // For .NET Core 3.1 and earlier, limit to packages that are known to be compatible
+                if (packageVersion.Major > 5) {
+                    return Task.FromResult(false); // Newer packages likely require newer frameworks
+                }
+            }
+            
+            return Task.FromResult(true); // Default to compatible
+        }
+        catch (Exception ex) {
+            _console.WriteVerbose($"Error checking compatibility for {packageId}: {ex.Message}");
+            return Task.FromResult(true); // Default to compatible when in doubt
+        }
+    }
+
+    private bool IsFrameworkCompatible(NuGetFramework currentFramework, NuGetFramework requiredFramework) {
+        // Check if current framework is compatible with or higher than required framework
+        if (currentFramework.Framework != requiredFramework.Framework) {
+            return false;
+        }
+        
+        // For .NET Core/.NET 5+ compatibility
+        if (currentFramework.Framework == ".NETCoreApp") {
+            return currentFramework.Version >= requiredFramework.Version;
+        }
+        
+        // For .NET Framework compatibility 
+        if (currentFramework.Framework == ".NETFramework") {
+            return currentFramework.Version >= requiredFramework.Version;
+        }
+        
+        // For .NET Standard compatibility (more complex, simplified here)
+        if (currentFramework.Framework == ".NETStandard") {
+            return currentFramework.Version >= requiredFramework.Version;
+        }
+        
+        return true; // Default to compatible for unknown frameworks
     }
 }

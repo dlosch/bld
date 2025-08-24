@@ -228,7 +228,10 @@ internal class CleanupService {
 
     private async Task<int> RemoveRedundantReferencesAsync(string projectPath, List<RedundantReferenceInfo> redundantRefs, CancellationToken cancellationToken) {
         try {
-            var doc = await XDocument.LoadAsync(File.OpenRead(projectPath), LoadOptions.PreserveWhitespace, cancellationToken);
+            XDocument doc;
+            using (var readStream = File.OpenRead(projectPath)) {
+                doc = await XDocument.LoadAsync(readStream, LoadOptions.PreserveWhitespace, cancellationToken);
+            }
             var removedCount = 0;
 
             foreach (var redundantRef in redundantRefs) {

@@ -90,52 +90,48 @@ internal class SbomService {
         _console.WriteInfo("Generating SPDX SBOM...");
 
         try {
-            // Create a comprehensive SPDX SBOM document
-            var sbomContent = new List<string> {
-                "SPDXVersion: SPDX-2.3",
-                "DataLicense: CC0-1.0",
-                "SPDXID: SPDXRef-DOCUMENT",
-                $"Name: {Path.GetFileName(Path.GetFullPath(outputPath))}-SBOM",
-                $"DocumentNamespace: https://bld.tool/sbom/{Guid.NewGuid()}",
-                $"Creator: Tool: bld-0.1.1",
-                $"Created: {DateTime.UtcNow:yyyy-MM-ddTHH:mm:ssZ}",
-                "",
-                "# Package Information",
-                ""
+            // Create a comprehensive SPDX SBOM document in JSON format
+            var sbom = new {
+                spdxVersion = "SPDX-2.3",
+                dataLicense = "CC0-1.0",
+                SPDXID = "SPDXRef-DOCUMENT",
+                name = $"{Path.GetFileName(Path.GetFullPath(outputPath))}-SBOM",
+                documentNamespace = $"https://bld.tool/sbom/{Guid.NewGuid()}",
+                creationInfo = new {
+                    created = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ"),
+                    creators = new[] { "Tool: bld-0.1.1" }
+                },
+                packages = new object[] { }
+                    .Concat(projects.Select(project => new {
+                        SPDXID = $"SPDXRef-{project.Name.Replace(" ", "-").Replace(".", "-")}",
+                        name = project.Name,
+                        downloadLocation = "NOASSERTION",
+                        filesAnalyzed = false,
+                        licenseConcluded = "NOASSERTION",
+                        licenseDeclared = "NOASSERTION",
+                        copyrightText = "NOASSERTION",
+                        comment = $"Project Path: {project.Path}, Target Framework: {project.TargetFramework}" + 
+                                 (!string.IsNullOrEmpty(project.PackageId) ? $", Package ID: {project.PackageId}" : "")
+                    }))
+                    .Concat(packages.OrderBy(p => p.Id).Select(package => new {
+                        SPDXID = $"SPDXRef-{package.Id.Replace(".", "-")}",
+                        name = package.Id,
+                        downloadLocation = $"https://www.nuget.org/packages/{package.Id}/{package.Version}",
+                        filesAnalyzed = false,
+                        licenseConcluded = "NOASSERTION",
+                        licenseDeclared = "NOASSERTION",
+                        copyrightText = "NOASSERTION",
+                        comment = $"Version: {package.Version}"
+                    })).ToArray()
             };
 
-            // Add projects as packages
-            foreach (var project in projects) {
-                sbomContent.Add($"PackageName: {project.Name}");
-                sbomContent.Add($"SPDXID: SPDXRef-{project.Name.Replace(" ", "-").Replace(".", "-")}");
-                sbomContent.Add($"PackageDownloadLocation: NOASSERTION");
-                sbomContent.Add($"FilesAnalyzed: false");
-                sbomContent.Add($"PackageLicenseConcluded: NOASSERTION");
-                sbomContent.Add($"PackageLicenseDeclared: NOASSERTION");
-                sbomContent.Add($"PackageCopyrightText: NOASSERTION");
-                sbomContent.Add($"# Project Path: {project.Path}");
-                sbomContent.Add($"# Target Framework: {project.TargetFramework}");
-                if (!string.IsNullOrEmpty(project.PackageId)) {
-                    sbomContent.Add($"# Package ID: {project.PackageId}");
-                }
-                sbomContent.Add("");
-            }
+            var json = JsonSerializer.Serialize(sbom, new JsonSerializerOptions {
+                WriteIndented = true,
+                PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+            });
 
-            // Add NuGet packages
-            foreach (var package in packages.OrderBy(p => p.Id)) {
-                sbomContent.Add($"PackageName: {package.Id}");
-                sbomContent.Add($"SPDXID: SPDXRef-{package.Id.Replace(".", "-")}");
-                sbomContent.Add($"PackageVersion: {package.Version}");
-                sbomContent.Add($"PackageDownloadLocation: https://www.nuget.org/packages/{package.Id}/{package.Version}");
-                sbomContent.Add($"FilesAnalyzed: false");
-                sbomContent.Add($"PackageLicenseConcluded: NOASSERTION");
-                sbomContent.Add($"PackageLicenseDeclared: NOASSERTION");
-                sbomContent.Add($"PackageCopyrightText: NOASSERTION");
-                sbomContent.Add("");
-            }
-
-            var spdxPath = Path.Combine(outputPath, "spdx-sbom.spdx");
-            await File.WriteAllLinesAsync(spdxPath, sbomContent, cancellationToken);
+            var spdxPath = Path.Combine(outputPath, "spdx-sbom.json");
+            await File.WriteAllTextAsync(spdxPath, json, cancellationToken);
 
             _console.WriteInfo($"SPDX SBOM generated successfully at: {spdxPath}");
         }
