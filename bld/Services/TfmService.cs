@@ -157,23 +157,32 @@ internal class TfmService {
 
     private async Task<ProjectMigrationInfo?> AnalyzeProjectForMigrationAsync(string projectPath, string fromTfm, string toTfm, CancellationToken cancellationToken) {
         try {
-            using var stream = File.OpenRead(projectPath);
-            var doc = await XDocument.LoadAsync(stream, LoadOptions.None, cancellationToken);
+            // Use ProjParser to load project properties (this handles variable evaluation)
+            var errorSink = new ErrorSink(_console);
+            var projParser = new ProjParser(_console, errorSink, _options);
+            var proj = new Proj(projectPath, null);
+            var projCfg = new ProjCfg(proj, null, null); // No specific configuration
+            
+            var projectInfo = projParser.LoadProject(projCfg, Array.Empty<string>());
+            if (projectInfo == null) {
+                _console.WriteWarning($"Failed to load project {Path.GetFileName(projectPath)}");
+                return null;
+            }
 
-            // Check TargetFramework and TargetFrameworks
-            var targetFrameworkElement = doc.Descendants("TargetFramework").FirstOrDefault();
-            var targetFrameworksElement = doc.Descendants("TargetFrameworks").FirstOrDefault();
+            // Check if both TargetFramework and TargetFrameworks exist
+            bool hasTargetFramework = !string.IsNullOrEmpty(projectInfo.TargetFramework);
+            bool hasTargetFrameworks = projectInfo.TargetFrameworks.Count > 0;
 
             // Warn if both exist
-            if (targetFrameworkElement != null && targetFrameworksElement != null) {
+            if (hasTargetFramework && hasTargetFrameworks) {
                 _console.WriteWarning($"Project {Path.GetFileName(projectPath)} has both TargetFramework and TargetFrameworks. Using TargetFramework value as source.");
             }
 
             // Case A: TargetFramework specified (single target framework) and no TargetFrameworks
-            if (targetFrameworkElement != null && !string.IsNullOrEmpty(targetFrameworkElement.Value) && targetFrameworksElement == null) {
-                var tfmValue = targetFrameworkElement.Value.Trim();
+            if (hasTargetFramework && !hasTargetFrameworks) {
+                var tfmValue = projectInfo.TargetFramework!.Trim();
                 
-                // Skip if it contains variables (like $(TargetFramework) or $(SomeProperty))
+                // Skip if it contains variables (variables that weren't resolved would still contain $())
                 if (tfmValue.Contains("$(") && tfmValue.Contains(")")) {
                     _console.WriteVerbose($"Skipping {Path.GetFileName(projectPath)} - TargetFramework contains variable: {tfmValue}");
                     return null;
@@ -188,8 +197,8 @@ internal class TfmService {
                     return null;
                 }
 
-                // Extract package references
-                var packageReferences = await ExtractPackageReferencesAsync(doc, projectPath);
+                // Extract package references using XML parsing (as allowed by the comment)
+                var packageReferences = await ExtractPackageReferencesAsync(projectPath);
 
                 return new ProjectMigrationInfo {
                     ProjectPath = projectPath,
@@ -201,8 +210,8 @@ internal class TfmService {
             }
 
             // Case A with both: TargetFramework specified and TargetFrameworks exists - use TargetFramework as from
-            if (targetFrameworkElement != null && !string.IsNullOrEmpty(targetFrameworkElement.Value) && targetFrameworksElement != null) {
-                var tfmValue = targetFrameworkElement.Value.Trim();
+            if (hasTargetFramework && hasTargetFrameworks) {
+                var tfmValue = projectInfo.TargetFramework!.Trim();
                 
                 // Skip if it contains variables
                 if (tfmValue.Contains("$(") && tfmValue.Contains(")")) {
@@ -212,8 +221,7 @@ internal class TfmService {
 
                 // Treat TargetFramework as the "from" value and apply TargetFrameworks logic
                 var effectiveFromTfm = string.IsNullOrEmpty(fromTfm) ? tfmValue : fromTfm;
-                var tfmsValue = targetFrameworksElement.Value;
-                var tfms = tfmsValue.Split(';').Select(t => t.Trim()).Where(t => !string.IsNullOrEmpty(t)).ToList();
+                var tfms = projectInfo.TargetFrameworks.ToList();
 
                 // For TargetFrameworks, determine which ones should be updated
                 var tfmsToUpdate = new List<string>();
@@ -238,8 +246,9 @@ internal class TfmService {
                     return null;
                 }
 
-                // Extract package references
-                var packageReferences = await ExtractPackageReferencesAsync(doc, projectPath);
+                // Extract package references using XML parsing (as allowed by the comment)
+                var packageReferences = await ExtractPackageReferencesAsync(projectPath);
+                var tfmsValue = string.Join(";", tfms);
 
                 return new ProjectMigrationInfo {
                     ProjectPath = projectPath,
@@ -251,9 +260,8 @@ internal class TfmService {
             }
 
             // Case B: TargetFrameworks specified (multiple target frameworks)
-            if (targetFrameworksElement != null && !string.IsNullOrEmpty(targetFrameworksElement.Value)) {
-                var tfmsValue = targetFrameworksElement.Value;
-                var tfms = tfmsValue.Split(';').Select(t => t.Trim()).Where(t => !string.IsNullOrEmpty(t)).ToList();
+            if (hasTargetFrameworks) {
+                var tfms = projectInfo.TargetFrameworks.ToList();
 
                 // For TargetFrameworks, determine which ones should be updated
                 var tfmsToUpdate = new List<string>();
@@ -278,8 +286,9 @@ internal class TfmService {
                     return null;
                 }
 
-                // Extract package references
-                var packageReferences = await ExtractPackageReferencesAsync(doc, projectPath);
+                // Extract package references using XML parsing (as allowed by the comment)
+                var packageReferences = await ExtractPackageReferencesAsync(projectPath);
+                var tfmsValue = string.Join(";", tfms);
 
                 return new ProjectMigrationInfo {
                     ProjectPath = projectPath,
@@ -454,22 +463,30 @@ internal class TfmService {
         }
     }
 
-    private async Task<List<PackageInfo>> ExtractPackageReferencesAsync(XDocument doc, string projectPath) {
+    private async Task<List<PackageInfo>> ExtractPackageReferencesAsync(string projectPath) {
         var packageReferences = new List<PackageInfo>();
-        var packageRefElements = doc.Descendants("PackageReference");
+        
+        try {
+            using var stream = File.OpenRead(projectPath);
+            var doc = await XDocument.LoadAsync(stream, LoadOptions.None, default);
+            var packageRefElements = doc.Descendants("PackageReference");
 
-        foreach (var element in packageRefElements) {
-            var include = element.Attribute("Include")?.Value;
-            var version = element.Attribute("Version")?.Value ?? 
-                         element.Element("Version")?.Value;
+            foreach (var element in packageRefElements) {
+                var include = element.Attribute("Include")?.Value;
+                var version = element.Attribute("Version")?.Value ?? 
+                             element.Element("Version")?.Value;
 
-            if (!string.IsNullOrEmpty(include) && !string.IsNullOrEmpty(version)) {
-                packageReferences.Add(new PackageInfo {
-                    Id = include,
-                    Version = version,
-                    ProjectPath = projectPath
-                });
+                if (!string.IsNullOrEmpty(include) && !string.IsNullOrEmpty(version)) {
+                    packageReferences.Add(new PackageInfo {
+                        Id = include,
+                        Version = version,
+                        ProjectPath = projectPath
+                    });
+                }
             }
+        }
+        catch (Exception ex) {
+            _console.WriteWarning($"Failed to extract package references from {projectPath}: {ex.Message}");
         }
 
         return packageReferences;

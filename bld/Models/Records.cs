@@ -9,7 +9,7 @@ record class Proj(string Path, Sln? Parent) {
     public string Dir => System.IO.Path.GetDirectoryName(Path) ?? throw new InvalidOperationException($"Cannot get directory for {Path}");
 }
 
-record class ProjCfg(Proj Proj, string Configuration, string? Platform = default) {
+record class ProjCfg(Proj Proj, string? Configuration, string? Platform = default) {
     public string Path => Proj.Path;
     public string ProjDir => Proj.Dir;
 }

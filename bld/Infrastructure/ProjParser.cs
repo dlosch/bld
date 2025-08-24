@@ -25,13 +25,15 @@ internal sealed class ProjParser(IConsoleOutput Console, ErrorSink ErrorSink, Cl
 
     internal ProjectInfo? LoadProject(ProjCfg proj, string[] propertyNames) {
         string projectPath = proj.Path;
-        string configuration = proj.Configuration;
+        string? configuration = proj.Configuration;
 
         using (var projectCollection = new ProjectCollection()) {
             var project = default(Project);
 
             var properties = new Dictionary<string, string>(GlobalProperties);
-            properties["Configuration"] = configuration;
+            if (!string.IsNullOrEmpty(configuration)) {
+                properties["Configuration"] = configuration;
+            }
             try {
                 project = new Project(projectPath, properties, null, projectCollection);
             }

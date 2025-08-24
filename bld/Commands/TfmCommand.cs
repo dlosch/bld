@@ -98,48 +98,95 @@ internal sealed class TfmCommand : BaseCommand {
             MSBuildInitializer.Initialize(Console, tempOptions);
             
             var errorSink = new ErrorSink(Console);
-            var slnScanner = new SlnScanner(tempOptions, errorSink);
-            var slnParser = new SlnParser(Console, errorSink);
+            var projParser = new ProjParser(Console, errorSink, tempOptions);
 
             var targetFrameworks = new List<string>();
 
-            await foreach (var slnPath in slnScanner.Enumerate(rootPath)) {
-                await foreach (var projCfg in slnParser.ParseSolution(slnPath)) {
-                    try {
-                        using var stream = File.OpenRead(projCfg.Path);
-                        var doc = await XDocument.LoadAsync(stream, LoadOptions.None, default);
+            // Check if the root path is a direct .csproj file
+            if (File.Exists(rootPath) && Path.GetExtension(rootPath).Equals(".csproj", StringComparison.OrdinalIgnoreCase)) {
+                try {
+                    var proj = new Proj(rootPath, null);
+                    var projCfg = new ProjCfg(proj, null, null); // No specific configuration
+                    var projectInfo = projParser.LoadProject(projCfg, Array.Empty<string>());
+                    
+                    if (projectInfo == null) {
+                        Console.WriteVerbose($"Could not load project {rootPath}");
+                        return null;
+                    }
 
-                        // Check TargetFramework first (single framework)
-                        var targetFrameworkElement = doc.Descendants("TargetFramework").FirstOrDefault();
-                        if (targetFrameworkElement != null && !string.IsNullOrEmpty(targetFrameworkElement.Value)) {
-                            targetFrameworks.Add(targetFrameworkElement.Value.Trim());
-                        } else {
-                            // If TargetFrameworks exists (multiple), we can't auto-detect
-                            var targetFrameworksElement = doc.Descendants("TargetFrameworks").FirstOrDefault();
-                            if (targetFrameworksElement != null && !string.IsNullOrEmpty(targetFrameworksElement.Value)) {
-                                Console.WriteVerbose($"Project {Path.GetFileName(projCfg.Path)} has multiple TargetFrameworks: {targetFrameworksElement.Value}");
+                    // Check TargetFramework first (single framework)
+                    if (!string.IsNullOrEmpty(projectInfo.TargetFramework)) {
+                        // Skip if it contains variables (variables that weren't resolved would still contain $())
+                        if (projectInfo.TargetFramework.Contains("$(") && projectInfo.TargetFramework.Contains(")")) {
+                            Console.WriteVerbose($"Skipping {Path.GetFileName(rootPath)} - TargetFramework contains unresolved variable: {projectInfo.TargetFramework}");
+                            return null;
+                        }
+                        return projectInfo.TargetFramework.Trim();
+                    } else if (projectInfo.TargetFrameworks.Count > 0) {
+                        // If TargetFrameworks exists (multiple), we can't auto-detect
+                        var tfmsValue = string.Join(";", projectInfo.TargetFrameworks);
+                        Console.WriteVerbose($"Project {Path.GetFileName(rootPath)} has multiple TargetFrameworks: {tfmsValue}");
+                        return null; // Require explicit --from when TargetFrameworks is used
+                    }
+                }
+                catch (Exception ex) {
+                    Console.WriteVerbose($"Could not read {rootPath}: {ex.Message}");
+                    return null;
+                }
+            } else {
+                // Use the existing solution-based logic
+                var slnScanner = new SlnScanner(tempOptions, errorSink);
+                var slnParser = new SlnParser(Console, errorSink);
+
+                await foreach (var slnPath in slnScanner.Enumerate(rootPath)) {
+                    await foreach (var projCfg in slnParser.ParseSolution(slnPath)) {
+                        try {
+                            // Create a ProjCfg without specific Configuration to load project properties
+                            var projForLoading = new ProjCfg(projCfg.Proj, null, projCfg.Platform);
+                            var projectInfo = projParser.LoadProject(projForLoading, Array.Empty<string>());
+                            
+                            if (projectInfo == null) {
+                                Console.WriteVerbose($"Could not load project {projCfg.Path}");
+                                continue;
+                            }
+
+                            // Check TargetFramework first (single framework)
+                            if (!string.IsNullOrEmpty(projectInfo.TargetFramework)) {
+                                // Skip if it contains variables (variables are already evaluated by MSBuild)
+                                // But check if the result looks like a variable that wasn't resolved
+                                if (projectInfo.TargetFramework.Contains("$(") && projectInfo.TargetFramework.Contains(")")) {
+                                    Console.WriteVerbose($"Skipping {Path.GetFileName(projCfg.Path)} - TargetFramework contains unresolved variable: {projectInfo.TargetFramework}");
+                                    continue;
+                                }
+                                targetFrameworks.Add(projectInfo.TargetFramework.Trim());
+                            } else if (projectInfo.TargetFrameworks.Count > 0) {
+                                // If TargetFrameworks exists (multiple), we can't auto-detect
+                                var tfmsValue = string.Join(";", projectInfo.TargetFrameworks);
+                                Console.WriteVerbose($"Project {Path.GetFileName(projCfg.Path)} has multiple TargetFrameworks: {tfmsValue}");
                                 return null; // Require explicit --from when TargetFrameworks is used
                             }
                         }
-                    }
-                    catch (Exception ex) {
-                        Console.WriteVerbose($"Could not read {projCfg.Path}: {ex.Message}");
+                        catch (Exception ex) {
+                            Console.WriteVerbose($"Could not read {projCfg.Path}: {ex.Message}");
+                        }
                     }
                 }
+
+                if (targetFrameworks.Count == 0) {
+                    return null;
+                }
+
+                // Check if all projects use the same target framework
+                var distinctFrameworks = targetFrameworks.Distinct().ToList();
+                if (distinctFrameworks.Count == 1) {
+                    return distinctFrameworks[0];
+                }
+
+                Console.WriteVerbose($"Found multiple target frameworks: {string.Join(", ", distinctFrameworks)}");
+                return null; // Multiple different frameworks found
             }
 
-            if (targetFrameworks.Count == 0) {
-                return null;
-            }
-
-            // Check if all projects use the same target framework
-            var distinctFrameworks = targetFrameworks.Distinct().ToList();
-            if (distinctFrameworks.Count == 1) {
-                return distinctFrameworks[0];
-            }
-
-            Console.WriteVerbose($"Found multiple target frameworks: {string.Join(", ", distinctFrameworks)}");
-            return null; // Multiple different frameworks found
+            return null;
         }
         catch (Exception ex) {
             Console.WriteVerbose($"Error detecting source framework: {ex.Message}");
