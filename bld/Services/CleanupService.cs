@@ -93,7 +93,7 @@ internal class CleanupService {
             
             _console.WriteInfo($"Removed {removedCount} redundant package references total");
         } else {
-            _console.WriteInfo("\nUse --remove to apply these changes.");
+            _console.WriteInfo("\nUse --update to apply these changes.");
         }
 
         return 0;

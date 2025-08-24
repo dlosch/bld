@@ -3,13 +3,14 @@ using bld.Models;
 using bld.Services;
 using System.CommandLine;
 using System.CommandLine.Parsing;
+using System.Xml.Linq;
 
 namespace bld.Commands;
 
 internal sealed class TfmCommand : BaseCommand {
 
     private readonly Option<string> _fromOption = new Option<string>("--from") {
-        Description = "Source target framework (e.g., net8.0)."
+        Description = "Source target framework (e.g., net8.0). If not specified, will be auto-detected from project files."
     };
 
     private readonly Option<string> _toOption = new Option<string>("--to") {
@@ -57,11 +58,6 @@ internal sealed class TfmCommand : BaseCommand {
         var to = parseResult.GetValue(_toOption);
         var apply = parseResult.GetValue(_updateOption);
 
-        if (string.IsNullOrEmpty(from)) {
-            Console.WriteError("The --from parameter is required.");
-            return 1;
-        }
-
         // Auto-detect highest SDK version if --to is not specified
         if (string.IsNullOrEmpty(to)) {
             to = await DetectHighestSdkVersionAsync();
@@ -70,6 +66,16 @@ internal sealed class TfmCommand : BaseCommand {
                 return 1;
             }
             Console.WriteInfo($"Auto-detected target framework: {to}");
+        }
+
+        // Auto-detect --from if not specified
+        if (string.IsNullOrEmpty(from)) {
+            from = await DetectSourceFrameworkAsync(rootPath);
+            if (string.IsNullOrEmpty(from)) {
+                Console.WriteError("Could not auto-detect source framework. Projects have multiple TargetFrameworks or no consistent TargetFramework. Please specify --from parameter.");
+                return 1;
+            }
+            Console.WriteInfo($"Auto-detected source framework: {from}");
         }
 
         Console.WriteInfo($"Migrating projects from {from} to {to} in: {rootPath}");
@@ -82,6 +88,62 @@ internal sealed class TfmCommand : BaseCommand {
         catch (Exception ex) {
             Console.WriteError($"Error migrating target frameworks: {ex.Message}");
             return 1;
+        }
+    }
+
+    private async Task<string?> DetectSourceFrameworkAsync(string rootPath) {
+        try {
+            // Initialize MSBuild first for SlnScanner/SlnParser
+            var tempOptions = new CleaningOptions();
+            MSBuildInitializer.Initialize(Console, tempOptions);
+            
+            var errorSink = new ErrorSink(Console);
+            var slnScanner = new SlnScanner(tempOptions, errorSink);
+            var slnParser = new SlnParser(Console, errorSink);
+
+            var targetFrameworks = new List<string>();
+
+            await foreach (var slnPath in slnScanner.Enumerate(rootPath)) {
+                await foreach (var projCfg in slnParser.ParseSolution(slnPath)) {
+                    try {
+                        using var stream = File.OpenRead(projCfg.Path);
+                        var doc = await XDocument.LoadAsync(stream, LoadOptions.None, default);
+
+                        // Check TargetFramework first (single framework)
+                        var targetFrameworkElement = doc.Descendants("TargetFramework").FirstOrDefault();
+                        if (targetFrameworkElement != null && !string.IsNullOrEmpty(targetFrameworkElement.Value)) {
+                            targetFrameworks.Add(targetFrameworkElement.Value.Trim());
+                        } else {
+                            // If TargetFrameworks exists (multiple), we can't auto-detect
+                            var targetFrameworksElement = doc.Descendants("TargetFrameworks").FirstOrDefault();
+                            if (targetFrameworksElement != null && !string.IsNullOrEmpty(targetFrameworksElement.Value)) {
+                                Console.WriteVerbose($"Project {Path.GetFileName(projCfg.Path)} has multiple TargetFrameworks: {targetFrameworksElement.Value}");
+                                return null; // Require explicit --from when TargetFrameworks is used
+                            }
+                        }
+                    }
+                    catch (Exception ex) {
+                        Console.WriteVerbose($"Could not read {projCfg.Path}: {ex.Message}");
+                    }
+                }
+            }
+
+            if (targetFrameworks.Count == 0) {
+                return null;
+            }
+
+            // Check if all projects use the same target framework
+            var distinctFrameworks = targetFrameworks.Distinct().ToList();
+            if (distinctFrameworks.Count == 1) {
+                return distinctFrameworks[0];
+            }
+
+            Console.WriteVerbose($"Found multiple target frameworks: {string.Join(", ", distinctFrameworks)}");
+            return null; // Multiple different frameworks found
+        }
+        catch (Exception ex) {
+            Console.WriteVerbose($"Error detecting source framework: {ex.Message}");
+            return null;
         }
     }
 

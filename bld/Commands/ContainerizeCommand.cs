@@ -8,21 +8,15 @@ namespace bld.Commands;
 
 internal sealed class ContainerizeCommand : BaseCommand {
 
-    private readonly Option<bool> _dryRunOption = new Option<bool>("--dry-run") {
-        Description = "Show what would be changed without modifying files.",
-        DefaultValueFactory = _ => true
-    };
-
-    private readonly Option<bool> _forceOption = new Option<bool>("--force") {
-        Description = "Apply changes to project files.",
+    private readonly Option<bool> _updateOption = new Option<bool>("--update", "-u") {
+        Description = "Apply changes to project files (default is dry-run).",
         DefaultValueFactory = _ => false
     };
 
     public ContainerizeCommand(IConsoleOutput console) : base("containerize", "Parse Dockerfiles and convert to .NET SDK container build properties.", console) {
         Add(_rootOption);
         Add(_depthOption);
-        Add(_dryRunOption);
-        Add(_forceOption);
+        Add(_updateOption);
         Add(_logLevelOption);
         Add(_vsToolsPath);
         Add(_noResolveVsToolsPath);
@@ -48,19 +42,14 @@ internal sealed class ContainerizeCommand : BaseCommand {
             rootPath = Environment.CurrentDirectory;
         }
 
-        var dryRun = parseResult.GetValue(_dryRunOption);
-        var force = parseResult.GetValue(_forceOption);
-
-        if (force && dryRun) {
-            dryRun = false; // Force overrides dry-run
-        }
+        var update = parseResult.GetValue(_updateOption);
 
         Console.WriteInfo($"Containerizing projects in: {rootPath}");
-        Console.WriteInfo($"Mode: {(dryRun ? "Dry run" : "Apply changes")}");
+        Console.WriteInfo($"Mode: {(update ? "Apply changes" : "Dry run")}");
 
         try {
             var containerizeService = new ContainerizeService(Console, options);
-            await containerizeService.ContainerizeProjectsAsync(rootPath, !dryRun, cancellationToken);
+            await containerizeService.ContainerizeProjectsAsync(rootPath, update, cancellationToken);
             
             Console.WriteInfo("Containerization process completed successfully.");
             return 0;
