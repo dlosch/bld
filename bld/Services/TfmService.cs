@@ -62,9 +62,9 @@ internal class TfmService {
             // Step 1: Update target frameworks
             foreach (var project in projectsToMigrate) {
                 if (project.UsesTargetFrameworks) {
-                    await UpdateProjectTargetFrameworksWithPromptAsync(project, toTfm, cancellationToken);
+                    await UpdateProjectTargetFrameworksAsync(project, toTfm, cancellationToken);
                 } else {
-                    await UpdateProjectTargetFrameworkAsync(project.ProjectPath, fromTfm, toTfm, cancellationToken);
+                    await UpdateProjectTargetFrameworkAsync(project.ProjectPath, project.CurrentTfm, toTfm, cancellationToken);
                     _console.WriteInfo($"Updated {Path.GetFileName(project.ProjectPath)} to {toTfm}");
                 }
             }
@@ -108,7 +108,23 @@ internal class TfmService {
         } else {
             _console.WriteInfo("Dry run - showing what would be migrated:");
             foreach (var project in projectsToMigrate) {
-                _console.WriteInfo($"  {Path.GetFileName(project.ProjectPath)}: {project.CurrentTfm} → {toTfm}");
+                if (project.UsesTargetFrameworks) {
+                    var currentTfms = project.CurrentTfm.Split(';').Select(t => t.Trim()).Where(t => !string.IsNullOrEmpty(t)).ToList();
+                    var newTfms = currentTfms.Select(tfm => 
+                        project.TargetFrameworksToUpdate.Contains(tfm, StringComparer.OrdinalIgnoreCase) ? toTfm : tfm
+                    ).ToList();
+                    
+                    _console.WriteInfo($"  {Path.GetFileName(project.ProjectPath)}:");
+                    _console.WriteInfo($"    Current: {string.Join("; ", currentTfms)}");
+                    _console.WriteInfo($"    New: {string.Join("; ", newTfms)}");
+                    
+                    if (project.TargetFrameworksToUpdate.Count > 0) {
+                        _console.WriteInfo($"    Updating: {string.Join(", ", project.TargetFrameworksToUpdate)} → {toTfm}");
+                    }
+                } else {
+                    _console.WriteInfo($"  {Path.GetFileName(project.ProjectPath)}: {project.CurrentTfm} → {toTfm}");
+                }
+                
                 if (project.PackageReferences.Count > 0) {
                     _console.WriteVerbose($"    Packages: {string.Join(", ", project.PackageReferences.Select(p => $"{p.Id}@{p.Version}"))}");
                 }
@@ -128,48 +144,133 @@ internal class TfmService {
             var targetFrameworkElement = doc.Descendants("TargetFramework").FirstOrDefault();
             var targetFrameworksElement = doc.Descendants("TargetFrameworks").FirstOrDefault();
 
-            var currentTfm = targetFrameworkElement?.Value ?? targetFrameworksElement?.Value;
-            if (string.IsNullOrEmpty(currentTfm)) {
-                return null;
+            // Warn if both exist
+            if (targetFrameworkElement != null && targetFrameworksElement != null) {
+                _console.WriteWarning($"Project {Path.GetFileName(projectPath)} has both TargetFramework and TargetFrameworks. Using TargetFramework value as source.");
             }
 
-            // Check if this project uses the source TFM
-            bool matches = false;
-            if (targetFrameworkElement != null && currentTfm.Equals(fromTfm, StringComparison.OrdinalIgnoreCase)) {
-                matches = true;
-            } else if (targetFrameworksElement != null) {
-                var tfms = currentTfm.Split(';').Select(t => t.Trim());
-                matches = tfms.Any(t => t.Equals(fromTfm, StringComparison.OrdinalIgnoreCase));
-            }
-
-            if (!matches) {
-                return null;
-            }
-
-            // Extract package references
-            var packageReferences = new List<PackageInfo>();
-            var packageRefElements = doc.Descendants("PackageReference");
-
-            foreach (var element in packageRefElements) {
-                var include = element.Attribute("Include")?.Value;
-                var version = element.Attribute("Version")?.Value ?? 
-                             element.Element("Version")?.Value;
-
-                if (!string.IsNullOrEmpty(include) && !string.IsNullOrEmpty(version)) {
-                    packageReferences.Add(new PackageInfo {
-                        Id = include,
-                        Version = version,
-                        ProjectPath = projectPath
-                    });
+            // Case A: TargetFramework specified (single target framework) and no TargetFrameworks
+            if (targetFrameworkElement != null && !string.IsNullOrEmpty(targetFrameworkElement.Value) && targetFrameworksElement == null) {
+                var tfmValue = targetFrameworkElement.Value.Trim();
+                
+                // Skip if it contains variables (like $(TargetFramework) or $(SomeProperty))
+                if (tfmValue.Contains("$(") && tfmValue.Contains(")")) {
+                    _console.WriteVerbose($"Skipping {Path.GetFileName(projectPath)} - TargetFramework contains variable: {tfmValue}");
+                    return null;
                 }
+
+                // Check if it matches the from TFM (either exact match or if from wasn't specified, check if it's a predecessor)
+                bool matches = string.IsNullOrEmpty(fromTfm) ? 
+                    IsDirectPredecessor(tfmValue, toTfm) : 
+                    tfmValue.Equals(fromTfm, StringComparison.OrdinalIgnoreCase);
+
+                if (!matches) {
+                    return null;
+                }
+
+                // Extract package references
+                var packageReferences = await ExtractPackageReferencesAsync(doc, projectPath);
+
+                return new ProjectMigrationInfo {
+                    ProjectPath = projectPath,
+                    CurrentTfm = tfmValue,
+                    PackageReferences = packageReferences,
+                    UsesTargetFrameworks = false,
+                    TargetFrameworksToUpdate = new List<string>()
+                };
             }
 
-            return new ProjectMigrationInfo {
-                ProjectPath = projectPath,
-                CurrentTfm = currentTfm,
-                PackageReferences = packageReferences,
-                UsesTargetFrameworks = targetFrameworksElement != null
-            };
+            // Case A with both: TargetFramework specified and TargetFrameworks exists - use TargetFramework as from
+            if (targetFrameworkElement != null && !string.IsNullOrEmpty(targetFrameworkElement.Value) && targetFrameworksElement != null) {
+                var tfmValue = targetFrameworkElement.Value.Trim();
+                
+                // Skip if it contains variables
+                if (tfmValue.Contains("$(") && tfmValue.Contains(")")) {
+                    _console.WriteVerbose($"Skipping {Path.GetFileName(projectPath)} - TargetFramework contains variable: {tfmValue}");
+                    return null;
+                }
+
+                // Treat TargetFramework as the "from" value and apply TargetFrameworks logic
+                var effectiveFromTfm = string.IsNullOrEmpty(fromTfm) ? tfmValue : fromTfm;
+                var tfmsValue = targetFrameworksElement.Value;
+                var tfms = tfmsValue.Split(';').Select(t => t.Trim()).Where(t => !string.IsNullOrEmpty(t)).ToList();
+
+                // For TargetFrameworks, determine which ones should be updated
+                var tfmsToUpdate = new List<string>();
+                
+                if (string.IsNullOrEmpty(fromTfm)) {
+                    // No explicit from specified - find TFMs that are direct predecessors of toTfm
+                    foreach (var tfm in tfms) {
+                        if (IsDirectPredecessor(tfm, toTfm)) {
+                            tfmsToUpdate.Add(tfm);
+                        }
+                    }
+                } else {
+                    // Explicit from specified - only update exact matches that are also valid for updating
+                    foreach (var tfm in tfms) {
+                        if (tfm.Equals(fromTfm, StringComparison.OrdinalIgnoreCase) && ShouldUpdateTfm(tfm, toTfm)) {
+                            tfmsToUpdate.Add(tfm);
+                        }
+                    }
+                }
+
+                if (tfmsToUpdate.Count == 0) {
+                    return null;
+                }
+
+                // Extract package references
+                var packageReferences = await ExtractPackageReferencesAsync(doc, projectPath);
+
+                return new ProjectMigrationInfo {
+                    ProjectPath = projectPath,
+                    CurrentTfm = tfmsValue,
+                    PackageReferences = packageReferences,
+                    UsesTargetFrameworks = true,
+                    TargetFrameworksToUpdate = tfmsToUpdate
+                };
+            }
+
+            // Case B: TargetFrameworks specified (multiple target frameworks)
+            if (targetFrameworksElement != null && !string.IsNullOrEmpty(targetFrameworksElement.Value)) {
+                var tfmsValue = targetFrameworksElement.Value;
+                var tfms = tfmsValue.Split(';').Select(t => t.Trim()).Where(t => !string.IsNullOrEmpty(t)).ToList();
+
+                // For TargetFrameworks, determine which ones should be updated
+                var tfmsToUpdate = new List<string>();
+                
+                if (string.IsNullOrEmpty(fromTfm)) {
+                    // No explicit from specified - find TFMs that are direct predecessors of toTfm
+                    foreach (var tfm in tfms) {
+                        if (IsDirectPredecessor(tfm, toTfm)) {
+                            tfmsToUpdate.Add(tfm);
+                        }
+                    }
+                } else {
+                    // Explicit from specified - only update exact matches that are also valid for updating
+                    foreach (var tfm in tfms) {
+                        if (tfm.Equals(fromTfm, StringComparison.OrdinalIgnoreCase) && ShouldUpdateTfm(tfm, toTfm)) {
+                            tfmsToUpdate.Add(tfm);
+                        }
+                    }
+                }
+
+                if (tfmsToUpdate.Count == 0) {
+                    return null;
+                }
+
+                // Extract package references
+                var packageReferences = await ExtractPackageReferencesAsync(doc, projectPath);
+
+                return new ProjectMigrationInfo {
+                    ProjectPath = projectPath,
+                    CurrentTfm = tfmsValue,
+                    PackageReferences = packageReferences,
+                    UsesTargetFrameworks = true,
+                    TargetFrameworksToUpdate = tfmsToUpdate
+                };
+            }
+
+            return null;
         }
         catch (Exception ex) {
             _console.WriteWarning($"Failed to analyze {projectPath}: {ex.Message}");
@@ -185,18 +286,9 @@ internal class TfmService {
             }
 
             var targetFrameworkElement = doc.Descendants("TargetFramework").FirstOrDefault();
-            var targetFrameworksElement = doc.Descendants("TargetFrameworks").FirstOrDefault();
-
+            
             if (targetFrameworkElement != null && targetFrameworkElement.Value.Equals(fromTfm, StringComparison.OrdinalIgnoreCase)) {
                 targetFrameworkElement.Value = toTfm;
-            } else if (targetFrameworksElement != null) {
-                var tfms = targetFrameworksElement.Value.Split(';').Select(t => t.Trim()).ToList();
-                for (int i = 0; i < tfms.Count; i++) {
-                    if (tfms[i].Equals(fromTfm, StringComparison.OrdinalIgnoreCase)) {
-                        tfms[i] = toTfm;
-                    }
-                }
-                targetFrameworksElement.Value = string.Join(";", tfms);
             }
 
             using var writeStream = File.Create(projectPath);
@@ -212,7 +304,7 @@ internal class TfmService {
             _console.WriteError($"Failed to update {projectPath}: {ex.Message}");
         }
     }
-    private async Task UpdateProjectTargetFrameworksWithPromptAsync(ProjectMigrationInfo project, string toTfm, CancellationToken cancellationToken) {
+    private async Task UpdateProjectTargetFrameworksAsync(ProjectMigrationInfo project, string toTfm, CancellationToken cancellationToken) {
         try {
             XDocument doc;
             using (var readStream = File.OpenRead(project.ProjectPath)) {
@@ -225,29 +317,17 @@ internal class TfmService {
                 return;
             }
 
-            var tfms = targetFrameworksElement.Value.Split(';').Select(t => t.Trim()).Where(t => !string.IsNullOrEmpty(t)).ToList();
+            var currentTfms = targetFrameworksElement.Value.Split(';').Select(t => t.Trim()).Where(t => !string.IsNullOrEmpty(t)).ToList();
             
-            _console.WriteInfo($"\nProject: {Path.GetFileName(project.ProjectPath)}");
-            _console.WriteInfo($"Current TargetFrameworks: {string.Join("; ", tfms)}");
+            // Update only the TFMs that should be updated
+            var newTfms = currentTfms.Select(tfm => 
+                project.TargetFrameworksToUpdate.Contains(tfm, StringComparer.OrdinalIgnoreCase) ? toTfm : tfm
+            ).ToList();
 
-            // Create selection prompt for which TFM to update
-            var selectionPrompt = new SelectionPrompt<string>()
-                .Title("Which target framework would you like to update?");
-            
-            selectionPrompt.AddChoices(tfms);
-            selectionPrompt.AddChoice("Skip this project");
-
-            var selectedTfm = _console.Prompt<string>(selectionPrompt);
-
-            if (selectedTfm == "Skip this project") {
-                _console.WriteInfo($"Skipped {Path.GetFileName(project.ProjectPath)}");
-                return;
-            }
-
-            // Replace the selected TFM with the target TFM
-            var newTfms = tfms.Select(tfm => string.Equals(tfm, selectedTfm, StringComparison.OrdinalIgnoreCase) ? toTfm : tfm).ToList();
             var newTargetFrameworksValue = string.Join(";", newTfms);
 
+            _console.WriteInfo($"\nProject: {Path.GetFileName(project.ProjectPath)}");
+            _console.WriteInfo($"Current TargetFrameworks: {string.Join("; ", currentTfms)}");
             _console.WriteInfo($"New TargetFrameworks: {string.Join("; ", newTfms)}");
 
             // Prompt for confirmation
@@ -354,11 +434,139 @@ internal class TfmService {
         }
     }
 
+    private async Task<List<PackageInfo>> ExtractPackageReferencesAsync(XDocument doc, string projectPath) {
+        var packageReferences = new List<PackageInfo>();
+        var packageRefElements = doc.Descendants("PackageReference");
+
+        foreach (var element in packageRefElements) {
+            var include = element.Attribute("Include")?.Value;
+            var version = element.Attribute("Version")?.Value ?? 
+                         element.Element("Version")?.Value;
+
+            if (!string.IsNullOrEmpty(include) && !string.IsNullOrEmpty(version)) {
+                packageReferences.Add(new PackageInfo {
+                    Id = include,
+                    Version = version,
+                    ProjectPath = projectPath
+                });
+            }
+        }
+
+        return packageReferences;
+    }
+
+    private bool IsDirectPredecessor(string currentTfm, string targetTfm) {
+        // Parse TFM versions
+        if (!TryParseTfmVersion(currentTfm, out var currentType, out var currentVersion) ||
+            !TryParseTfmVersion(targetTfm, out var targetType, out var targetVersion)) {
+            return false;
+        }
+
+        // Only .NET (Core) TFMs can be direct predecessors to other .NET (Core) TFMs
+        if (currentType != TfmType.DotNet || targetType != TfmType.DotNet) {
+            return false;
+        }
+
+        // Check if it's a direct predecessor (e.g., net8.0 -> net9.0)
+        return targetVersion.Major == currentVersion.Major + 1 && targetVersion.Minor == 0;
+    }
+
+    private bool ShouldUpdateTfm(string currentTfm, string targetTfm) {
+        // Parse TFM versions
+        if (!TryParseTfmVersion(currentTfm, out var currentType, out var currentVersion) ||
+            !TryParseTfmVersion(targetTfm, out var targetType, out var targetVersion)) {
+            return false;
+        }
+
+        // Never update .NET Framework or .NET Standard TFMs
+        if (currentType == TfmType.DotNetFramework || currentType == TfmType.DotNetStandard) {
+            return false;
+        }
+
+        // Only update .NET (Core) TFMs to newer .NET (Core) versions
+        return currentType == TfmType.DotNet && targetType == TfmType.DotNet && targetVersion > currentVersion;
+    }
+
+    private bool TryParseTfmVersion(string tfm, out TfmType type, out Version version) {
+        type = TfmType.Unknown;
+        version = new Version(0, 0);
+
+        if (string.IsNullOrEmpty(tfm)) {
+            return false;
+        }
+
+        tfm = tfm.ToLowerInvariant();
+
+        // .NET Framework (net4x, net48, etc.)
+        if (tfm.StartsWith("net") && tfm.Length >= 4 && char.IsDigit(tfm[3])) {
+            type = TfmType.DotNetFramework;
+            // Extract version from patterns like net48, net472, etc.
+            var versionStr = tfm.Substring(3);
+            if (versionStr.Length == 2) {
+                // net48 -> 4.8
+                if (Version.TryParse($"{versionStr[0]}.{versionStr[1]}", out var parsedVersion)) {
+                    version = parsedVersion;
+                    return true;
+                }
+            } else if (versionStr.Length == 3) {
+                // net472 -> 4.7.2
+                if (Version.TryParse($"{versionStr[0]}.{versionStr[1]}.{versionStr[2]}", out var parsedVersion)) {
+                    version = parsedVersion;
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        // .NET Standard
+        if (tfm.StartsWith("netstandard")) {
+            type = TfmType.DotNetStandard;
+            var versionStr = tfm.Substring("netstandard".Length);
+            if (Version.TryParse(versionStr, out var parsedVersion)) {
+                version = parsedVersion;
+                return true;
+            }
+            return false;
+        }
+
+        // .NET Core App
+        if (tfm.StartsWith("netcoreapp")) {
+            type = TfmType.DotNet;
+            var versionStr = tfm.Substring("netcoreapp".Length);
+            if (Version.TryParse(versionStr, out var parsedVersion)) {
+                version = parsedVersion;
+                return true;
+            }
+            return false;
+        }
+
+        // .NET (5.0+)
+        if (tfm.StartsWith("net") && tfm.Length > 3) {
+            var versionStr = tfm.Substring(3);
+            // Check if it's a valid .NET version (net5.0, net6.0, etc.)
+            if (Version.TryParse(versionStr, out var parsedVersion) && parsedVersion.Major >= 5) {
+                type = TfmType.DotNet;
+                version = parsedVersion;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private enum TfmType {
+        Unknown,
+        DotNetFramework,
+        DotNetStandard,
+        DotNet
+    }
+
     private class ProjectMigrationInfo {
         public string ProjectPath { get; set; } = string.Empty;
         public string CurrentTfm { get; set; } = string.Empty;
         public List<PackageInfo> PackageReferences { get; set; } = new();
         public bool UsesTargetFrameworks { get; set; }
+        public List<string> TargetFrameworksToUpdate { get; set; } = new();
     }
 
     private class PackageInfo {
