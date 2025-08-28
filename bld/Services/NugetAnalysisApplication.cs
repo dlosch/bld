@@ -46,6 +46,8 @@ internal class NugetAnalysisApplication {
                 _console.WriteInfo($"Loaded whitelist/blacklist rules from: {whitelistBlacklistFile}");
                 _console.WriteDebug($"Whitelist patterns: {whitelistBlacklistRules.WhitelistPatterns.Count}");
                 _console.WriteDebug($"Blacklist patterns: {whitelistBlacklistRules.BlacklistPatterns.Count}");
+                _console.WriteDebug($"Microsoft patterns: {whitelistBlacklistRules.MicrosoftPatterns.Count}");
+                _console.WriteDebug($"Trusted patterns: {whitelistBlacklistRules.TrustedPatterns.Count}");
             }
             catch (Exception ex) {
                 _console.WriteError($"Failed to parse whitelist/blacklist file: {ex.Message}");
@@ -164,12 +166,18 @@ internal class NugetAnalysisApplication {
         foreach (var package in packageList.OrderBy(p => p.Name)) {
             var packageInfo = $"• {package.Name} ({package.Version})";
             
-            // Add coloring and pattern information based on whitelist/blacklist
+            // Add coloring and pattern information based on whitelist/blacklist/microsoft/trusted
             if (!string.IsNullOrWhiteSpace(package.BlacklistMatch)) {
                 packageInfo = $"[red]{packageInfo} ({package.BlacklistMatch})[/]";
             }
             else if (!string.IsNullOrWhiteSpace(package.WhitelistMatch)) {
                 packageInfo = $"[green]{packageInfo} ({package.WhitelistMatch})[/]";
+            }
+            else if (!string.IsNullOrWhiteSpace(package.MicrosoftMatch)) {
+                packageInfo = $"{packageInfo} ({package.MicrosoftMatch})";
+            }
+            else if (!string.IsNullOrWhiteSpace(package.TrustedMatch)) {
+                packageInfo = $"{packageInfo} ({package.TrustedMatch})";
             }
             
             content.Add(packageInfo);

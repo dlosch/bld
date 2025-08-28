@@ -19,6 +19,8 @@ internal class WhitelistBlacklistParser {
 
         var whitelist = new List<string>();
         var blacklist = new List<string>();
+        var microsoft = new List<string>();
+        var trusted = new List<string>();
         var currentSection = Section.None;
 
         try {
@@ -43,6 +45,16 @@ internal class WhitelistBlacklistParser {
                     continue;
                 }
                 
+                if (trimmedLine.Equals("# microsoft", StringComparison.OrdinalIgnoreCase)) {
+                    currentSection = Section.Microsoft;
+                    continue;
+                }
+                
+                if (trimmedLine.Equals("# trusted", StringComparison.OrdinalIgnoreCase)) {
+                    currentSection = Section.Trusted;
+                    continue;
+                }
+                
                 // Skip comments (lines starting with #)
                 if (trimmedLine.StartsWith('#')) {
                     continue;
@@ -56,6 +68,12 @@ internal class WhitelistBlacklistParser {
                     case Section.Blacklist:
                         blacklist.Add(trimmedLine);
                         break;
+                    case Section.Microsoft:
+                        microsoft.Add(trimmedLine);
+                        break;
+                    case Section.Trusted:
+                        trusted.Add(trimmedLine);
+                        break;
                 }
             }
         }
@@ -65,7 +83,9 @@ internal class WhitelistBlacklistParser {
 
         return new WhitelistBlacklistRules {
             WhitelistPatterns = whitelist,
-            BlacklistPatterns = blacklist
+            BlacklistPatterns = blacklist,
+            MicrosoftPatterns = microsoft,
+            TrustedPatterns = trusted
         };
     }
     
@@ -113,7 +133,9 @@ internal class WhitelistBlacklistParser {
     private enum Section {
         None,
         Whitelist,
-        Blacklist
+        Blacklist,
+        Microsoft,
+        Trusted
     }
 }
 
@@ -123,4 +145,6 @@ internal class WhitelistBlacklistParser {
 internal record WhitelistBlacklistRules {
     public IReadOnlyList<string> WhitelistPatterns { get; init; } = Array.Empty<string>();
     public IReadOnlyList<string> BlacklistPatterns { get; init; } = Array.Empty<string>();
+    public IReadOnlyList<string> MicrosoftPatterns { get; init; } = Array.Empty<string>();
+    public IReadOnlyList<string> TrustedPatterns { get; init; } = Array.Empty<string>();
 }

@@ -10,6 +10,8 @@ internal record NugetPackageInfo {
     public string? ProjectPath { get; init; }
     public string? WhitelistMatch { get; init; }
     public string? BlacklistMatch { get; init; }
+    public string? MicrosoftMatch { get; init; }
+    public string? TrustedMatch { get; init; }
 }
 
 /// <summary>

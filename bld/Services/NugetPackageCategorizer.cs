@@ -73,6 +73,19 @@ internal class NugetPackageCategorizer {
             return NugetPackageCategory.Other;
         }
 
+        // First check configuration file overrides
+        if (_whitelistBlacklistRules != null) {
+            // Check if package is explicitly categorized as Microsoft Non-Official
+            if (WhitelistBlacklistParser.FindMatchingPattern(packageName, _whitelistBlacklistRules.MicrosoftPatterns) != null) {
+                return NugetPackageCategory.MicrosoftNonOfficial;
+            }
+            
+            // Check if package is explicitly categorized as Trusted
+            if (WhitelistBlacklistParser.FindMatchingPattern(packageName, _whitelistBlacklistRules.TrustedPatterns) != null) {
+                return NugetPackageCategory.TrustedThirdParty;
+            }
+        }
+
         // Check for exact matches of official .NET packages
         if (OfficialDotNetExact.Contains(packageName)) {
             return NugetPackageCategory.MicrosoftOfficial;
@@ -96,14 +109,21 @@ internal class NugetPackageCategorizer {
         return NugetPackageCategory.Other;
     }
 
-    public (string? whitelistMatch, string? blacklistMatch) GetWhitelistBlacklistMatches(string packageName) {
+    public (string? whitelistMatch, string? blacklistMatch, string? microsoftMatch, string? trustedMatch) GetAllMatches(string packageName) {
         if (_whitelistBlacklistRules == null || string.IsNullOrWhiteSpace(packageName)) {
-            return (null, null);
+            return (null, null, null, null);
         }
 
         var whitelistMatch = WhitelistBlacklistParser.FindMatchingPattern(packageName, _whitelistBlacklistRules.WhitelistPatterns);
         var blacklistMatch = WhitelistBlacklistParser.FindMatchingPattern(packageName, _whitelistBlacklistRules.BlacklistPatterns);
+        var microsoftMatch = WhitelistBlacklistParser.FindMatchingPattern(packageName, _whitelistBlacklistRules.MicrosoftPatterns);
+        var trustedMatch = WhitelistBlacklistParser.FindMatchingPattern(packageName, _whitelistBlacklistRules.TrustedPatterns);
 
+        return (whitelistMatch, blacklistMatch, microsoftMatch, trustedMatch);
+    }
+
+    public (string? whitelistMatch, string? blacklistMatch) GetWhitelistBlacklistMatches(string packageName) {
+        var (whitelistMatch, blacklistMatch, _, _) = GetAllMatches(packageName);
         return (whitelistMatch, blacklistMatch);
     }
 
