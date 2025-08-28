@@ -51,8 +51,8 @@ internal sealed class NugetPackageExtractor {
                     continue;
                 }
                 
-                var category = _categorizer.CategorizePackage(packageName);
-                var (whitelistMatch, blacklistMatch, microsoftMatch, trustedMatch) = _categorizer.GetAllMatches(packageName);
+                var category = _categorizer.CategorizePackage(packageName, version);
+                var (whitelistMatch, blacklistMatch, microsoftMatch, trustedMatch) = _categorizer.GetAllMatches(packageName, version);
                 
                 packages.Add(new NugetPackageInfo {
                     Name = packageName,

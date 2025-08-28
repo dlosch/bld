@@ -68,7 +68,7 @@ internal class NugetPackageCategorizer {
         _whitelistBlacklistRules = whitelistBlacklistRules;
     }
 
-    public NugetPackageCategory CategorizePackage(string packageName) {
+    public NugetPackageCategory CategorizePackage(string packageName, string? packageVersion = null) {
         if (string.IsNullOrWhiteSpace(packageName)) {
             return NugetPackageCategory.Other;
         }
@@ -76,12 +76,12 @@ internal class NugetPackageCategorizer {
         // First check configuration file overrides
         if (_whitelistBlacklistRules != null) {
             // Check if package is explicitly categorized as Microsoft Non-Official
-            if (WhitelistBlacklistParser.FindMatchingPattern(packageName, _whitelistBlacklistRules.MicrosoftPatterns) != null) {
+            if (WhitelistBlacklistParser.FindMatchingPattern(packageName, packageVersion, _whitelistBlacklistRules.MicrosoftPatterns) != null) {
                 return NugetPackageCategory.MicrosoftNonOfficial;
             }
             
             // Check if package is explicitly categorized as Trusted
-            if (WhitelistBlacklistParser.FindMatchingPattern(packageName, _whitelistBlacklistRules.TrustedPatterns) != null) {
+            if (WhitelistBlacklistParser.FindMatchingPattern(packageName, packageVersion, _whitelistBlacklistRules.TrustedPatterns) != null) {
                 return NugetPackageCategory.TrustedThirdParty;
             }
         }
@@ -109,21 +109,21 @@ internal class NugetPackageCategorizer {
         return NugetPackageCategory.Other;
     }
 
-    public (string? whitelistMatch, string? blacklistMatch, string? microsoftMatch, string? trustedMatch) GetAllMatches(string packageName) {
+    public (string? whitelistMatch, string? blacklistMatch, string? microsoftMatch, string? trustedMatch) GetAllMatches(string packageName, string? packageVersion = null) {
         if (_whitelistBlacklistRules == null || string.IsNullOrWhiteSpace(packageName)) {
             return (null, null, null, null);
         }
 
-        var whitelistMatch = WhitelistBlacklistParser.FindMatchingPattern(packageName, _whitelistBlacklistRules.WhitelistPatterns);
-        var blacklistMatch = WhitelistBlacklistParser.FindMatchingPattern(packageName, _whitelistBlacklistRules.BlacklistPatterns);
-        var microsoftMatch = WhitelistBlacklistParser.FindMatchingPattern(packageName, _whitelistBlacklistRules.MicrosoftPatterns);
-        var trustedMatch = WhitelistBlacklistParser.FindMatchingPattern(packageName, _whitelistBlacklistRules.TrustedPatterns);
+        var whitelistMatch = WhitelistBlacklistParser.FindMatchingPattern(packageName, packageVersion, _whitelistBlacklistRules.WhitelistPatterns)?.OriginalPattern;
+        var blacklistMatch = WhitelistBlacklistParser.FindMatchingPattern(packageName, packageVersion, _whitelistBlacklistRules.BlacklistPatterns)?.OriginalPattern;
+        var microsoftMatch = WhitelistBlacklistParser.FindMatchingPattern(packageName, packageVersion, _whitelistBlacklistRules.MicrosoftPatterns)?.OriginalPattern;
+        var trustedMatch = WhitelistBlacklistParser.FindMatchingPattern(packageName, packageVersion, _whitelistBlacklistRules.TrustedPatterns)?.OriginalPattern;
 
         return (whitelistMatch, blacklistMatch, microsoftMatch, trustedMatch);
     }
 
-    public (string? whitelistMatch, string? blacklistMatch) GetWhitelistBlacklistMatches(string packageName) {
-        var (whitelistMatch, blacklistMatch, _, _) = GetAllMatches(packageName);
+    public (string? whitelistMatch, string? blacklistMatch) GetWhitelistBlacklistMatches(string packageName, string? packageVersion = null) {
+        var (whitelistMatch, blacklistMatch, _, _) = GetAllMatches(packageName, packageVersion);
         return (whitelistMatch, blacklistMatch);
     }
 

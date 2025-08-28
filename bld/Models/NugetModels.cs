@@ -15,6 +15,49 @@ internal record NugetPackageInfo {
 }
 
 /// <summary>
+/// Represents a package pattern with optional version constraint
+/// </summary>
+internal record PackagePattern {
+    public string Name { get; init; } = string.Empty;
+    public VersionConstraint? VersionConstraint { get; init; }
+    
+    /// <summary>
+    /// The original pattern string from the configuration file
+    /// </summary>
+    public string OriginalPattern { get; init; } = string.Empty;
+}
+
+/// <summary>
+/// Represents a version constraint with operator and version
+/// </summary>
+internal record VersionConstraint {
+    public VersionOperator Operator { get; init; }
+    public Version Version { get; init; } = new Version();
+    
+    /// <summary>
+    /// Check if a version satisfies this constraint
+    /// </summary>
+    public bool IsSatisfiedBy(Version version) {
+        var comparison = version.CompareTo(Version);
+        return Operator switch {
+            VersionOperator.Equal => comparison == 0,
+            VersionOperator.GreaterThanOrEqual => comparison >= 0,
+            VersionOperator.LessThanOrEqual => comparison <= 0,
+            _ => false
+        };
+    }
+}
+
+/// <summary>
+/// Version constraint operators
+/// </summary>
+internal enum VersionOperator {
+    Equal,
+    GreaterThanOrEqual,
+    LessThanOrEqual
+}
+
+/// <summary>
 /// Categories for NuGet packages
 /// </summary>
 internal enum NugetPackageCategory {
