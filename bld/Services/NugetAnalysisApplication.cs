@@ -162,14 +162,14 @@ internal class NugetAnalysisApplication {
         content.Add($"[bold yellow]{categoryName}:[/]");
         
         foreach (var package in packageList.OrderBy(p => p.Name)) {
-            var packageInfo = $"  • {package.Name} ({package.Version})";
+            var packageInfo = $"• {package.Name} ({package.Version})";
             
             // Add coloring and pattern information based on whitelist/blacklist
             if (!string.IsNullOrWhiteSpace(package.BlacklistMatch)) {
                 packageInfo = $"[red]{packageInfo} ({package.BlacklistMatch})[/]";
             }
             else if (!string.IsNullOrWhiteSpace(package.WhitelistMatch)) {
-                packageInfo = $"[white]{packageInfo} ({package.WhitelistMatch})[/]";
+                packageInfo = $"[green]{packageInfo} ({package.WhitelistMatch})[/]";
             }
             
             content.Add(packageInfo);
