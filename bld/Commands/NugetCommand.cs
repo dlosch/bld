@@ -7,9 +7,9 @@ namespace bld.Commands;
 
 internal sealed class NugetCommand : BaseCommand {
 
-    private readonly Option<bool> _includeDownloadCountsOption = new Option<bool>("--include-download-counts", "--downloads") {
-        Description = "Include NuGet download counts in the output (requires internet access).",
-        DefaultValueFactory = _ => false
+    private readonly Option<string?> _whitelistBlacklistFileOption = new Option<string?>("--whitelist-blacklist-file", "--wbf") {
+        Description = "Path to the whitelist/blacklist file containing package filtering rules.",
+        DefaultValueFactory = _ => null
     };
 
     public NugetCommand(IConsoleOutput console) : base("nuget", "Analyze and categorize NuGet package references in projects.", console) {
@@ -18,7 +18,7 @@ internal sealed class NugetCommand : BaseCommand {
         Add(_logLevelOption);
         Add(_vsToolsPath);
         Add(_noResolveVsToolsPath);
-        Add(_includeDownloadCountsOption);
+        Add(_whitelistBlacklistFileOption);
         Add(_rootArgument);
     }
 
@@ -36,7 +36,7 @@ internal sealed class NugetCommand : BaseCommand {
         }
 
         base.Console = new SpectreConsoleOutput(options.LogLevel);
-        var includeDownloadCounts = parseResult.GetValue(_includeDownloadCountsOption);
+        var whitelistBlacklistFile = parseResult.GetValue(_whitelistBlacklistFileOption);
 
         var rootPath = parseResult.GetValue(_rootArgument) ?? parseResult.GetValue(_rootOption);
         if (string.IsNullOrWhiteSpace(rootPath)) {
@@ -45,7 +45,7 @@ internal sealed class NugetCommand : BaseCommand {
 
         var app = new NugetAnalysisApplication(base.Console);
         await app.InitAsync(options);
-        await app.RunAsync(new[] { rootPath }, options, includeDownloadCounts);
+        await app.RunAsync(new[] { rootPath }, options, whitelistBlacklistFile);
 
         return 0;
     }

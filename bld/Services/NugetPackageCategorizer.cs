@@ -62,10 +62,13 @@ internal class NugetPackageCategorizer {
         "Scrutor"
     };
 
-    // Download count threshold for considering a package "trusted"
-    private const long TrustedDownloadThreshold = 10_000_000; // 10 million downloads
+    private readonly WhitelistBlacklistRules? _whitelistBlacklistRules;
 
-    public NugetPackageCategory CategorizePackage(string packageName, long? downloadCount = null) {
+    public NugetPackageCategorizer(WhitelistBlacklistRules? whitelistBlacklistRules = null) {
+        _whitelistBlacklistRules = whitelistBlacklistRules;
+    }
+
+    public NugetPackageCategory CategorizePackage(string packageName) {
         if (string.IsNullOrWhiteSpace(packageName)) {
             return NugetPackageCategory.Other;
         }
@@ -90,12 +93,18 @@ internal class NugetPackageCategorizer {
             return NugetPackageCategory.TrustedThirdParty;
         }
 
-        // Check download count threshold if available
-        if (downloadCount.HasValue && downloadCount.Value >= TrustedDownloadThreshold) {
-            return NugetPackageCategory.TrustedThirdParty;
+        return NugetPackageCategory.Other;
+    }
+
+    public (string? whitelistMatch, string? blacklistMatch) GetWhitelistBlacklistMatches(string packageName) {
+        if (_whitelistBlacklistRules == null || string.IsNullOrWhiteSpace(packageName)) {
+            return (null, null);
         }
 
-        return NugetPackageCategory.Other;
+        var whitelistMatch = WhitelistBlacklistParser.FindMatchingPattern(packageName, _whitelistBlacklistRules.WhitelistPatterns);
+        var blacklistMatch = WhitelistBlacklistParser.FindMatchingPattern(packageName, _whitelistBlacklistRules.BlacklistPatterns);
+
+        return (whitelistMatch, blacklistMatch);
     }
 
     public string GetCategoryDisplayName(NugetPackageCategory category) => category switch {

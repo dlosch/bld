@@ -7,8 +7,9 @@ internal record NugetPackageInfo {
     public string Name { get; init; } = string.Empty;
     public string Version { get; init; } = string.Empty;
     public NugetPackageCategory Category { get; init; }
-    public long? DownloadCount { get; init; }
     public string? ProjectPath { get; init; }
+    public string? WhitelistMatch { get; init; }
+    public string? BlacklistMatch { get; init; }
 }
 
 /// <summary>

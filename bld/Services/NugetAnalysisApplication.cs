@@ -27,7 +27,7 @@ internal class NugetAnalysisApplication {
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    public async Task RunAsync(string[] rootPaths, CleaningOptions options, bool includeDownloadCounts) {
+    public async Task RunAsync(string[] rootPaths, CleaningOptions options, string? whitelistBlacklistFile) {
         if (!_isInitialized) {
             throw new InvalidOperationException("Application not initialized. Call InitAsync first.");
         }
@@ -37,13 +37,24 @@ internal class NugetAnalysisApplication {
         var scanner = new SlnScanner(options, errorSink);
         var slnParser = new SlnParser(_console, errorSink);
         var fileSystem = new FileSystem(_console, errorSink);
-        var categorizer = new NugetPackageCategorizer();
-        var packageExtractor = new NugetPackageExtractor(_console, errorSink, categorizer);
         
-        NugetDownloadService? downloadService = null;
-        if (includeDownloadCounts) {
-            downloadService = new NugetDownloadService(_console);
+        // Parse whitelist/blacklist file if provided
+        WhitelistBlacklistRules? whitelistBlacklistRules = null;
+        if (!string.IsNullOrWhiteSpace(whitelistBlacklistFile)) {
+            try {
+                whitelistBlacklistRules = WhitelistBlacklistParser.ParseFile(whitelistBlacklistFile);
+                _console.WriteInfo($"Loaded whitelist/blacklist rules from: {whitelistBlacklistFile}");
+                _console.WriteDebug($"Whitelist patterns: {whitelistBlacklistRules.WhitelistPatterns.Count}");
+                _console.WriteDebug($"Blacklist patterns: {whitelistBlacklistRules.BlacklistPatterns.Count}");
+            }
+            catch (Exception ex) {
+                _console.WriteError($"Failed to parse whitelist/blacklist file: {ex.Message}");
+                return;
+            }
         }
+        
+        var categorizer = new NugetPackageCategorizer(whitelistBlacklistRules);
+        var packageExtractor = new NugetPackageExtractor(_console, errorSink, categorizer);
 
         _console.WriteRule("[bold blue]NuGet Package Analysis[/]");
 
@@ -77,34 +88,12 @@ internal class NugetAnalysisApplication {
             .GroupBy(a => a.ProjectPath)
             .Select(g => g.First())
             .ToList();
-
-        // Enrich with download counts if requested
-        if (includeDownloadCounts && downloadService != null && uniqueAnalyses.Any()) {
-            var allPackages = uniqueAnalyses.SelectMany(a => a.Packages).ToList();
-            var enrichedPackages = await downloadService.EnrichWithDownloadCountsAsync(allPackages);
             
-            // Create a lookup for enriched packages
-            var enrichedLookup = enrichedPackages.ToDictionary(p => (p.Name, p.ProjectPath), p => p.DownloadCount);
-            
-            // Update analyses with download counts and re-categorize
-            for (int i = 0; i < uniqueAnalyses.Count; i++) {
-                var analysis = uniqueAnalyses[i];
-                var updatedPackages = analysis.Packages.Select(p => {
-                    var downloadCount = enrichedLookup.TryGetValue((p.Name, p.ProjectPath), out var count) ? count : null;
-                    var newCategory = categorizer.CategorizePackage(p.Name, downloadCount);
-                    return p with { DownloadCount = downloadCount, Category = newCategory };
-                }).ToList();
-                
-                uniqueAnalyses[i] = analysis with { Packages = updatedPackages };
-            }
-        }
-            
-        await DisplayResults(uniqueAnalyses, categorizer, includeDownloadCounts);
+        await DisplayResults(uniqueAnalyses, categorizer);
 
         }
         finally {
             stopwatch.Stop();
-            downloadService?.Dispose();
             _console.WriteInfo($"Analysis completed in {stopwatch.Elapsed:mm\\:ss\\.fff}");
 
             if (_errors.Count > 0) {
@@ -124,7 +113,7 @@ internal class NugetAnalysisApplication {
         return dict;
     }
 
-    private async Task DisplayResults(List<ProjectNugetAnalysis> analyses, NugetPackageCategorizer categorizer, bool includeDownloadCounts) {
+    private async Task DisplayResults(List<ProjectNugetAnalysis> analyses, NugetPackageCategorizer categorizer) {
         if (!analyses.Any()) {
             _console.WriteWarning("No projects with NuGet package references found.");
             return;
@@ -133,7 +122,7 @@ internal class NugetAnalysisApplication {
         _console.WriteInfo($"Found {analyses.Count} project(s) with NuGet packages:");
 
         foreach (var analysis in analyses.OrderBy(a => a.ProjectName)) {
-            await DisplayProjectAnalysis(analysis, categorizer, includeDownloadCounts);
+            await DisplayProjectAnalysis(analysis, categorizer);
         }
 
         // Summary
@@ -145,17 +134,17 @@ internal class NugetAnalysisApplication {
         _console.WriteInfo($"Unique packages: {uniquePackages}");
     }
 
-    private async Task DisplayProjectAnalysis(ProjectNugetAnalysis analysis, NugetPackageCategorizer categorizer, bool includeDownloadCounts) {
+    private async Task DisplayProjectAnalysis(ProjectNugetAnalysis analysis, NugetPackageCategorizer categorizer) {
         var content = new List<string>();
         content.Add($"[dim]Path: {analysis.ProjectPath}[/]");
         content.Add($"[dim]Total packages: {analysis.Packages.Count}[/]");
         content.Add("");
 
         // Display packages by category
-        await AddCategorySection(content, "Microsoft Official .NET Packages", analysis.MicrosoftOfficialPackages, includeDownloadCounts);
-        await AddCategorySection(content, "Microsoft Non-Official Packages", analysis.MicrosoftNonOfficialPackages, includeDownloadCounts);
-        await AddCategorySection(content, "Known Trusted Packages", analysis.TrustedThirdPartyPackages, includeDownloadCounts);
-        await AddCategorySection(content, "Other Packages", analysis.OtherPackages, includeDownloadCounts);
+        await AddCategorySection(content, "Microsoft Official .NET Packages", analysis.MicrosoftOfficialPackages);
+        await AddCategorySection(content, "Microsoft Non-Official Packages", analysis.MicrosoftNonOfficialPackages);
+        await AddCategorySection(content, "Known Trusted Packages", analysis.TrustedThirdPartyPackages);
+        await AddCategorySection(content, "Other Packages", analysis.OtherPackages);
 
         var panel = new Panel(string.Join("\n", content))
             .Header($"[bold blue]{analysis.ProjectName}[/]")
@@ -164,7 +153,7 @@ internal class NugetAnalysisApplication {
         AnsiConsole.Write(panel);
     }
 
-    private async Task AddCategorySection(List<string> content, string categoryName, IEnumerable<NugetPackageInfo> packages, bool includeDownloadCounts) {
+    private async Task AddCategorySection(List<string> content, string categoryName, IEnumerable<NugetPackageInfo> packages) {
         var packageList = packages.ToList();
         if (!packageList.Any()) {
             return;
@@ -174,9 +163,15 @@ internal class NugetAnalysisApplication {
         
         foreach (var package in packageList.OrderBy(p => p.Name)) {
             var packageInfo = $"  • {package.Name} ({package.Version})";
-            if (includeDownloadCounts && package.DownloadCount.HasValue) {
-                packageInfo += $" - {package.DownloadCount:N0} downloads";
+            
+            // Add coloring and pattern information based on whitelist/blacklist
+            if (!string.IsNullOrWhiteSpace(package.BlacklistMatch)) {
+                packageInfo = $"[red]{packageInfo} ({package.BlacklistMatch})[/]";
             }
+            else if (!string.IsNullOrWhiteSpace(package.WhitelistMatch)) {
+                packageInfo = $"[white]{packageInfo} ({package.WhitelistMatch})[/]";
+            }
+            
             content.Add(packageInfo);
         }
         content.Add("");

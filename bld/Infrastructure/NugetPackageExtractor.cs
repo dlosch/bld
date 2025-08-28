@@ -52,12 +52,15 @@ internal sealed class NugetPackageExtractor {
                 }
                 
                 var category = _categorizer.CategorizePackage(packageName);
+                var (whitelistMatch, blacklistMatch) = _categorizer.GetWhitelistBlacklistMatches(packageName);
                 
                 packages.Add(new NugetPackageInfo {
                     Name = packageName,
                     Version = string.IsNullOrWhiteSpace(version) ? "Unknown" : version,
                     Category = category,
-                    ProjectPath = projCfg.Path
+                    ProjectPath = projCfg.Path,
+                    WhitelistMatch = whitelistMatch,
+                    BlacklistMatch = blacklistMatch
                 });
             }
         }
