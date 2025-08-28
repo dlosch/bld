@@ -39,6 +39,11 @@ internal class NugetAnalysisApplication {
         var fileSystem = new FileSystem(_console, errorSink);
         var categorizer = new NugetPackageCategorizer();
         var packageExtractor = new NugetPackageExtractor(_console, errorSink, categorizer);
+        
+        NugetDownloadService? downloadService = null;
+        if (includeDownloadCounts) {
+            downloadService = new NugetDownloadService(_console);
+        }
 
         _console.WriteRule("[bold blue]NuGet Package Analysis[/]");
 
@@ -72,12 +77,34 @@ internal class NugetAnalysisApplication {
             .GroupBy(a => a.ProjectPath)
             .Select(g => g.First())
             .ToList();
+
+        // Enrich with download counts if requested
+        if (includeDownloadCounts && downloadService != null && uniqueAnalyses.Any()) {
+            var allPackages = uniqueAnalyses.SelectMany(a => a.Packages).ToList();
+            var enrichedPackages = await downloadService.EnrichWithDownloadCountsAsync(allPackages);
+            
+            // Create a lookup for enriched packages
+            var enrichedLookup = enrichedPackages.ToDictionary(p => (p.Name, p.ProjectPath), p => p.DownloadCount);
+            
+            // Update analyses with download counts and re-categorize
+            for (int i = 0; i < uniqueAnalyses.Count; i++) {
+                var analysis = uniqueAnalyses[i];
+                var updatedPackages = analysis.Packages.Select(p => {
+                    var downloadCount = enrichedLookup.TryGetValue((p.Name, p.ProjectPath), out var count) ? count : null;
+                    var newCategory = categorizer.CategorizePackage(p.Name, downloadCount);
+                    return p with { DownloadCount = downloadCount, Category = newCategory };
+                }).ToList();
+                
+                uniqueAnalyses[i] = analysis with { Packages = updatedPackages };
+            }
+        }
             
         await DisplayResults(uniqueAnalyses, categorizer, includeDownloadCounts);
 
         }
         finally {
             stopwatch.Stop();
+            downloadService?.Dispose();
             _console.WriteInfo($"Analysis completed in {stopwatch.Elapsed:mm\\:ss\\.fff}");
 
             if (_errors.Count > 0) {
