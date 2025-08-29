@@ -28,7 +28,7 @@ internal class OutdatedService {
     public async Task<int> CheckOutdatedPackagesAsync(string rootPath, bool updatePackages, bool skipTfmCheck, bool includePrerelease, CancellationToken cancellationToken) {
         // Initialize MSBuild before any Microsoft.Build.* types are loaded
         MSBuildInitializer.Initialize(_console, _options);
-        
+
         _console.WriteInfo("Checking for outdated packages...");
 
         var errorSink = new ErrorSink(_console);
@@ -42,7 +42,7 @@ internal class OutdatedService {
         await foreach (var slnPath in slnScanner.Enumerate(rootPath)) {
             _console.WriteVerbose($"Processing solution: {slnPath}");
             var solutionDir = Path.GetDirectoryName(slnPath)!;
-            
+
             // Check if this solution uses Central Package Management
             var directoryPackagesPath = Path.Combine(solutionDir, "Directory.Packages.props");
             var cpmInfo = await LoadCpmInfoAsync(directoryPackagesPath, cancellationToken);
@@ -50,11 +50,11 @@ internal class OutdatedService {
                 solutionCpmInfo[solutionDir] = cpmInfo;
                 _console.WriteVerbose($"Solution uses Central Package Management");
             }
-            
+
             await foreach (var projCfg in slnParser.ParseSolution(slnPath)) {
                 var projectPath = projCfg.Path;
                 projectFiles.Add(projectPath);
-                
+
                 var packageRefs = await ExtractPackageReferencesAsync(projectPath, solutionDir, cpmInfo, skipTfmCheck, cancellationToken);
                 foreach (var packageInfo in packageRefs) {
                     if (!allPackageReferences.TryGetValue(packageInfo.Id, out var list)) {
@@ -103,23 +103,23 @@ internal class OutdatedService {
         foreach (var (packageId, packageInfos) in allPackageReferences) {
             try {
                 _console.WriteVerbose($"Checking {packageId}...");
-                
+
                 var metadata = await packageMetadataResource.GetMetadataAsync(packageId, true, true, _cache, _logger, cancellationToken);
-                
+
                 var currentVersions = packageInfos.Select(p => p.Version).Distinct().ToList();
-                
+
                 var hasOutdated = false;
                 foreach (var currentVersionStr in currentVersions) {
                     if (NuGetVersion.TryParse(currentVersionStr, out var currentVersion)) {
                         var projects = packageInfos.Where(p => p.Version == currentVersionStr).ToList();
-                        
+
                         // Find best compatible version for each target framework
                         var tfmGroups = projects.GroupBy(p => p.TargetFramework ?? "unknown").ToList();
-                        
+
                         foreach (var tfmGroup in tfmGroups) {
                             var tfm = tfmGroup.Key;
                             NuGetFramework? targetFramework = null;
-                            
+
                             if (!skipTfmCheck && tfm != "unknown") {
                                 try {
                                     targetFramework = NuGetFramework.Parse(tfm);
@@ -128,17 +128,17 @@ internal class OutdatedService {
                                     _console.WriteWarning($"Could not parse target framework '{tfm}' for TFM compatibility check");
                                 }
                             }
-                            
+
                             // Find the latest compatible version
                             var compatibleVersions = new List<IPackageSearchMetadata>();
-                            
-                            var versionFilter = includePrerelease ? 
+
+                            var versionFilter = includePrerelease ?
                                 metadata.OrderByDescending(m => m.Identity.Version) :
                                 metadata.Where(m => !m.Identity.Version.IsPrerelease).OrderByDescending(m => m.Identity.Version);
-                            
+
                             foreach (var meta in versionFilter) {
                                 bool isCompatible = true;
-                                
+
                                 if (!skipTfmCheck && targetFramework != null) {
                                     try {
                                         // Check compatibility using basic framework version rules
@@ -150,23 +150,23 @@ internal class OutdatedService {
                                         isCompatible = true;
                                     }
                                 }
-                                
+
                                 if (isCompatible) {
                                     compatibleVersions.Add(meta);
                                 }
                             }
-                            
+
                             var latestCompatible = compatibleVersions.FirstOrDefault();
                             if (latestCompatible == null) {
                                 _console.WriteWarning($"No compatible version found for {packageId} with target framework {tfm}");
                                 continue;
                             }
-                            
+
                             var latestVersion = latestCompatible.Identity.Version;
-                            
+
                             if (currentVersion < latestVersion) {
                                 hasOutdated = true;
-                                
+
                                 // Group projects by solution for CPM handling
                                 var projectGroups = tfmGroup.GroupBy(p => {
                                     var dir = Path.GetDirectoryName(p.ProjectPath);
@@ -180,7 +180,7 @@ internal class OutdatedService {
                                 foreach (var group in projectGroups) {
                                     var usesCpm = !string.IsNullOrEmpty(group.Key) && solutionCpmInfo.ContainsKey(group.Key);
                                     var compatibilityNote = skipTfmCheck ? "" : $" (compatible with {tfm})";
-                                    
+
                                     outdatedPackages.Add(new OutdatedPackageInfo {
                                         PackageId = packageId,
                                         CurrentVersion = currentVersionStr,
@@ -222,28 +222,29 @@ internal class OutdatedService {
         if (updatePackages) {
             _console.WriteInfo("\nUpdating packages to latest versions...");
             var updatedSolutions = new HashSet<string>();
-            
-            foreach (var outdated in outdatedPackages) {
-                if (outdated.UsesCpm) {
-                    // Update Directory.Packages.props once per solution
-                    if (!updatedSolutions.Contains(outdated.SolutionDirectory)) {
-                        await UpdateCpmPackageVersionAsync(outdated.SolutionDirectory, outdated.PackageId, outdated.LatestVersion, cancellationToken);
-                        updatedSolutions.Add(outdated.SolutionDirectory);
-                        _console.WriteInfo($"Updated {outdated.PackageId} to {outdated.LatestVersion} in Directory.Packages.props");
-                    }
-                } else {
+
+            var outdatedCpm = outdatedPackages.Where(p => p.UsesCpm).ToList();
+            var outdatedNonCpm = outdatedPackages.Where(p => !p.UsesCpm).ToList();
+
+            if (outdatedCpm.Any()) {
+                await UpdateCpmPackageVersionAsync(outdatedCpm, cancellationToken);
+            }
+            else if (outdatedNonCpm.Any()) {
+                foreach (var outdated in outdatedNonCpm) {
                     // Update individual project files
+                    // todo this is the wrong way around. Iterate by ProjectPaths and then pass list of OutdatedPackageInfo to update in csproj
                     foreach (var projectPath in outdated.ProjectPaths) {
                         await UpdatePackageVersionAsync(projectPath, outdated.PackageId, outdated.LatestVersion, cancellationToken);
                         _console.WriteInfo($"Updated {outdated.PackageId} to {outdated.LatestVersion} in {Path.GetFileName(projectPath)}");
                     }
+                    //}
                 }
+                _console.WriteInfo($"Updated {outdatedPackages.Count} packages in {outdatedPackages.Sum(x => x.ProjectPaths.Count)} project files");
             }
-            _console.WriteInfo($"Updated {outdatedPackages.Count} packages in {outdatedPackages.Sum(x => x.ProjectPaths.Count)} project files");
-        } else {
-            _console.WriteInfo("\nUse --apply to apply these changes.");
+            else {
+                _console.WriteInfo("\nUse --apply to apply these changes.");
+            }
         }
-
         return 0;
     }
 
@@ -253,12 +254,12 @@ internal class OutdatedService {
         try {
             using var stream = File.OpenRead(projectPath);
             var doc = await XDocument.LoadAsync(stream, LoadOptions.None, cancellationToken);
-            
+
             // Get target framework(s)
             var targetFramework = doc.Descendants("TargetFramework").FirstOrDefault()?.Value;
             var targetFrameworks = doc.Descendants("TargetFrameworks").FirstOrDefault()?.Value;
             var projectTfm = targetFramework ?? targetFrameworks?.Split(';').FirstOrDefault()?.Trim();
-            
+
             var packageRefElements = doc.Descendants("PackageReference");
 
             foreach (var element in packageRefElements) {
@@ -268,9 +269,10 @@ internal class OutdatedService {
                 if (cpmInfo != null && !string.IsNullOrEmpty(include)) {
                     // Get version from Directory.Packages.props
                     cpmInfo.PackageVersions.TryGetValue(include, out version);
-                } else {
+                }
+                else {
                     // Get version from project file
-                    version = element.Attribute("Version")?.Value ?? 
+                    version = element.Attribute("Version")?.Value ??
                              element.Element("Version")?.Value;
                 }
 
@@ -322,36 +324,44 @@ internal class OutdatedService {
         }
     }
 
-    private async Task UpdateCpmPackageVersionAsync(string solutionDir, string packageId, string newVersion, CancellationToken cancellationToken) {
-        var directoryPackagesPath = Path.Combine(solutionDir, "Directory.Packages.props");
-        
-        try {
-            XDocument doc;
-            using (var readStream = File.OpenRead(directoryPackagesPath)) {
-                doc = await XDocument.LoadAsync(readStream, LoadOptions.PreserveWhitespace, cancellationToken);
-            }
-            
-            var packageVersionElements = doc.Descendants("PackageVersion")
-                .Where(e => e.Attribute("Include")?.Value == packageId);
+    private async Task UpdateCpmPackageVersionAsync(IEnumerable<OutdatedPackageInfo> outdated, CancellationToken cancellationToken) {
+        foreach (var grp in outdated.GroupBy(outdated => outdated.SolutionDirectory)) {
+            if (string.IsNullOrEmpty(grp.Key)) continue; // Skip if no solution directory
+            if (!Directory.Exists(grp.Key)) continue;
 
-            foreach (var element in packageVersionElements) {
-                var versionAttr = element.Attribute("Version");
-                if (versionAttr != null) {
-                    versionAttr.Value = newVersion;
+            var directoryPackagesPath = Path.Combine(grp.Key, "Directory.Packages.props");
+            if (!File.Exists(directoryPackagesPath)) continue;
+
+            try {
+                XDocument doc;
+                using (var readStream = File.OpenRead(directoryPackagesPath)) {
+                    doc = await XDocument.LoadAsync(readStream, LoadOptions.PreserveWhitespace, cancellationToken);
                 }
-            }
 
-            using var writeStream = File.Create(directoryPackagesPath);
-            using var writer = XmlWriter.Create(writeStream, new XmlWriterSettings {
-                Indent = true,
-                OmitXmlDeclaration = true,
-                Encoding = System.Text.Encoding.UTF8,
-                Async = true
-            });
-            await doc.SaveAsync(writer, cancellationToken);
-        }
-        catch (Exception ex) {
-            _console.WriteError($"Failed to update Directory.Packages.props at {directoryPackagesPath}: {ex.Message}");
+                foreach (var item in grp) {
+                    var packageVersionElements = doc.Descendants("PackageVersion")
+                        .Where(e => e.Attribute("Include")?.Value == item.PackageId);
+
+                    foreach (var element in packageVersionElements) {
+                        var versionAttr = element.Attribute("Version");
+                        if (versionAttr != null) {
+                            versionAttr.Value = item.LatestVersion;
+                        }
+                    }
+                }
+
+                using var writeStream = File.Create(directoryPackagesPath);
+                using var writer = XmlWriter.Create(writeStream, new XmlWriterSettings {
+                    Indent = true,
+                    OmitXmlDeclaration = true,
+                    Encoding = System.Text.Encoding.UTF8,
+                    Async = true
+                });
+                await doc.SaveAsync(writer, cancellationToken);
+            }
+            catch (Exception ex) {
+                _console.WriteError($"Failed to update Directory.Packages.props at {directoryPackagesPath}: {ex.Message}");
+            }
         }
     }
 
@@ -361,7 +371,7 @@ internal class OutdatedService {
             using (var readStream = File.OpenRead(projectPath)) {
                 doc = await XDocument.LoadAsync(readStream, LoadOptions.PreserveWhitespace, cancellationToken);
             }
-            
+
             var packageRefElements = doc.Descendants("PackageReference")
                 .Where(e => e.Attribute("Include")?.Value == packageId);
 
@@ -371,7 +381,8 @@ internal class OutdatedService {
 
                 if (versionAttr != null) {
                     versionAttr.Value = newVersion;
-                } else if (versionElement != null) {
+                }
+                else if (versionElement != null) {
                     versionElement.Value = newVersion;
                 }
             }
@@ -468,41 +479,41 @@ internal class OutdatedService {
         try {
             // For basic compatibility checking, we'll use framework version rules
             // This is a simplified approach that covers the most common scenarios
-            
+
             var packageVersion = packageMetadata.Identity.Version;
-            
+
             // Special handling for common Microsoft packages that have specific framework requirements
             if (packageId.StartsWith("Microsoft.AspNetCore") || packageId.StartsWith("Microsoft.Extensions")) {
                 // ASP.NET Core and Extensions packages often have strict framework requirements
-                
+
                 // Version 9.x requires .NET 9.0 or higher
                 if (packageVersion.Major >= 9) {
                     var net9 = NuGetFramework.Parse("net9.0");
                     return Task.FromResult(IsFrameworkCompatible(targetFramework, net9));
                 }
-                
+
                 // Version 8.x requires .NET 8.0 or higher  
                 if (packageVersion.Major >= 8) {
                     var net8 = NuGetFramework.Parse("net8.0");
                     return Task.FromResult(IsFrameworkCompatible(targetFramework, net8));
                 }
-                
+
                 // Version 7.x requires .NET 7.0 or higher
                 if (packageVersion.Major >= 7) {
                     var net7 = NuGetFramework.Parse("net7.0");
                     return Task.FromResult(IsFrameworkCompatible(targetFramework, net7));
                 }
-                
+
                 // Version 6.x requires .NET 6.0 or higher
                 if (packageVersion.Major >= 6) {
                     var net6 = NuGetFramework.Parse("net6.0");
                     return Task.FromResult(IsFrameworkCompatible(targetFramework, net6));
                 }
             }
-            
+
             // For other packages, we'll be more permissive and assume compatibility
             // unless we have specific knowledge about incompatibility
-            
+
             // If the target framework is older than .NET 5.0, be more restrictive
             if (targetFramework.Framework == ".NETCoreApp" && targetFramework.Version < new Version(5, 0)) {
                 // For .NET Core 3.1 and earlier, limit to packages that are known to be compatible
@@ -510,7 +521,7 @@ internal class OutdatedService {
                     return Task.FromResult(false); // Newer packages likely require newer frameworks
                 }
             }
-            
+
             return Task.FromResult(true); // Default to compatible
         }
         catch (Exception ex) {
@@ -524,22 +535,22 @@ internal class OutdatedService {
         if (currentFramework.Framework != requiredFramework.Framework) {
             return false;
         }
-        
+
         // For .NET Core/.NET 5+ compatibility
         if (currentFramework.Framework == ".NETCoreApp") {
             return currentFramework.Version >= requiredFramework.Version;
         }
-        
+
         // For .NET Framework compatibility 
         if (currentFramework.Framework == ".NETFramework") {
             return currentFramework.Version >= requiredFramework.Version;
         }
-        
+
         // For .NET Standard compatibility (more complex, simplified here)
         if (currentFramework.Framework == ".NETStandard") {
             return currentFramework.Version >= requiredFramework.Version;
         }
-        
+
         return true; // Default to compatible for unknown frameworks
     }
 }
