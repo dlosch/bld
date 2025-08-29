@@ -1,0 +1,52 @@
+using bld.Infrastructure;
+using bld.Models;
+using bld.Services;
+using System.CommandLine;
+
+namespace bld.Commands;
+
+internal sealed class NugetCommand : BaseCommand {
+
+    private readonly Option<string?> _whitelistBlacklistFileOption = new Option<string?>("--whitelist-blacklist-file", "--wbf") {
+        Description = "Path to the whitelist/blacklist file containing package filtering rules.",
+        DefaultValueFactory = _ => null
+    };
+
+    public NugetCommand(IConsoleOutput console) : base("nuget", "Analyze and categorize NuGet package references in projects.", console) {
+        Add(_rootOption);
+        Add(_depthOption);
+        Add(_logLevelOption);
+        Add(_vsToolsPath);
+        Add(_noResolveVsToolsPath);
+        Add(_whitelistBlacklistFileOption);
+        Add(_rootArgument);
+    }
+
+    protected override async Task<int> ExecuteAsync(ParseResult parseResult, CancellationToken cancellationToken) {
+        var options = new CleaningOptions {
+            LogLevel = parseResult.GetValue(_logLevelOption),
+            Depth = parseResult.GetValue(_depthOption),
+            VSToolsPath = parseResult.GetValue(_vsToolsPath),
+            NoResolveVSToolsPath = parseResult.GetValue(_noResolveVsToolsPath),
+        };
+
+        if (!options.NoResolveVSToolsPath && string.IsNullOrEmpty(options.VSToolsPath)) {
+            options.VSToolsPath = TryResolveVSToolsPath(out var vsRoot);
+            options.VSRootPath = vsRoot;
+        }
+
+        base.Console = new SpectreConsoleOutput(options.LogLevel);
+        var whitelistBlacklistFile = parseResult.GetValue(_whitelistBlacklistFileOption);
+
+        var rootPath = parseResult.GetValue(_rootArgument) ?? parseResult.GetValue(_rootOption);
+        if (string.IsNullOrWhiteSpace(rootPath)) {
+            rootPath = Environment.CurrentDirectory;
+        }
+
+        var app = new NugetAnalysisApplication(base.Console);
+        await app.InitAsync(options);
+        await app.RunAsync(new[] { rootPath }, options, whitelistBlacklistFile);
+
+        return 0;
+    }
+}
