@@ -119,6 +119,11 @@ internal class NugetPackageCategorizer {
         var microsoftMatch = WhitelistBlacklistParser.FindMatchingPattern(packageName, packageVersion, _whitelistBlacklistRules.MicrosoftPatterns)?.OriginalPattern;
         var trustedMatch = WhitelistBlacklistParser.FindMatchingPattern(packageName, packageVersion, _whitelistBlacklistRules.TrustedPatterns)?.OriginalPattern;
 
+        // Whitelist overrides blacklist - if both match, only return whitelist
+        if (whitelistMatch != null && blacklistMatch != null) {
+            blacklistMatch = null;
+        }
+
         return (whitelistMatch, blacklistMatch, microsoftMatch, trustedMatch);
     }
 

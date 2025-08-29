@@ -173,18 +173,51 @@ internal class WhitelistBlacklistParser {
     
     /// <summary>
     /// Parse a version string that may contain pre-release suffixes
+    /// Pre-release versions (e.g. "2.0.0-beta7") are considered less than the release version ("2.0.0")
     /// </summary>
     /// <param name="versionString">Version string to parse</param>
-    /// <returns>Parsed Version or null if invalid</returns>
+    /// <returns>Parsed Version or null if invalid, with pre-release versions adjusted to be less than release versions</returns>
     private static Version? ParseVersionWithPreRelease(string versionString) {
         if (string.IsNullOrWhiteSpace(versionString)) {
             return null;
         }
 
-        // Extract the version part before any pre-release suffix (e.g., "2.0.0-beta7" -> "2.0.0")
-        var versionPart = versionString.Split('-', 2)[0].Trim();
+        var parts = versionString.Split('-', 2);
+        var versionPart = parts[0].Trim();
+        var hasPreRelease = parts.Length > 1 && !string.IsNullOrWhiteSpace(parts[1]);
         
         if (Version.TryParse(versionPart, out var version)) {
+            // For pre-release versions, we need to make them less than the release version
+            // We do this by decrementing the revision number (or build if revision is already 0)
+            if (hasPreRelease) {
+                var major = version.Major;
+                var minor = version.Minor;
+                var build = version.Build == -1 ? 0 : version.Build;
+                var revision = version.Revision == -1 ? 0 : version.Revision;
+                
+                // Decrement to make pre-release less than release
+                if (revision > 0) {
+                    revision--;
+                } else if (build > 0) {
+                    build--;
+                    revision = int.MaxValue; // Max revision for the decremented build
+                } else if (minor > 0) {
+                    minor--;
+                    build = int.MaxValue;
+                    revision = int.MaxValue;
+                } else if (major > 0) {
+                    major--;
+                    minor = int.MaxValue;
+                    build = int.MaxValue;
+                    revision = int.MaxValue;
+                } else {
+                    // Version is 0.0.0-prerelease, treat as minimum version
+                    return new Version(0, 0, 0, 0);
+                }
+                
+                return new Version(major, minor, build, revision);
+            }
+            
             return version;
         }
 
@@ -193,23 +226,61 @@ internal class WhitelistBlacklistParser {
     
     /// <summary>
     /// Check if a package name and version matches any pattern in the list
+    /// Returns the most specific match (longest pattern from start of package name)
+    /// For patterns with version constraints, considers both name match specificity and version constraint satisfaction
     /// </summary>
     /// <param name="packageName">Package name to check</param>
     /// <param name="packageVersion">Package version to check (optional)</param>
     /// <param name="patterns">List of patterns (supports wildcards and version constraints)</param>
-    /// <returns>The matching pattern, or null if no match</returns>
+    /// <returns>The most specific matching pattern, or null if no match</returns>
     public static PackagePattern? FindMatchingPattern(string packageName, string? packageVersion, IEnumerable<PackagePattern> patterns) {
         if (string.IsNullOrWhiteSpace(packageName)) {
             return null;
         }
         
+        var matchingPatterns = new List<(PackagePattern pattern, int specificity)>();
+        
         foreach (var pattern in patterns) {
             if (IsMatch(packageName, packageVersion, pattern)) {
-                return pattern;
+                // Calculate the specificity of the match
+                int specificity = GetMatchSpecificity(packageName, pattern.Name);
+                matchingPatterns.Add((pattern, specificity));
             }
         }
         
-        return null;
+        if (matchingPatterns.Count == 0) {
+            return null;
+        }
+        
+        // Return the pattern with the highest specificity
+        return matchingPatterns.OrderByDescending(m => m.specificity).First().pattern;
+    }
+    
+    /// <summary>
+    /// Calculate the specificity of a pattern match based on how much of the package name
+    /// is explicitly matched (not using wildcards)
+    /// </summary>
+    /// <param name="packageName">The package name being matched</param>
+    /// <param name="pattern">The pattern being checked</param>
+    /// <returns>The length of the explicit (non-wildcard) match from the start</returns>
+    private static int GetMatchSpecificity(string packageName, string pattern) {
+        if (string.IsNullOrWhiteSpace(pattern)) {
+            return 0;
+        }
+        
+        // For exact matches (no wildcards), return the full pattern length
+        if (!pattern.Contains('*')) {
+            return pattern.Equals(packageName, StringComparison.OrdinalIgnoreCase) ? pattern.Length : 0;
+        }
+        
+        // For wildcard patterns, return the length of the prefix before the first wildcard
+        var wildcardIndex = pattern.IndexOf('*');
+        if (wildcardIndex == 0) {
+            return 0; // Pattern starts with wildcard, no specificity
+        }
+        
+        var prefix = pattern.Substring(0, wildcardIndex);
+        return packageName.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) ? prefix.Length : 0;
     }
     
     /// <summary>
