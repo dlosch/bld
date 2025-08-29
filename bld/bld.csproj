@@ -29,9 +29,6 @@
     <PackageReference Include="Spectre.Console" />
     <PackageReference Include="System.CommandLine" />
     <PackageReference Include="Microsoft.SourceLink.GitHub" PrivateAssets="All" />
-    <PackageReference Include="Microsoft.Sbom.Api" />
-    <PackageReference Include="CycloneDX.Core" />
-    <PackageReference Include="System.Text.Json" />
     <PackageReference Include="NuGet.Protocol" />
     <PackageReference Include="NuGet.Versioning" />
     <PackageReference Include="NuGet.Packaging" />
@@ -60,7 +57,4 @@
     <!--<None Include="LICENSE" Pack="true" PackagePath="" />-->
   </ItemGroup>
 
-  <Target Name="Foo">
-    <Warning Text="$(MSBuildExtensionsPath)" />
-  </Target>
 </Project>
