@@ -1,9 +1,8 @@
 using bld.Infrastructure;
 using bld.Models;
 using bld.Services;
+using NuGet.Versioning;
 using System.CommandLine;
-using System.CommandLine.Parsing;
-using System.Xml.Linq;
 
 namespace bld.Commands;
 
@@ -217,14 +216,15 @@ internal sealed class TfmCommand : BaseCommand {
                 return null;
             }
 
+            // todo possibly better to use SemVer package
             // Parse output to find highest version
             var lines = output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
-            var versions = new List<Version>();
+            var versions = new List<NuGetVersion>();
 
             foreach (var line in lines) {
                 // Example line: "8.0.100 [C:\Program Files\dotnet\sdk]"
                 var parts = line.Split(' ');
-                if (parts.Length > 0 && Version.TryParse(parts[0], out var version)) {
+                if (parts.Length > 0 && NuGetVersion.TryParse(parts[0], out var version)) {
                     versions.Add(version);
                 }
             }
