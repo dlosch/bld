@@ -1,47 +1,38 @@
-﻿# bld clean
+﻿# bld (BETA)
 
-This is a tool to clean build output folders for (especially .net) MSBuild projects.
+This repository is in BETA. Features, commands, and behavior are experimental and may change or be removed without notice.
 
-## what does it do?
+bld is a command-line tool to clean build output folders for (especially .NET) MSBuild projects.
 
-It cleans build output, publishing and intermediate folders.
+## What it does
 
-Yes, you can use **dotnet clean** or **msbuild /t:clean** to clean build output from your solutions ... 
+- Traverse directories looking for .sln, .slnx, .slnf
+- Process all configurations from solution files
+- Evaluate MSBuild properties in-process for each project/configuration
+- Resolve a default MSBuild installation and optionally VSToolsPath (from Visual Studio)
+- Optionally delete only non-current build outputs (TFMs no longer referenced)
+- Validate TFMs for .NET projects to avoid incorrect deletions
+- Dry-run by default: produces stats and an OS-specific deletion script. Nothing is deleted unless `--delete` is specified
+- Basic Linux support
 
-However, these tools ... well these
-- don't clean old build targets (after migrating from net8.0 to net9.0, net8.0 output doesn't get cleaned)
-- don't delete default publishing folders (which can be huge)
-- don't delete intermediate build folders (obj)
-- dotnet clean can have limitations cleaning older framework-style projects
+## Commands
 
-Yes, you can just use git/source control to nuke anything not under source control
-- not all projects are under git/source control
-- if the build output isn't below the repo, this doesn't work (dotnet\runtime)
+Note: Commands marked (BETA) are experimental. Only `clean` and `stats` are considered stable for now.
 
-### what this tool does
-- traverse directories looking for .sln, .slnx, .slnf
-- process all configurations from the solution files
-- in process evaluation of properties for each project and configuration (note: the Microsoft.Build evaluation is *not* instant)
-- automatically resolves default msbuild install (typically .NET SDK) and resolves VSToolsPath for additional target files provided by Visual Studio installations (if available)
-- enables you to delete only non-current build output (TagetFramework(s) no longer referenced in proj file)
-- validates tfms for .net projects to make sure the correct stuff gets cleaned
-- by default doesn't delete, only dumps stats and the command line to delete folders. Nothing gets touched unless you specify --delete
-- basic support for linux
+- clean — Evaluate solutions/projects and produce a summary and an OS-specific deletion script (dry-run by default). Use `--delete` to actually remove files. (stable)
+- stats — Compute and print cleaning statistics only (no deletion, no deletion script). Useful to preview impact. (stable)
+- nuget (BETA) — Analyze NuGet packages and dependencies
+- containerize (BETA) — Prepare project for containerization
+- cpm (BETA) — Central Package Management helpers
+- outdated (BETA) — Find outdated packages and optionally update them
+- cleanup (BETA) — Additional cleanup helpers
+- tfm (BETA) — Target framework management
 
-Note:
-- global.json ... doe to the consistent /s way msbuild, dotnet msbuild, and dotnet build handle global.json ... 
-
-
-## bld (dotnet tool) Commands
-
-| Command | Description |
-|---|---|
-| clean | Evaluate solutions/projects and produce a summary and an OS-specific deletion script (dry-run by default). Use `--delete` to actually remove files. |
-| stats | Compute and print cleaning statistics only (no deletion and no deletion script). Useful to preview impact. |
+Commands marked as BETA are experimental and may change or be removed in future releases.
 
 ## Examples
 
-Generate a deletion script:
+Generate a deletion script (dry-run):
 
 ```text
 bld clean --root <rootDir> --depth 3 -o clean.cmd
@@ -59,39 +50,107 @@ Run and actually delete (use with care):
 bld clean --root <rootDir> --delete [--force]
 ```
 
-## Options (current defaults & meanings)
+Analyze NuGet packages (BETA):
 
-| Option | Type | Default | Description |
-|---|---:|---:|---|
-| `--root`, `-r` | string | current working directory | Root directory or a `.sln` path (can also be specified as the trailing argument). |
-| `--depth`, `-d` | int | 3 | Recursion depth to search for solution files when `--root` is a directory. |
-| `--non-current`, `--noncurrent`, `-nc` | bool | false | Only consider directories for target frameworks no longer referenced by the project (non-current TFMs). |
-| `--obj`, `-obj` | bool | true | Also consider `BaseIntermediateOutputPath` (obj) for cleaning. Note: CleaningOptions defaults to keep obj handling enabled. |
-| `--log`, `-v`, `--verbosity` | LogLevel | Warning | Log verbosity: Debug, Verbose, Info, Warning, Error. |
-| `--output-file`, `-o` | string | `clean.cmd` | Path to write the deletion script (batch file or shell commands depending on OS). |
-| `--vstoolspath`, `-vs` | string | null | Explicit VSToolsPath for MSBuild evaluation; if omitted, the tool may try to resolve it from Visual Studio instances. |
-| `--novstoolspath`, `-novs` | bool | false | Do not try to auto-resolve VSToolsPath from environment or vswhere. |
-| `--delete` | bool | false | Perform deletions instead of a dry-run. |
+```text
+bld nuget --root <rootDir> --depth 2 --whitelist-blacklist-file rules.txt
+```
 
-Note: the code includes additional internal flags (parallel/processor modes) and different processors (stats, batch file writer, delete) — the default command wiring uses the batch-file (script) processor for `clean` and the stats processor for `stats`.
+Convert projects for container builds (dry-run):
+
+```text
+bld containerize --root <rootDir> --depth 2
+```
+
+Convert projects to Central Package Management (dry-run):
+
+```text
+bld cpm --root <rootDir> --dry-run
+```
+
+Check outdated packages (no changes):
+
+```text
+bld outdated --root <rootDir> --prerelease
+```
+
+Cleanup helpers (BETA) — usage varies by subcommand:
+
+```text
+bld cleanup --help
+```
+
+TFM management (BETA):
+
+```text
+bld tfm --help
+```
+
+## Options (global and per-command)
+
+Global options (available to most commands):
+
+- `--root`, `-r` (string) — Root directory or a `.sln` path. Default: current working directory (or trailing argument)
+- `--depth`, `-d` (int) — Recursion depth to search for solution files when `--root` is a directory. Default: 3
+- `--log`, `-v`, `--verbosity` (LogLevel) — Log verbosity: Debug, Verbose, Info, Warning, Error. Default: Warning
+- `--vstoolspath`, `-vs` (string) — Explicit VSToolsPath for MSBuild evaluation; if omitted the tool may try to resolve it from Visual Studio instances
+- `--novstoolspath`, `-novs` (bool) — Do not try to auto-resolve VSToolsPath from environment or vswhere. Default: false
+
+clean (stable) options:
+
+- `--non-current`, `--noncurrent`, `-nc` (bool) — Only consider output for TFMs no longer referenced in the project. Default: false
+- `--obj`, `-obj` (bool) — Also consider BaseIntermediateOutputPath (obj folder) for cleaning. Default: true
+- `--output-file`, `-o` (string) — Path to write the deletion script (batch file or shell commands depending on OS). Default: `clean.cmd` on Windows or `clean.sh` on Unix
+- `--delete` (bool) — Perform deletions instead of a dry-run. Default: false
+- `--force` (bool) — Do not ask for confirmation (requires explicit root). Default: false
+
+stats (stable) options:
+
+- `--non-current`, `--noncurrent`, `-nc` (bool) — Report only non-current TFMs. Default: false
+- `--obj`, `-obj` (bool) — Include obj folders in statistics. Default: true
+
+nuget (BETA) options:
+
+- `--whitelist-blacklist-file`, `--wbf` (string) — Path to a whitelist/blacklist file for categorization rules
+- Global options apply as well (root, depth, vstoolspath, etc.)
+
+containerize (BETA) options:
+
+- `--update`, `-u` (bool) — Apply changes to project files. Default: false (dry-run)
+- Global options apply as well
+
+cpm (BETA) options:
+
+- `--dry-run` (bool) — Show what would be changed without modifying files. Default: true
+- `--force` (bool) — Apply changes to create/modify Directory.Packages.props and update project files. Default: false
+- `--overwrite` (bool) — Overwrite existing Directory.Packages.props if it exists. Default: false
+
+outdated (BETA) options:
+
+- `--update`, `-u` (bool) — Update packages to their latest versions instead of just checking. Default: false
+- `--skip-tfm-check` (bool) — Skip target framework compatibility checks when suggesting updates. Default: false
+- `--prerelease` (bool) — Include prerelease versions of NuGet packages. Default: false
+
+cleanup (BETA) and tfm (BETA):
+
+- These commands include subcommands and options. Run `bld cleanup --help` or `bld tfm --help` for details.
 
 ## Notes / Caveats
 
-- MSBuild evaluation can be slow for large repos because the tool invokes MSBuild evaluation per project/configuration pair to compute accurate paths. This is deliberate: better to be correct and slow than fast and wrong.
-- MSBuild property evaluation may fail for misconfigured projects — in that case the tool reports the error and skips the problematic project.
+- MSBuild evaluation can be slow for large repos because the tool evaluates per project/configuration to compute accurate paths. This is deliberate to be correct rather than fast.
+- MSBuild property evaluation may fail for misconfigured projects — such projects are reported and skipped.
 
 ## Installing as a dotnet tool
 
-Package name and distribution depend on how you publish. Example install (replace `<package>` with the real package id):
+Example:
 
 ```powershell
 dotnet tool install -g <package>
-# then run:
 bld clean --help
 ```
 
-For a local install, use `dotnet tool install --local <package>` in a folder with a tool manifest.
+For a local install use `dotnet tool install --local <package>` in a folder with a tool manifest.
 
 ---
 
-This is a rewrite of a previous tool which used msbuild command line invocation with -getproperty to query properties. This is now in proc using the default msbuild installation.
+This tool performs in-process MSBuild evaluation (no external -getproperty calls). Use with care when running deletion operations.
