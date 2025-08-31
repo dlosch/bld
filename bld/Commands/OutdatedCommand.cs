@@ -18,7 +18,7 @@ internal sealed class OutdatedCommand : BaseCommand {
         DefaultValueFactory = _ => false
     };
 
-    private readonly Option<bool> _prereleaseOption = new Option<bool>("--prerelease") {
+    private readonly Option<bool> _prereleaseOption = new Option<bool>("--prerelease", "--pre") {
         Description = "Include prerelease versions of NuGet packages.",
         DefaultValueFactory = _ => false
     };

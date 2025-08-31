@@ -1,8 +1,15 @@
 ﻿using bld.Models;
 using bld.Services;
 using Microsoft.Build.Construction;
+using NuGet.Packaging;
 
 namespace bld.Infrastructure;
+
+internal enum ProcessingType {
+    Solution,
+    Project,
+    Directory
+}
 
 internal sealed class SlnParser(IConsoleOutput Console, ErrorSink ErrorSink) {
     public async IAsyncEnumerable<ProjCfg> ParseSolution(string slnPath, IFileSystem? fileSystem = default) {

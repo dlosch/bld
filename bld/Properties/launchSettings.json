@@ -1,0 +1,9 @@
+{
+  "profiles": {
+    "bld": {
+      "commandName": "Project",
+      "commandLineArgs": "outdated d:\\dlosch\\agentic\\ -v Debug --pre",
+      "commandLineArgs_": "outdated d:\\dlosch\\bld\\ --apply"
+    }
+  }
+}
