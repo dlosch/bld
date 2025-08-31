@@ -39,17 +39,15 @@ internal sealed class HttpVersionDelegatingHandler : DelegatingHandler {
         return base.Send(request, cancellationToken);
     }
 }
+
 internal sealed class NuGetHttpPkgService(NuGetHttpService _nugetHttpService, IConsoleOutput _console) : IAsyncDisposable {
+    internal async Task<CatEntry?> GetLatestCompatible(string packageId, string? tfm, bool allowPrerelease = false, CancellationToken cancellationToken = default)
+        => await _nugetHttpService.GetLatestCompatible(packageId, tfm, allowPrerelease, cancellationToken);
 
-
-    internal async Task<CatEntry?> GetLatestCompatible(string packageId, string? tfm, bool alloPrerelease = false, CancellationToken cancellationToken = default)
-        => await _nugetHttpService.GetLatestCompatible(packageId, tfm, alloPrerelease, cancellationToken);
-
-    internal async Task<IEnumerable<(string, CatEntry?)>> GetLatestCompatible(string packageId, IEnumerable<string> tfms, bool alloPrerelease = false, CancellationToken cancellationToken = default)
-        => await _nugetHttpService.GetLatestCompatible(packageId, tfms, alloPrerelease, cancellationToken);
+    internal async Task<IEnumerable<(string, CatEntry?)>> GetLatestCompatible(string packageId, IEnumerable<string> tfms, bool allowPrerelease = false, CancellationToken cancellationToken = default)
+        => await _nugetHttpService.GetLatestCompatible(packageId, tfms, allowPrerelease, cancellationToken);
 
     public ValueTask DisposeAsync() {
-
         return ValueTask.CompletedTask;
     }
 }
@@ -60,7 +58,6 @@ internal class NuGetHttpService(HttpClient _client, IConsoleOutput _consoleOutpu
             AutomaticDecompression = System.Net.DecompressionMethods.GZip | System.Net.DecompressionMethods.Deflate,
         });
         var client = new HttpClient(handler);
-        //var client = new HttpClient();
         client.DefaultRequestHeaders.UserAgent.TryParseAdd("Yabadabadoo");
         return client;
     }
@@ -72,9 +69,7 @@ internal class NuGetHttpService(HttpClient _client, IConsoleOutput _consoleOutpu
         try {
             var request = new HttpRequestMessage(HttpMethod.Get, fullUrl);
             response = _client.SendAsync(request, cancellationToken).GetAwaiter().GetResult();
-            //response = await _client.SendAsync(request, cancellationToken);
             _consoleOutput.WriteInfo($"{response.StatusCode} {fullUrl}");
-
         }
         catch (Exception xcptn) {
             _consoleOutput.WriteWarning($"HTTP request to {fullUrl} failed: {xcptn.Message}");
@@ -85,23 +80,6 @@ internal class NuGetHttpService(HttpClient _client, IConsoleOutput _consoleOutpu
         var allVersions = await response.Content.ReadFromJsonAsync<NugetRegistrationIndex>(cancellationToken);
         if (allVersions is null || allVersions.Items is null || allVersions.Items.Count == 0) return null;
         return allVersions;
-    }
-
-    private async IAsyncEnumerable<CatEntry> FetchEx(string packageId, bool allowPrerelease = false, string? etag = default, DateTime? lastModified = default, CancellationToken cancellationToken = default) {
-        var allVersions = await Fetch(packageId, etag, lastModified, cancellationToken);
-        if (allVersions is null || allVersions.Items is null || !allVersions.Items.Any()) yield break;
-        //var vers = new List<CatEntry>(allVersions.Items.Sum(page => page.Count));
-
-        foreach (var item in allVersions.Items) {
-            foreach (var ci in item.Items) {
-                var nuVer = new NuGetVersion(ci.CatalogEntry.Version);
-                if (!allowPrerelease && nuVer.IsPrerelease) continue;
-
-                if (ci.CatalogEntry.DependencyGroups?.Any() ?? false) {
-                    yield return new CatEntry(nuVer, ci.CatalogEntry.DependencyGroups.Select(dg => dg.TargetFramework).ToArray());
-                }
-            }
-        }
     }
 
     private async Task<IEnumerable<CatEntry>> FetchEx2(string packageId, bool allowPrerelease = false, string? etag = default, DateTime? lastModified = default, CancellationToken cancellationToken = default) {
@@ -123,12 +101,9 @@ internal class NuGetHttpService(HttpClient _client, IConsoleOutput _consoleOutpu
         return vers;
     }
 
-    internal IAsyncEnumerable<CatEntry> GetVersionList(string packageId, bool alloPrerelease = false, CancellationToken cancellationToken = default) => FetchEx(packageId, alloPrerelease, default, default, cancellationToken);
-
-    internal async Task<IEnumerable<(string, CatEntry?)>> GetLatestCompatible(string packageId, IEnumerable<string> tfms, bool alloPrerelease = false, CancellationToken cancellationToken = default) {
+    internal async Task<IEnumerable<(string, CatEntry?)>> GetLatestCompatible(string packageId, IEnumerable<string> tfms, bool allowPrerelease = false, CancellationToken cancellationToken = default) {
         try {
-            var list = await FetchEx2(packageId, alloPrerelease, cancellationToken: cancellationToken);
-
+            var list = await FetchEx2(packageId, allowPrerelease, cancellationToken: cancellationToken);
 
             var temp = tfms.Select(tfm => (tfm, list.Where(e => e.Tfms.Any(pkgTfm => IsCompatible(tfm, pkgTfm)))
                                                 .OrderByDescending(e => e.Version)));
@@ -136,16 +111,13 @@ internal class NuGetHttpService(HttpClient _client, IConsoleOutput _consoleOutpu
                 _consoleOutput.WriteDebug($"TFM {tfm} => {string.Join(", ", entries.Select(e => e.Version.ToString()))}");
             }
 
-
             return tfms.Select(tfm => (tfm, list.Where(e => e.Tfms.Any(pkgTfm => IsCompatible(tfm, pkgTfm)))
                                                 .OrderByDescending(e => e.Version)
                                                 .FirstOrDefault()));
         }
-        catch (Exception ex) {
-            //console?.WriteWarning($"HTTP request to {url} failed: {ex.Message}");
-            return null;
+        catch (Exception) {
+            return Enumerable.Empty<(string, CatEntry?)>();
         }
-
     }
 
     static bool IsCompatible(string projectTfm, string packageTfm) {
@@ -153,90 +125,20 @@ internal class NuGetHttpService(HttpClient _client, IConsoleOutput _consoleOutpu
         var package = NuGetFramework.Parse(packageTfm);   // e.g. "net8.0"
         return DefaultCompatibilityProvider.Instance.IsCompatible(project, package);
     }
-    static NuGetFramework? GetBestCompatible(string projectTfm, IEnumerable<string> packageTfms) {
-        var reducer = new FrameworkReducer();
-        var project = NuGetFramework.Parse(projectTfm);
-        var packageFrameworks = packageTfms.Select(NuGetFramework.Parse);
-        return reducer.GetNearest(project, packageFrameworks); // null => incompatible
-    }
 
-    internal async Task<CatEntry?> GetLatestCompatible(string packageId, string? tfm, bool alloPrerelease = false, CancellationToken cancellationToken = default) {
+    internal async Task<CatEntry?> GetLatestCompatible(string packageId, string? tfm, bool allowPrerelease = false, CancellationToken cancellationToken = default) {
         try {
-            // https://api.nuget.org/v3/registration5-semver1/microsoft.data.sqlclient/index.json
-            //await foreach (var ver in GetVersionList(packageId, alloPrerelease, cancellationToken)) {
-
-            //}
-            var list = await FetchEx2(packageId, alloPrerelease, cancellationToken: cancellationToken);
-
+            var list = await FetchEx2(packageId, allowPrerelease, cancellationToken: cancellationToken);
 
             foreach (var entries in list) {
                 _consoleOutput.WriteDebug($"TFM {tfm} => {entries.Version.ToString()}");
             }
 
-
-
             return list.Where(e => tfm is null || e.Tfms.Any(pkgTfm => IsCompatible(tfm, pkgTfm)))
                 .OrderByDescending(e => e.Version)
                 .FirstOrDefault();
-
-            //// Enumerate
-            //await foreach (var entry in 
-            //    .Where(e => e.Version is not null)
-            //    .WithCancellation(cancellationToken)) {
-            //    // use entry
-            //    if (IsCompatible(tfm ?? "net10.0", entry.Tfms.FirstOrDefault() ?? "")) {
-            //        return entry.Version.ToString();
-            //    }
-            //}
-
-            //var fullUrl = $"https://api.nuget.org/v3/registration5-semver1/{packageId.ToLowerInvariant()}/index.json";
-            //var response = await _client.GetAsync(fullUrl, cancellationToken);
-            //response.EnsureSuccessStatusCode();
-
-            //var allVersions = await response.Content.ReadFromJsonAsync<NugetRegistrationIndex>(cancellationToken);
-            //if (allVersions is null || allVersions.Items is null || allVersions.Items.Count == 0) return null;
-
-            //var vers = new List<CatEntry>();
-            //foreach (var item in allVersions.Items) {
-            //    foreach (var ci in item.Items) {
-            //        var ver = new CatEntry( new NuGetVersion(ci.CatalogEntry.Version));
-            //        vers.Add(ver);
-            //        foreach (var dep in ci.CatalogEntry.DependencyGroups) {
-            //            ver.Add(dep.TargetFramework);
-            //        }
-            //    }
-            //}
-
-            //var filtered = vers
-            //    .Where(v => alloPrerelease || !v.Version.IsPrerelease)
-            //    .Where(v => tfm is null || v.Tfms.Any(x => IsCompatible(tfm, x)))
-            //    .OrderByDescending(v => v.Version)
-            //    .FirstOrDefault();
-
-            //return filtered?.Version.ToString();
-
-            ////var versionListUrl = $"https://api.nuget.org/v3-flatcontainer/{packageId.ToLowerInvariant()}/index.json";
-
-            ////var response = await _client.GetAsync(versionListUrl, cancellationToken);
-            ////response.EnsureSuccessStatusCode();
-
-            ////var allVersions = await response.Content.ReadFromJsonAsync<Versions>(cancellationToken);
-
-            ////// https://api.nuget.org/v3/registration5-semver1/newtonsoft.json/index.json
-
-
-            ////if (allVersions is null) return null;
-            ////var (nugetVersion, version) = allVersions.GetLatestVersion(alloPrerelease));
-            ////if (nugetVersion is null) return null;
-            ////// https://api.nuget.org/v3/registration5-gz-semver2/microsoft.extensions.http/page/10.0.0-preview.7.25380.108/10.0.0-preview.7.25380.108.json
-
-            ////// https://api.nuget.org/v3/registration5-semver1/newtonsoft.json/13.0.3.json => https://api.nuget.org/v3/catalog0/data/2023.03.08.07.46.17/newtonsoft.json.13.0.3.json
-            ////// https://api.nuget.org/v3/registration5-gz-semver2/newtonsoft.json/page/13.0.3/13.0.3.json
-            ////// "https://api.nuget.org/v3/registration5-gz-semver2/microsoft.extensions.http/page/10.0.0-preview.7.25380.108/10.0.0-preview.7.25380.108.json
-            ////var versionMetadataUrl = $"https://api.nuget.org/v3/registration5-semver1/{packageId.ToLowerInvariant()}/{nugetVersion}.json";
         }
-        catch (Exception ex) {
-            //console?.WriteWarning($"HTTP request to {url} failed: {ex.Message}");
+        catch (Exception) {
             return null;
         }
     }
@@ -255,18 +157,6 @@ internal class OutdatedService {
         _logger = new NuGetLogger(_console);
     }
 
-    /*
-     * XDocument version pseudocode
-     *  enmerate all ProjCfg from solution.
-     *      we only process the "Release" configuration (there would normally be two "Debug" and "Release")
-     *      use XDocument to load the project file and extract any PackageReference elements
-     *          check if the Version attribute is present, if so, extract (Include, Version)
-     *          else, try locate the directory.packages.props file. Starting from the directory of the project file, move up the directory tree, stop when we reach the first directory.packages.props. or, stop at the root.
-     *              you should cache all known directory.packages.props files and annotate the ProjCfg with the path to the file (nullable).
-     *              
-     *      regarding the version updates. EVERN if we find more than one directory.packages.props file, we always use the same version for each package in all directory.packages.props files.
-     *          but: a package only gets written to a directory.packages.props file if it was originally referenced from a project that is associated with that directory.packages.props file.
-     */
     [MethodImpl(MethodImplOptions.NoInlining)]
     public async Task<int> CheckOutdatedPackagesAsync(string rootPath, bool updatePackages, bool skipTfmCheck, bool includePrerelease, CancellationToken cancellationToken) {
         // Initialize MSBuild before any Microsoft.Build.* types are loaded – same pattern as CleaningApplication
@@ -283,162 +173,58 @@ internal class OutdatedService {
 
         var stopwatch = Stopwatch.StartNew();
 
-        // Caches for Directory.Packages.props discovery and content
-        var dirToPropsCache = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
-        var propsContentCache = new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
-
-        // Aggregate all package references across projects
+        // Step 1: Query all package references and package versions from all projects
         var allPackageReferences = new Dictionary<string, List<PackageInfo>>(StringComparer.OrdinalIgnoreCase);
-        var projectFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        // Local helper: find nearest Directory.Packages.props walking up from project directory
-        string? FindNearestProps(string projectPath) {
-            var dir = Path.GetDirectoryName(projectPath);
-            while (!string.IsNullOrEmpty(dir)) {
-                if (dirToPropsCache.TryGetValue(dir!, out var cached)) return cached;
-                var candidate = Path.Combine(dir!, "Directory.Packages.props");
-                if (File.Exists(candidate)) {
-                    dirToPropsCache[dir!] = candidate;
-                    return candidate;
-                }
-                dirToPropsCache[dir!] = null; // remember miss
-                dir = Path.GetDirectoryName(dir);
-            }
-            return null;
-        }
-
-        // Local helper: load props content as map id->version (cached)
-        async Task<Dictionary<string, string>> LoadPropsMapAsync(string propsPath) {
-            if (propsContentCache.TryGetValue(propsPath, out var map)) return map;
-            var dict = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            try {
-                using var stream = File.OpenRead(propsPath);
-                var doc = await XDocument.LoadAsync(stream, LoadOptions.None, cancellationToken);
-                foreach (var el in doc.Descendants("PackageVersion")) {
-                    var inc = el.Attribute("Include")?.Value;
-                    var ver = el.Attribute("Version")?.Value;
-                    if (!string.IsNullOrEmpty(inc) && !string.IsNullOrEmpty(ver)) dict[inc] = ver;
-                }
-            }
-            catch (Exception ex) {
-                _console.WriteWarning($"Failed to parse {propsPath}: {ex.Message}");
-            }
-            propsContentCache[propsPath] = dict;
-            return dict;
-        }
+        var projectsProcessed = 0;
 
         try {
-            var packageRefs = new List<PackageInfo>();
             var projParser = new ProjParser(_console, errorSink, _options);
 
             await foreach (var slnPath in slnScanner.Enumerate(rootPath)) {
                 await _console.StartStatusAsync($"Processing solution {slnPath}", async ctx => {
-                    var currentProject = default(string);
                     await foreach (var projCfg in slnParser.ParseSolution(slnPath, fileSystem)) {
                         // Only process "Release" configuration as per spec
-                        // todo 20250830 aggregate
                         if (!string.Equals(projCfg.Configuration, "Release", StringComparison.OrdinalIgnoreCase)) continue;
                         if (!cache.Add(projCfg)) continue; // de-dupe project/configs
 
+                        projectsProcessed++;
+                        ctx.Status($"Processing project {projectsProcessed}: {Path.GetFileName(projCfg.Path)}");
+
                         var refs = projParser.GetPackageReferences(projCfg);
-                        _console.WriteDebug($"{projCfg.Proj.Path} {refs.TargetFramework} cpm? {refs.UseCpm} [{refs.CpmFile}]");
-                        foreach (var item in refs.PackageReferences) {
-                            _console.WriteDebug($"\tREF {item.Key} {item.Value}");
-                        }
-                        if (refs.PackageVersions is not null)
-                            foreach (var item in refs.PackageVersions) {
-                                _console.WriteDebug($"\tVER {item.Key} {item.Value}");
+                        if (refs == null) continue;
+
+                        _console.WriteDebug($"{projCfg.Path} TFM:{refs.TargetFramework} CPM:{refs.UseCpm} [{refs.CpmFile}]");
+
+                        // Convert to PackageInfo objects for aggregation
+                        foreach (var packageRef in refs.PackageReferences) {
+                            var packageId = packageRef.Key;
+                            var version = packageRef.Value;
+
+                            // If no version in PackageReference, try to get it from PackageVersion (CPM)
+                            if (string.IsNullOrEmpty(version) && refs.UseCpm == true && refs.PackageVersions?.TryGetValue(packageId, out var cpmVersion) == true) {
+                                version = cpmVersion;
                             }
 
+                            // Skip packages without a version
+                            if (string.IsNullOrEmpty(version)) {
+                                _console.WriteWarning($"Package {packageId} in {projCfg.Path} has no version - skipping");
+                                continue;
+                            }
 
-                        var exnm = refs.PackageReferences.Select(re => new PackageInfo {
-                            Id = re.Key,
-                            FromProps = refs.UseCpm ?? false,
-                            TargetFramework = refs.TargetFramework,
-                            ProjectPath = refs.Proj.Path,
-                            PropsPath = refs.CpmFile,
-                            Version = re.Value ?? (refs.UseCpm == true && refs.PackageVersions is not null && refs.PackageVersions.TryGetValue(re.Key, out var v) ? v : null)
-                        });
+                            var packageInfo = new PackageInfo {
+                                Id = packageId,
+                                Version = version,
+                                ProjectPath = projCfg.Path,
+                                TargetFramework = refs.TargetFramework,
+                                PropsPath = refs.CpmFile,
+                                FromProps = refs.UseCpm ?? false
+                            };
 
-                        var bad = exnm.Where(e => string.IsNullOrEmpty(e.Version)).ToList();
-
-                        packageRefs.AddRange(exnm);
-
-                        //packageRefs.Add(new PackageInfo {
-                        //    Id = include,
-                        //    Version = version!,
-                        //    ProjectPath = projectPath,
-                        //    TargetFramework = projectTfm,
-                        //    PropsPath = propsPath,
-                        //    FromProps = fromProps
-                        //});
-
-                        //if (currentProject is null || !string.Equals(currentProject, projCfg.Path, StringComparison.OrdinalIgnoreCase)) {
-                        //    currentProject = projCfg.Path;
-                        //    _console.WriteDebug($"Processing project: {projCfg.Path}");
-                        //    ctx.Status($"Processing project: {projCfg.Path}");
-                        //}
-
-                        //var projectPath = projCfg.Path;
-                        //projectFiles.Add(projectPath);
-
-                        //// XDocument-based extraction
-                        //try {
-                        //    using var stream = File.OpenRead(projectPath);
-                        //    var doc = await XDocument.LoadAsync(stream, LoadOptions.None, cancellationToken);
-
-                        //    var targetFramework = doc.Descendants("TargetFramework").FirstOrDefault()?.Value;
-                        //    var targetFrameworks = doc.Descendants("TargetFrameworks").FirstOrDefault()?.Value;
-                        //    var projectTfm = targetFramework ?? targetFrameworks?.Split(';').FirstOrDefault()?.Trim();
-
-                        //    foreach (var pr in doc.Descendants("PackageReference")) {
-                        //        var include = pr.Attribute("Include")?.Value;
-                        //        Console.WriteLine(include);
-                        //        if (string.IsNullOrWhiteSpace(include)) continue;
-
-                        //        string? version = pr.Attribute("Version")?.Value ?? pr.Element("Version")?.Value;
-                        //        string? propsPath = null;
-                        //        bool fromProps = false;
-
-                        //        if (string.IsNullOrEmpty(version)) {
-                        //            propsPath = FindNearestProps(projectPath);
-                        //            Console.WriteLine(propsPath);
-                        //            if (!string.IsNullOrEmpty(propsPath)) {
-                        //                var map = await LoadPropsMapAsync(propsPath);
-                        //                if (map.TryGetValue(include, out var v)) {
-                        //                    version = v;
-                        //                    fromProps = true;
-                        //                }
-                        //            }
-                        //        }
-                        //        else {
-                        //            // still annotate the nearest props for later association, even if direct
-                        //            propsPath = FindNearestProps(projectPath);
-                        //        }
-
-                        //        if (!string.IsNullOrEmpty(version)) {
-                        //            Console.WriteLine($"{include} {version}");
-                        //            packageRefs.Add(new PackageInfo {
-                        //                Id = include,
-                        //                Version = version!,
-                        //                ProjectPath = projectPath,
-                        //                TargetFramework = projectTfm,
-                        //                PropsPath = propsPath,
-                        //                FromProps = fromProps
-                        //            });
-                        //        }
-                        //    }
-                        //}
-                        //catch (Exception ex) {
-                        //    _console.WriteWarning($"Failed to parse {projectPath}: {ex.Message}");
-                        //}
-
-                        foreach (var pkg in packageRefs) {
-                            if (!allPackageReferences.TryGetValue(pkg.Id, out var list)) {
+                            if (!allPackageReferences.TryGetValue(packageId, out var list)) {
                                 list = new List<PackageInfo>();
-                                allPackageReferences[pkg.Id] = list;
+                                allPackageReferences[packageId] = list;
                             }
-                            list.Add(pkg);
+                            list.Add(packageInfo);
                         }
                     }
                 });
@@ -446,6 +232,7 @@ internal class OutdatedService {
         }
         catch (Exception ex) {
             _console.WriteException(ex);
+            return 1;
         }
 
         if (allPackageReferences.Count == 0) {
@@ -453,96 +240,16 @@ internal class OutdatedService {
             return 0;
         }
 
-        _console.WriteInfo($"Found {allPackageReferences.Count} unique packages across {projectFiles.Count} projects");
+        _console.WriteInfo($"Found {allPackageReferences.Count} unique packages across {projectsProcessed} projects");
 
-        // Determine latest versions per package and prepare updates
-        var packageSource = Repository.Factory.GetCoreV3("https://api.nuget.org/v3/index.json");
-        var metadataResource = await packageSource.GetResourceAsync<PackageMetadataResource>(cancellationToken);
+        // Step 2: Create aggregated view of all current package versions
+        var packageSummary = CreatePackageVersionSummary(allPackageReferences);
+        DisplayPackageSummary(packageSummary);
 
-        var latestPerPackage = new Dictionary<string, NuGetVersion>(StringComparer.OrdinalIgnoreCase);
-        var outdatedPerPackage = new Dictionary<string, (NuGetVersion CurrentMin, NuGetVersion Latest)>(StringComparer.OrdinalIgnoreCase);
+        // Step 3: Query NuGet for latest versions
+        var outdatedPackages = await QueryLatestVersionsAsync(packageSummary, includePrerelease, cancellationToken);
 
-        var nugetHttpService = new NuGetHttpService(NuGetHttpService.CreateClient(_console), _console);
-        await using var svc = new NuGetHttpPkgService(nugetHttpService, _console);
-
-        var pp = new ParallelOptions { MaxDegreeOfParallelism = 1 /*Environment.ProcessorCount*/, CancellationToken = cancellationToken };
-        Parallel.ForEach(allPackageReferences, pp, async (kvp) => {
-            var packageId = kvp.Key;
-            var usages = kvp.Value;
-
-            var tfm = usages?.Select(u => NuGetFramework.Parse(u.TargetFramework)).OrderBy(x => x).FirstOrDefault().ToString();
-            //if (usages.DistinctBy(x => x.TargetFramework).Count() <= 1) {
-            //var latest = await svc.GetLatestCompatible(packageId, usages.Select(u => u.TargetFramework).FirstOrDefault(), includePrerelease, cancellationToken);
-
-            //}
-            //else {
-            //    var latest2 = await svc.GetLatestCompatible(packageId, usages.Select(u => u.TargetFramework), includePrerelease, cancellationToken);
-
-            //}
-            var latest = await svc.GetLatestCompatible(packageId, tfm, includePrerelease, cancellationToken);
-            if (latest is null) return;
-
-            latestPerPackage[packageId] = latest.Version;
-            // Find the minimum current version used (for display)
-            var currentMin = usages
-                .Select(u => NuGetVersion.TryParse(u.Version, out var v) ? v : null)
-                .Where(v => v is not null)!
-                .Min()!;
-            if (currentMin < latest.Version) {
-                _console.WriteDebug($"Package {packageId} can be updated from {currentMin} to {latest.Version}");
-                lock (outdatedPerPackage) {
-                    outdatedPerPackage[packageId] = (currentMin, latest.Version);
-                }
-            }
-        });
-        //foreach (var (packageId, usages) in allPackageReferences) {
-
-        //_console.WriteDebug($"Checking updates for {packageId} {usages}...");
-        //try {
-        //    var metadata = await metadataResource.GetMetadataAsync(packageId, true, true, _cache, _logger, cancellationToken);
-        //    var versionFilter = includePrerelease ?
-        //        metadata.OrderByDescending(m => m.Identity.Version) :
-        //        metadata.Where(m => !m.Identity.Version.IsPrerelease).OrderByDescending(m => m.Identity.Version);
-
-        //    // Choose latest version compatible with at least one TFM among usages (basic heuristic if skipTfmCheck is false)
-        //    NuGetVersion? latest = null;
-        //    foreach (var meta in versionFilter) {
-        //        latest = meta.Identity.Version;
-        //        _console.WriteDebug($"Considering {packageId} {latest}...");
-        //        if (!skipTfmCheck) {
-        //            // basic check against first parseable TFM among usages
-        //            var tfm = usages.Select(u => u.TargetFramework).FirstOrDefault(t => !string.IsNullOrEmpty(t));
-        //            if (tfm is string s) {
-        //                try {
-        //                    var nfw = NuGetFramework.Parse(s);
-        //                    if (!await IsPackageCompatibleWithFrameworkAsync(meta, nfw, packageId, cancellationToken)) continue;
-        //                }
-        //                catch { /* ignore parse issues */ }
-        //            }
-        //        }
-        //        break;
-        //    }
-
-        //    if (latest is null) continue;
-        //    latestPerPackage[packageId] = latest;
-
-        //    // Find the minimum current version used (for display)
-        //    var currentMin = usages
-        //        .Select(u => NuGetVersion.TryParse(u.Version, out var v) ? v : null)
-        //        .Where(v => v is not null)!
-        //        .Min()!;
-
-        //    if (currentMin < latest) {
-        //        _console.WriteDebug($"Package {packageId} can be updated from {currentMin} to {latest}");
-        //        outdatedPerPackage[packageId] = (currentMin, latest);
-        //    }
-        //}
-        //catch (Exception ex) {
-        //    _console.WriteWarning($"Failed to query {packageId}: {ex.Message}");
-        //}
-        //}
-
-        if (outdatedPerPackage.Count == 0) {
+        if (outdatedPackages.Count == 0) {
             _console.WriteInfo("All packages are up to date!");
             stopwatch.Stop();
             _console.WriteInfo($"Total elapsed time: {stopwatch.Elapsed}");
@@ -550,57 +257,17 @@ internal class OutdatedService {
             return 0;
         }
 
-        _console.WriteInfo($"\nFound {outdatedPerPackage.Count} packages with available updates:");
-        foreach (var kvp in outdatedPerPackage.OrderBy(k => k.Key)) {
+        _console.WriteInfo($"\nFound {outdatedPackages.Count} packages with available updates:");
+        foreach (var kvp in outdatedPackages.OrderBy(k => k.Key)) {
             _console.WriteWarning($"{kvp.Key}: {kvp.Value.CurrentMin} → {kvp.Value.Latest}");
         }
 
-        // Prepare batch updates: props file -> (package -> version) and project -> (package -> version)
-        var propsUpdates = new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
-        var projectUpdates = new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
-
-        foreach (var (packageId, versions) in outdatedPerPackage) {
-            var latest = versions.Latest.ToString();
-            foreach (var usage in allPackageReferences[packageId]) {
-                // Only update entries that contributed their version (direct ref or props)
-                if (usage.FromProps && !string.IsNullOrEmpty(usage.PropsPath)) {
-                    var propsPath = usage.PropsPath!
-;
-                    if (!propsUpdates.TryGetValue(propsPath, out var map)) {
-                        map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-                        propsUpdates[propsPath] = map;
-                    }
-                    map[packageId] = latest;
-                }
-                else if (!usage.FromProps) {
-                    if (!projectUpdates.TryGetValue(usage.ProjectPath, out var pmap)) {
-                        pmap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-                        projectUpdates[usage.ProjectPath] = pmap;
-                    }
-                    pmap[packageId] = latest;
-                }
-            }
-        }
-
+        // Step 4: If --apply is specified, apply the package versions
         if (updatePackages) {
-            _console.WriteInfo("\nUpdating packages to latest versions...");
-
-            // Update all props files in one pass per file
-            foreach (var (propsPath, updates) in propsUpdates) {
-                await UpdatePropsFileAsync(propsPath, updates, cancellationToken);
-                _console.WriteInfo($"Updated {updates.Count} package(s) in {propsPath}");
-            }
-
-            // Update project files
-            foreach (var (projPath, updates) in projectUpdates) {
-                foreach (var (pkg, v) in updates) {
-                    await UpdatePackageVersionAsync(projPath, pkg, v, cancellationToken);
-                    _console.WriteInfo($"Updated {pkg} to {v} in {Path.GetFileName(projPath)}");
-                }
-            }
+            await ApplyPackageUpdatesAsync(allPackageReferences, outdatedPackages, cancellationToken);
         }
         else {
-            _console.WriteInfo("\nUse --update to apply these changes.");
+            _console.WriteInfo("\nUse --apply to apply these changes.");
         }
 
         stopwatch.Stop();
@@ -610,8 +277,156 @@ internal class OutdatedService {
         return 0;
     }
 
-    private async Task UpdatePropsFileAsync(string propsPath, IReadOnlyDictionary<string, string> updates, CancellationToken cancellationToken) {
+    private Dictionary<string, PackageVersionSummary> CreatePackageVersionSummary(Dictionary<string, List<PackageInfo>> allPackageReferences) {
+        var summary = new Dictionary<string, PackageVersionSummary>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var (packageId, usages) in allPackageReferences) {
+            var versions = usages.Select(u => u.Version).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            var targetFrameworks = usages.Select(u => u.TargetFramework).Where(tfm => !string.IsNullOrEmpty(tfm)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            var projectCount = usages.Select(u => u.ProjectPath).Distinct(StringComparer.OrdinalIgnoreCase).Count();
+            var usesCpm = usages.Any(u => u.FromProps);
+
+            summary[packageId] = new PackageVersionSummary {
+                PackageId = packageId,
+                CurrentVersions = versions!,
+                TargetFrameworks = targetFrameworks!,
+                ProjectCount = projectCount,
+                UsesCentralPackageManagement = usesCpm,
+                Usages = usages
+            };
+        }
+
+        return summary;
+    }
+
+    private void DisplayPackageSummary(Dictionary<string, PackageVersionSummary> packageSummary) {
+        _console.WriteInfo("\nPackage version summary:");
+        foreach (var (packageId, summary) in packageSummary.OrderBy(kvp => kvp.Key)) {
+            var versionsText = string.Join(", ", summary.CurrentVersions);
+            var tfmsText = string.Join(", ", summary.TargetFrameworks);
+            var cpmText = summary.UsesCentralPackageManagement ? " (CPM)" : "";
+            _console.WriteDebug($"{packageId}: {versionsText} [{tfmsText}] ({summary.ProjectCount} projects){cpmText}");
+        }
+    }
+
+    private async Task<Dictionary<string, (NuGetVersion CurrentMin, NuGetVersion Latest)>> QueryLatestVersionsAsync(
+        Dictionary<string, PackageVersionSummary> packageSummary, 
+        bool includePrerelease, 
+        CancellationToken cancellationToken) {
+        
+        var outdatedPackages = new Dictionary<string, (NuGetVersion CurrentMin, NuGetVersion Latest)>(StringComparer.OrdinalIgnoreCase);
+        var nugetHttpService = new NuGetHttpService(NuGetHttpService.CreateClient(_console), _console);
+        await using var svc = new NuGetHttpPkgService(nugetHttpService, _console);
+
+        var parallelOptions = new ParallelOptions { 
+            MaxDegreeOfParallelism = Environment.ProcessorCount, 
+            CancellationToken = cancellationToken 
+        };
+
+        await Parallel.ForEachAsync(packageSummary, parallelOptions, async (kvp, ct) => {
+            var packageId = kvp.Key;
+            var summary = kvp.Value;
+
+            try {
+                // Get the primary target framework for compatibility checking
+                var primaryTfm = summary.TargetFrameworks.FirstOrDefault() ?? "net8.0";
+                
+                var latest = await svc.GetLatestCompatible(packageId, primaryTfm, includePrerelease, ct);
+                if (latest == null) {
+                    _console.WriteWarning($"No compatible version found for {packageId}");
+                    return;
+                }
+
+                // Find the minimum current version used (for display)
+                var currentVersions = summary.CurrentVersions
+                    .Select(v => NuGetVersion.TryParse(v, out var parsedVersion) ? parsedVersion : null)
+                    .Where(v => v is not null)!
+                    .ToList();
+
+                if (currentVersions.Count == 0) {
+                    _console.WriteWarning($"No valid versions found for {packageId}");
+                    return;
+                }
+
+                var currentMin = currentVersions.Min()!;
+                if (currentMin < latest.Version) {
+                    _console.WriteDebug($"Package {packageId} can be updated from {currentMin} to {latest.Version}");
+                    lock (outdatedPackages) {
+                        outdatedPackages[packageId] = (currentMin, latest.Version);
+                    }
+                }
+            }
+            catch (Exception ex) {
+                _console.WriteWarning($"Failed to check updates for {packageId}: {ex.Message}");
+            }
+        });
+
+        return outdatedPackages;
+    }
+
+    private async Task ApplyPackageUpdatesAsync(
+        Dictionary<string, List<PackageInfo>> allPackageReferences,
+        Dictionary<string, (NuGetVersion CurrentMin, NuGetVersion Latest)> outdatedPackages,
+        CancellationToken cancellationToken) {
+        
+        _console.WriteInfo("\nApplying package updates using Microsoft.Build.Evaluation API...");
+
+        // Group updates by props files and project files
+        var propsUpdates = new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
+        var projectUpdates = new Dictionary<string, List<ProjectPackageUpdate>>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var (packageId, versions) in outdatedPackages) {
+            var newVersion = versions.Latest.ToString();
+            foreach (var usage in allPackageReferences[packageId]) {
+                if (usage.FromProps && !string.IsNullOrEmpty(usage.PropsPath)) {
+                    // Update Directory.Packages.props
+                    if (!propsUpdates.TryGetValue(usage.PropsPath, out var propsMap)) {
+                        propsMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                        propsUpdates[usage.PropsPath] = propsMap;
+                    }
+                    propsMap[packageId] = newVersion;
+                }
+                else if (!usage.FromProps) {
+                    // Update project file
+                    if (!projectUpdates.TryGetValue(usage.ProjectPath, out var projectList)) {
+                        projectList = new List<ProjectPackageUpdate>();
+                        projectUpdates[usage.ProjectPath] = projectList;
+                    }
+                    projectList.Add(new ProjectPackageUpdate(packageId, newVersion));
+                }
+            }
+        }
+
+        // Apply Directory.Packages.props updates using MSBuild API
+        foreach (var (propsPath, updates) in propsUpdates) {
+            await UpdatePropsFileWithMSBuildAsync(propsPath, updates, cancellationToken);
+            _console.WriteInfo($"Updated {updates.Count} package(s) in {Path.GetFileName(propsPath)}");
+        }
+
+        // Apply project file updates using ProjParser.SetPackageReferences
+        var projParser = new ProjParser(_console, new ErrorSink(_console), _options);
+        foreach (var (projectPath, updates) in projectUpdates) {
+            var proj = new Proj(projectPath, null); // No parent solution
+            var projCfg = new ProjCfg(proj, "Release"); // Use Release configuration
+            var packageReferences = updates.ToDictionary(u => u.PackageId, u => (string?)u.NewVersion, StringComparer.OrdinalIgnoreCase);
+            
+            var updateInfo = new ProjectPackageReferenceInfo(
+                projCfg, 
+                null, // TargetFramework not needed for updates
+                false, // Not using CPM for project-level updates
+                null, // No CPM file
+                packageReferences,
+                null // No PackageVersions
+            );
+
+            projParser.SetPackageReferences(projCfg, updateInfo);
+            _console.WriteInfo($"Updated {updates.Count} package(s) in {Path.GetFileName(projectPath)}");
+        }
+    }
+
+    private async Task UpdatePropsFileWithMSBuildAsync(string propsPath, IReadOnlyDictionary<string, string> updates, CancellationToken cancellationToken) {
         try {
+            // For Directory.Packages.props, we'll use XML manipulation since it's a props file, not a project file
             XDocument doc;
             using (var readStream = File.OpenRead(propsPath)) {
                 doc = await XDocument.LoadAsync(readStream, LoadOptions.PreserveWhitespace, cancellationToken);
@@ -641,42 +456,6 @@ internal class OutdatedService {
         }
     }
 
-    private async Task UpdatePackageVersionAsync(string projectPath, string packageId, string newVersion, CancellationToken cancellationToken) {
-        try {
-            XDocument doc;
-            using (var readStream = File.OpenRead(projectPath)) {
-                doc = await XDocument.LoadAsync(readStream, LoadOptions.PreserveWhitespace, cancellationToken);
-            }
-
-            var packageRefElements = doc.Descendants("PackageReference")
-                .Where(e => e.Attribute("Include")?.Value == packageId);
-
-            foreach (var element in packageRefElements) {
-                var versionAttr = element.Attribute("Version");
-                var versionElement = element.Element("Version");
-
-                if (versionAttr != null) {
-                    versionAttr.Value = newVersion;
-                }
-                else if (versionElement != null) {
-                    versionElement.Value = newVersion;
-                }
-            }
-
-            using var writeStream = File.Create(projectPath);
-            using var writer = XmlWriter.Create(writeStream, new XmlWriterSettings {
-                Indent = true,
-                OmitXmlDeclaration = true,
-                Encoding = System.Text.Encoding.UTF8,
-                Async = true
-            });
-            await doc.SaveAsync(writer, cancellationToken);
-        }
-        catch (Exception ex) {
-            _console.WriteError($"Failed to update {projectPath}: {ex.Message}");
-        }
-    }
-
     internal class PackageInfo {
         public string Id { get; set; } = string.Empty;
         public string Version { get; set; } = string.Empty;
@@ -686,15 +465,16 @@ internal class OutdatedService {
         public bool FromProps { get; set; }
     }
 
-    private class VersionConflictInfo {
+    private class PackageVersionSummary {
         public string PackageId { get; set; } = string.Empty;
-        public Dictionary<string, List<string>> VersionUsages { get; set; } = new();
+        public List<string> CurrentVersions { get; set; } = new();
+        public List<string> TargetFrameworks { get; set; } = new();
+        public int ProjectCount { get; set; }
+        public bool UsesCentralPackageManagement { get; set; }
+        public List<PackageInfo> Usages { get; set; } = new();
     }
 
-    private class CpmInfo {
-        public string DirectoryPackagesPath { get; set; } = string.Empty;
-        public Dictionary<string, string> PackageVersions { get; set; } = new();
-    }
+    private record ProjectPackageUpdate(string PackageId, string NewVersion);
 
     private class NuGetLogger : ILogger {
         private readonly IConsoleOutput _console;
@@ -740,66 +520,5 @@ internal class OutdatedService {
             Log(message);
             return Task.CompletedTask;
         }
-    }
-
-    private Task<bool> IsPackageCompatibleWithFrameworkAsync(IPackageSearchMetadata packageMetadata, NuGetFramework targetFramework, string packageId, CancellationToken cancellationToken) {
-        try {
-            var packageVersion = packageMetadata.Identity.Version;
-
-            if (packageId.StartsWith("Microsoft.AspNetCore") || packageId.StartsWith("Microsoft.Extensions")) {
-                if (packageVersion.Major >= 9) {
-                    var net9 = NuGetFramework.Parse("net9.0");
-                    return Task.FromResult(IsFrameworkCompatible(targetFramework, net9));
-                }
-                if (packageVersion.Major >= 8) {
-                    var net8 = NuGetFramework.Parse("net8.0");
-                    return Task.FromResult(IsFrameworkCompatible(targetFramework, net8));
-                }
-                if (packageVersion.Major >= 7) {
-                    var net7 = NuGetFramework.Parse("net7.0");
-                    return Task.FromResult(IsFrameworkCompatible(targetFramework, net7));
-                }
-                if (packageVersion.Major >= 6) {
-                    var net6 = NuGetFramework.Parse("net6.0");
-                    return Task.FromResult(IsFrameworkCompatible(targetFramework, net6));
-                }
-            }
-
-            if (targetFramework.Framework == ".NETCoreApp" && targetFramework.Version < new Version(5, 0)) {
-                if (packageVersion.Major > 5) {
-                    return Task.FromResult(false);
-                }
-            }
-
-            return Task.FromResult(true);
-        }
-        catch (Exception ex) {
-            _console.WriteVerbose($"Error checking compatibility for {packageId}: {ex.Message}");
-            return Task.FromResult(true);
-        }
-    }
-
-    private bool IsFrameworkCompatible(NuGetFramework currentFramework, NuGetFramework requiredFramework) {
-        // Check if current framework is compatible with or higher than required framework
-        if (currentFramework.Framework != requiredFramework.Framework) {
-            return false;
-        }
-
-        // For .NET Core/.NET 5+ compatibility
-        if (currentFramework.Framework == ".NETCoreApp") {
-            return currentFramework.Version >= requiredFramework.Version;
-        }
-
-        // For .NET Framework compatibility 
-        if (currentFramework.Framework == ".NETFramework") {
-            return currentFramework.Version >= requiredFramework.Version;
-        }
-
-        // For .NET Standard compatibility (more complex, simplified here)
-        if (currentFramework.Framework == ".NETStandard") {
-            return currentFramework.Version >= requiredFramework.Version;
-        }
-
-        return true; // Default to compatible for unknown frameworks
     }
 }

@@ -7,7 +7,7 @@ using System;
 using System.Configuration;
 
 namespace bld.Infrastructure;
-internal record class ProjectPackageReferenceInfo(ProjCfg Proj, string? TargetFramework, bool? UseCpm, string? CpmFile, Dictionary<string, string?> PackageReferences, Dictionary<string, string>? PackageVersions);
+internal record class ProjectPackageReferenceInfo(ProjCfg Proj, string? TargetFramework, bool? UseCpm, string? CpmFile, Dictionary<string, string?> PackageReferences, Dictionary<string, string?>? PackageVersions);
 //internal record class ProjectPackageReferenceInfo(ProjCfg Proj, string? TargetFramework, bool? UseCpm, string? CpmFile, IEnumerable<ProjectPackage> PackageReferences, IEnumerable<ProjectPackage>? PackageVersions);
 internal record class ProjectPackage(string PackageId, string? Version);
 //internal class ProjectPackageVersion(string PackageId, string Version);
@@ -51,29 +51,38 @@ internal sealed class ProjParser(IConsoleOutput Console, ErrorSink ErrorSink, Cl
         string? configuration = proj.Configuration;
 
         using (var projectCollection = new ProjectCollection()) {
-            var project = default(Project);
-
             var properties = new Dictionary<string, string>(GlobalProperties);
             if (!string.IsNullOrEmpty(configuration)) {
                 properties["Configuration"] = configuration;
             }
+            
             try {
-                project.RemoveItems(project.GetItems("PackageReference"));
-                // Add new PackageReference items
+                var project = new Project(projectPath, properties, null, projectCollection);
+                
+                // Remove existing PackageReference items that we're updating
+                var existingRefs = project.GetItems("PackageReference")
+                    .Where(item => info.PackageReferences.ContainsKey(item.EvaluatedInclude))
+                    .ToList();
+                
+                foreach (var existingRef in existingRefs) {
+                    project.RemoveItem(existingRef);
+                }
+                
+                // Add updated PackageReference items
                 foreach (var pr in info.PackageReferences) {
                     var item = project.AddItem("PackageReference", pr.Key);
                     if (!string.IsNullOrEmpty(pr.Value)) {
                         item[0].SetMetadataValue("Version", pr.Value);
                     }
                 }
+                
                 // Save the modified project file
                 project.Save();
+                Console.WriteInfo($"Updated {info.PackageReferences.Count} package reference(s) in {Path.GetFileName(projectPath)}");
             }
-            catch {
-
+            catch (Exception ex) {
+                Console.WriteError($"Failed to update project {projectPath}: {ex.Message}");
             }
-
-
         }
     }
 
