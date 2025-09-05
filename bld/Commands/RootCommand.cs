@@ -11,5 +11,6 @@ internal class RootCommand : System.CommandLine.RootCommand {
 
         Add(new CleanCommand(console));
         Add(new StatsCommand(console));
+        Add(new DepsCommand(console));
     }
 }
