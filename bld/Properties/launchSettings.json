@@ -4,8 +4,8 @@
       "commandName": "Project",
       "commandLineArgsX": "outdated d:\\dlosch\\agentic\\ -v Debug --pre",
       "commandLineArgs": "outdated d:\\MyTools\\Greenkeeper.Total\\ -v Debug ",
-      "commandLineArgs___": "outdated d:\\dlosch\\agentic\\ -v Debug --pre",
-      "commandLineArgs_": "outdated d:\\dlosch\\bld\\ --apply"
+      "commandLineArgs_": "outdated d:\\dlosch\\agentic\\ -v Debug ",
+      "commandLineArgs__": "outdated d:\\dlosch\\bld\\ --apply"
     }
   }
 }
