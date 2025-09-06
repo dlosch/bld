@@ -100,9 +100,13 @@ internal sealed class ProjParser(IConsoleOutput Console, ErrorSink ErrorSink, Cl
                         : default,
                     // todo this pukes if a single package reference include is included more than once 
                     // dotnet build picks the first not the highest or lowest and warns only
-                    project.GetItems("PackageReference").ToDictionary(pr => pr.Xml.Include, pr => pr.Metadata?.FirstOrDefault(meta => meta.Name == "Version")?.EvaluatedValue, StringComparer.OrdinalIgnoreCase),
+                    project.GetItems("PackageReference")
+                        .DistinctBy(pr => pr.Xml.Include, StringComparer.OrdinalIgnoreCase)
+                        .ToDictionary(pr => pr.Xml.Include, pr => pr.Metadata?.FirstOrDefault(meta => meta.Name == "Version")?.EvaluatedValue, StringComparer.OrdinalIgnoreCase),
                     usesCpm ?? false ? 
-                        project.GetItems("PackageVersion")?.ToDictionary(pr => pr.Xml.Include, pr => pr.Metadata?.FirstOrDefault(meta => meta.Name == "Version")?.EvaluatedValue, StringComparer.OrdinalIgnoreCase)
+                        project.GetItems("PackageVersion")?
+                            .DistinctBy(pr => pr.Xml.Include, StringComparer.OrdinalIgnoreCase)
+                         .ToDictionary(pr => pr.Xml.Include, pr => pr.Metadata?.FirstOrDefault(meta => meta.Name == "Version")?.EvaluatedValue, StringComparer.OrdinalIgnoreCase)
                         : default
                 //project.GetItems("PackageReference").Select(pr => new ProjectPackage(pr.Xml.Include, pr.Metadata?.FirstOrDefault(meta => meta.Name == "Version")?.EvaluatedValue)),
                 //project.GetItems("PackageVersion")?.Select(pr => new ProjectPackage(pr.Xml.Include, pr.Metadata?.FirstOrDefault(meta => meta.Name == "Version")?.EvaluatedValue))

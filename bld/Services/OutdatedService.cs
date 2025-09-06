@@ -125,7 +125,7 @@ internal class OutdatedService {
             try {
                 var targetVer = result?.TargetFrameworkVersions?[packageReference.Value.Select(u => NuGetFramework.Parse(u.TargetFramework).GetShortFolderName()).FirstOrDefault()];
                 if (targetVer is null) {
-                    _console.WriteInfo($"No compatible version found for {packageReference.Key} {packageReference.Value.Tfm} {string.Join(',', result?.TargetFrameworkVersions?.Select(x => x.Key) ?? Array.Empty<string>())}");
+                    _console.WriteInfo($"No compatible version found for {packageReference.Key} {packageReference.Value.Tfm} {result?.ToString()} {string.Join(',', result?.TargetFrameworkVersions?.Select(x => x.Key) ?? Array.Empty<string>())}");
                     return;
                 }
                 if (!NuGetVersion.TryParse(targetVer, out var latestVer)) {

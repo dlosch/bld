@@ -3,8 +3,8 @@
     "bld": {
       "commandName": "Project",
       "commandLineArgsX": "outdated d:\\dlosch\\agentic\\ -v Debug --pre",
-      "commandLineArgs": "outdated d:\\MyTools\\Greenkeeper.Total\\ -v Debug ",
-      "commandLineArgs_": "outdated d:\\dlosch\\agentic\\ -v Debug ",
+      "commandLineArgs____": "outdated d:\\MyTools\\Greenkeeper.Total\\ -v Debug ",
+      "commandLineArgs": "outdated d:\\_playground\\K8s.Web\\ -v Debug ",
       "commandLineArgs__": "outdated d:\\dlosch\\bld\\ --apply"
     }
   }
