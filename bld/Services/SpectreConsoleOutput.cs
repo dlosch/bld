@@ -61,6 +61,10 @@ internal class SpectreConsoleOutput : IConsoleOutput {
         return AnsiConsole.Confirm(message, defaultValue);
     }
 
+    public T Prompt<T>(SelectionPrompt<T> prompt) where T : notnull {
+        return AnsiConsole.Prompt(prompt);
+    }
+
     public void StartProgress(string description, Action<ProgressContext> action) {
         AnsiConsole.Progress()
             .Start(ctx => action(ctx));
