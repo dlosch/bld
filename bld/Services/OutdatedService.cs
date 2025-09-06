@@ -1,10 +1,15 @@
+#define NUGET_PROJECT
 using bld.Infrastructure;
 using bld.Models;
+using Microsoft.Extensions.Caching.Memory;
 using NuGet.Common;
 using NuGet.Frameworks;
 using NuGet.Protocol;
 using NuGet.Protocol.Core.Types;
 using NuGet.Versioning;
+using NugetMetadata.Configuration;
+using NugetMetadata.Models;
+using NugetMetadata.Services;
 using Spectre.Console;
 using System.Diagnostics;
 using System.Net.Http.Json;
@@ -13,7 +18,7 @@ using System.Xml;
 using System.Xml.Linq;
 
 namespace bld.Services;
-
+#if FALSE
 //record class NuGetRoot([property: JsonPropertyName("@id")] string Id, [property: JsonPropertyName("version")] string Version, [property: JsonPropertyName("resources")] List<NuGetResource> Resources);
 internal record CatEntry(NuGetVersion Version, string[] Tfms);
 
@@ -241,7 +246,7 @@ internal class NuGetHttpService(HttpClient _client, IConsoleOutput _consoleOutpu
         }
     }
 }
-
+#endif
 internal class OutdatedService {
     private readonly IConsoleOutput _console;
     private readonly CleaningOptions _options;
@@ -288,47 +293,48 @@ internal class OutdatedService {
         var propsContentCache = new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
 
         // Aggregate all package references across projects
-        var allPackageReferences = new Dictionary<string, List<PackageInfo>>(StringComparer.OrdinalIgnoreCase);
+        //var allPackageReferences = new Dictionary<string, List<PackageInfo>>(StringComparer.OrdinalIgnoreCase);
+        var allPackageReferences = new Dictionary<string, PackageInfoContainer>(StringComparer.OrdinalIgnoreCase);
         var projectFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        // Local helper: find nearest Directory.Packages.props walking up from project directory
-        string? FindNearestProps(string projectPath) {
-            var dir = Path.GetDirectoryName(projectPath);
-            while (!string.IsNullOrEmpty(dir)) {
-                if (dirToPropsCache.TryGetValue(dir!, out var cached)) return cached;
-                var candidate = Path.Combine(dir!, "Directory.Packages.props");
-                if (File.Exists(candidate)) {
-                    dirToPropsCache[dir!] = candidate;
-                    return candidate;
-                }
-                dirToPropsCache[dir!] = null; // remember miss
-                dir = Path.GetDirectoryName(dir);
-            }
-            return null;
-        }
+        //// Local helper: find nearest Directory.Packages.props walking up from project directory
+        //string? FindNearestProps(string projectPath) {
+        //    var dir = Path.GetDirectoryName(projectPath);
+        //    while (!string.IsNullOrEmpty(dir)) {
+        //        if (dirToPropsCache.TryGetValue(dir!, out var cached)) return cached;
+        //        var candidate = Path.Combine(dir!, "Directory.Packages.props");
+        //        if (File.Exists(candidate)) {
+        //            dirToPropsCache[dir!] = candidate;
+        //            return candidate;
+        //        }
+        //        dirToPropsCache[dir!] = null; // remember miss
+        //        dir = Path.GetDirectoryName(dir);
+        //    }
+        //    return null;
+        //}
 
-        // Local helper: load props content as map id->version (cached)
-        async Task<Dictionary<string, string>> LoadPropsMapAsync(string propsPath) {
-            if (propsContentCache.TryGetValue(propsPath, out var map)) return map;
-            var dict = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            try {
-                using var stream = File.OpenRead(propsPath);
-                var doc = await XDocument.LoadAsync(stream, LoadOptions.None, cancellationToken);
-                foreach (var el in doc.Descendants("PackageVersion")) {
-                    var inc = el.Attribute("Include")?.Value;
-                    var ver = el.Attribute("Version")?.Value;
-                    if (!string.IsNullOrEmpty(inc) && !string.IsNullOrEmpty(ver)) dict[inc] = ver;
-                }
-            }
-            catch (Exception ex) {
-                _console.WriteWarning($"Failed to parse {propsPath}: {ex.Message}");
-            }
-            propsContentCache[propsPath] = dict;
-            return dict;
-        }
+        //// Local helper: load props content as map id->version (cached)
+        //async Task<Dictionary<string, string>> LoadPropsMapAsync(string propsPath) {
+        //    if (propsContentCache.TryGetValue(propsPath, out var map)) return map;
+        //    var dict = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        //    try {
+        //        using var stream = File.OpenRead(propsPath);
+        //        var doc = await XDocument.LoadAsync(stream, LoadOptions.None, cancellationToken);
+        //        foreach (var el in doc.Descendants("PackageVersion")) {
+        //            var inc = el.Attribute("Include")?.Value;
+        //            var ver = el.Attribute("Version")?.Value;
+        //            if (!string.IsNullOrEmpty(inc) && !string.IsNullOrEmpty(ver)) dict[inc] = ver;
+        //        }
+        //    }
+        //    catch (Exception ex) {
+        //        _console.WriteWarning($"Failed to parse {propsPath}: {ex.Message}");
+        //    }
+        //    propsContentCache[propsPath] = dict;
+        //    return dict;
+        //}
 
         try {
-            var packageRefs = new List<PackageInfo>();
+            var packageRefs = new PackageInfoContainer(); // new List<PackageInfo>();
             var projParser = new ProjParser(_console, errorSink, _options);
 
             await foreach (var slnPath in slnScanner.Enumerate(rootPath)) {
@@ -342,13 +348,13 @@ internal class OutdatedService {
 
                         var refs = projParser.GetPackageReferences(projCfg);
                         _console.WriteDebug($"{projCfg.Proj.Path} {refs.TargetFramework} cpm? {refs.UseCpm} [{refs.CpmFile}]");
-                        foreach (var item in refs.PackageReferences) {
-                            _console.WriteDebug($"\tREF {item.Key} {item.Value}");
-                        }
-                        if (refs.PackageVersions is not null)
-                            foreach (var item in refs.PackageVersions) {
-                                _console.WriteDebug($"\tVER {item.Key} {item.Value}");
-                            }
+                        //foreach (var item in refs.PackageReferences) {
+                        //    _console.WriteDebug($"\tREF {item.Key} {item.Value}");
+                        //}
+                        //if (refs.PackageVersions is not null)
+                        //    foreach (var item in refs.PackageVersions) {
+                        //        _console.WriteDebug($"\tVER {item.Key} {item.Value}");
+                        //    }
 
 
                         var exnm = refs.PackageReferences.Select(re => new PackageInfo {
@@ -361,7 +367,7 @@ internal class OutdatedService {
                         });
 
                         var bad = exnm.Where(e => string.IsNullOrEmpty(e.Version)).ToList();
-
+                        if (bad.Any()) _logger.LogWarning($"Project {projCfg.Path} has package references with no resolvable version: {string.Join(", ", bad.Select(b => b.Id))}");
                         packageRefs.AddRange(exnm);
 
                         //packageRefs.Add(new PackageInfo {
@@ -435,7 +441,7 @@ internal class OutdatedService {
 
                         foreach (var pkg in packageRefs) {
                             if (!allPackageReferences.TryGetValue(pkg.Id, out var list)) {
-                                list = new List<PackageInfo>();
+                                list = new PackageInfoContainer(); // new List<PackageInfo>();
                                 allPackageReferences[pkg.Id] = list;
                             }
                             list.Add(pkg);
@@ -462,6 +468,65 @@ internal class OutdatedService {
         var latestPerPackage = new Dictionary<string, NuGetVersion>(StringComparer.OrdinalIgnoreCase);
         var outdatedPerPackage = new Dictionary<string, (NuGetVersion CurrentMin, NuGetVersion Latest)>(StringComparer.OrdinalIgnoreCase);
 
+#if NUGET_PROJECT
+        var options = new NugetMetadataOptions { MaxParallelRequests = 12 /* configure */ };
+        var client = NugetMetadataService.CreateHttpClient(options);
+        //var logger = /* your logger */;
+        //var request = new PackageVersionRequest { /* configure */ };
+
+        await  Parallel.ForEachAsync(allPackageReferences, new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount }, async (packageReference, ct) => {
+            _console.WriteDebug($"Processing package {packageReference.Key}...{packageReference.Value.Tfm}");
+           
+            var request = new PackageVersionRequest {
+                PackageId = packageReference.Key,
+                AllowPrerelease = includePrerelease,
+                CompatibleTargetFrameworks =  packageReference.Value.Tfms.ToList() //  [packageReference.Value.Tfm]
+                //packageReference.Value.Select(u => NuGetFramework.Parse(u.TargetFramework).ToString()).Distinct().ToList()
+                //TargetFrameworks = packageReference.Value.Select(pr => pr.TargetFramework).Where(t => !string.IsNullOrEmpty(t)).Distinct(StringComparer.OrdinalIgnoreCase).ToList()
+            };
+
+
+            //var result = await NugetMetadataService.GetLatestVersionWithFrameworkAsync(client, options, default, packageReference.Key, packageReference.Value.Tfm, includePrerelease, cancellationToken);
+            _console.WriteInfo($"{request.ToString()}");
+            var result = await NugetMetadataService.GetLatestVersionWithFrameworkCheckAsync(client, options, default, request);
+            //var result = await NugetMetadataService.GetLatestVersionAsync(client, options, default, request);
+            //_console.WriteVerbose($"Package {packageReference.Key}: {string.Join(", ", result?.TargetFrameworkVersions?.Select(kvp => $"{kvp.Key}=>{kvp.Value}"))} (from {string.Join(", ", request?.CompatibleTargetFrameworks)})");
+            _console.WriteVerbose($"Package {packageReference.Key}: {result is { }} {result?.ToString()}");
+            //_console.WriteVerbose($"Package {packageReference.Key}: {result?.PackageId}");
+            //_console.WriteVerbose($"Package {packageReference.Key}: {result?.IsPrerelease}");
+            //_console.WriteVerbose($"Package {packageReference.Key}: {(packageReference.Value.Tfm is { } ? result?.TargetFrameworkVersions?[packageReference.Value.Tfm] : "")}");
+
+            var currentMin = packageReference.Value
+                .Select(u => NuGetVersion.TryParse(u.Version, out var v) ? v : null)
+                .Where(v => v is not null)!
+                .Min()!;
+
+            try {
+                var targetVer = result?.TargetFrameworkVersions?[packageReference.Value.Select(u => NuGetFramework.Parse(u.TargetFramework).GetShortFolderName()).FirstOrDefault()];
+                if (targetVer is null) {
+                    _console.WriteWarning($"No compatible version found for {packageReference.Key} {packageReference.Value.Tfm} {string.Join(',', result?.TargetFrameworkVersions?.Select(x => x.Key) ?? Array.Empty<string>())}");
+                    return;
+                }
+                if (!NuGetVersion.TryParse(targetVer, out var latestVer)) {
+                    _console.WriteWarning($"Failed to parse version for {packageReference.Key}: {targetVer}");
+                    return;
+                }
+                if(currentMin >= latestVer) {
+                    _console.WriteDebug($"Package {packageReference.Key} is up to date ({currentMin} >= {latestVer})");
+                    return;
+                }
+
+                outdatedPerPackage[packageReference.Key] = (currentMin, NuGetVersion.Parse(result?.TargetFrameworkVersions?[packageReference.Value.Select(u => NuGetFramework.Parse(u.TargetFramework).GetShortFolderName()).FirstOrDefault()]));
+
+            }
+            catch (Exception xcptn) {
+                _console.WriteWarning($"Failed to parse version for {packageReference.Key}: {packageReference.Value.Tfm} {string.Join(',', result?.TargetFrameworkVersions?.Select(x => x.Key) ?? Array.Empty<string>())} {xcptn.Message}");
+                //throw;
+            }
+        });
+
+        
+#else
         var nugetHttpService = new NuGetHttpService(NuGetHttpService.CreateClient(_console), _console);
         await using var svc = new NuGetHttpPkgService(nugetHttpService, _console);
 
@@ -496,6 +561,7 @@ internal class OutdatedService {
             }
         });
         //foreach (var (packageId, usages) in allPackageReferences) {
+#endif
 
         //_console.WriteDebug($"Checking updates for {packageId} {usages}...");
         //try {
@@ -675,6 +741,30 @@ internal class OutdatedService {
         catch (Exception ex) {
             _console.WriteError($"Failed to update {projectPath}: {ex.Message}");
         }
+    }
+
+    // Add IEnumerable<PackageInfo> implementation to allow foreach on PackageInfoContainer
+    internal class PackageInfoContainer : IEnumerable<OutdatedService.PackageInfo> {
+        private readonly List<PackageInfo> _items = new();
+        internal void Add(PackageInfo item) {
+            if (item.TargetFramework is { }) {
+                var nuTfm = NuGetFramework.Parse(item.TargetFramework);
+                _tfms.Add(nuTfm);
+
+            }
+            _items.Add(item);
+        }
+
+        internal void AddRange(IEnumerable<PackageInfo> exnm) {
+            foreach (var item in exnm) Add(item);
+        }
+
+        public IEnumerable<string> Tfms => _tfms.Select(nuTfm => nuTfm.GetShortFolderName());
+        public string? Tfm => _tfms.Count() == 1 ? _tfms.First().GetShortFolderName(): default;
+        private readonly HashSet<NuGetFramework> _tfms = new();
+
+        public IEnumerator<PackageInfo> GetEnumerator() => _items.GetEnumerator();
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => _items.GetEnumerator();
     }
 
     internal class PackageInfo {
