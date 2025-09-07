@@ -6,7 +6,10 @@ using NuGet.Protocol;
 using NuGet.Protocol.Core.Types;
 using NuGet.Versioning;
 using Spectre.Console;
+using Spectre.Console;
+using System;
 using System.Diagnostics;
+using System.Reflection.Emit;
 using System.Runtime.CompilerServices;
 using System.Xml;
 using System.Xml.Linq;
@@ -16,7 +19,7 @@ namespace bld.Services;
 internal class OutdatedService {
     private readonly IConsoleOutput _console;
     private readonly CleaningOptions _options;
-    
+
     public OutdatedService(IConsoleOutput console, CleaningOptions options) {
         _console = console;
         _options = options;
@@ -74,7 +77,7 @@ internal class OutdatedService {
 
                         foreach (var pkg in packageRefs) {
                             if (!allPackageReferences.TryGetValue(pkg.Id, out var list)) {
-                                list = new PackageInfoContainer(); 
+                                list = new PackageInfoContainer();
                                 allPackageReferences[pkg.Id] = list;
                             }
                             list.Add(pkg);
@@ -104,12 +107,12 @@ internal class OutdatedService {
         var options = new NugetMetadataOptions { MaxParallelRequests = 12 /* configure */ };
         var client = NugetMetadataService.CreateHttpClient(options);
 
-        await  Parallel.ForEachAsync(allPackageReferences, new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount }, async (packageReference, ct) => {
-           
+        await Parallel.ForEachAsync(allPackageReferences, new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount }, async (packageReference, ct) => {
+
             var request = new PackageVersionRequest {
                 PackageId = packageReference.Key,
                 AllowPrerelease = includePrerelease,
-                CompatibleTargetFrameworks =  packageReference.Value.Tfms.ToList() //  [packageReference.Value.Tfm]
+                CompatibleTargetFrameworks = packageReference.Value.Tfms.ToList() //  [packageReference.Value.Tfm]
             };
 
             var result = await NugetMetadataService.GetLatestVersionWithFrameworkCheckAsync(client, options, default, request);
@@ -129,7 +132,7 @@ internal class OutdatedService {
                     _console.WriteInfo($"Failed to parse version for {packageReference.Key}: {targetVer}");
                     return;
                 }
-                if(currentMin >= latestVer) {
+                if (currentMin >= latestVer) {
                     _console.WriteDebug($"Package {packageReference.Key} is up to date ({currentMin} >= {latestVer})");
                     return;
                 }
@@ -150,9 +153,20 @@ internal class OutdatedService {
         }
 
         _console.WriteInfo($"\nFound {outdatedPerPackage.Count} packages with available updates:");
+        var table = new Table().Border(TableBorder.Rounded);
+        table.AddColumn(new TableColumn("PackageId").LeftAligned());
+        table.AddColumn(new TableColumn("current").LeftAligned());
+        table.AddColumn(new TableColumn("latest").LeftAligned());
+
         foreach (var kvp in outdatedPerPackage.OrderBy(k => k.Key)) {
-            _console.WriteWarning($"{kvp.Key}: {kvp.Value.CurrentMin} → {kvp.Value.Latest}");
+            table.AddRow(
+                Markup.Escape(kvp.Key),
+                Markup.Escape(kvp.Value.CurrentMin.ToFullString()),
+                Markup.Escape(kvp.Value.Latest.ToFullString())
+            );
+            //_console.WriteWarning($"{kvp.Key}: {kvp.Value.CurrentMin} → {kvp.Value.Latest}");
         }
+        _console.WriteTable(table);
 
         // Prepare batch updates: props file -> (package -> version) and project -> (package -> version)
         var propsUpdates = new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
@@ -292,7 +306,7 @@ internal class OutdatedService {
         }
 
         public IEnumerable<string> Tfms => _tfms.Select(nuTfm => nuTfm.GetShortFolderName());
-        public string? Tfm => _tfms.Count() == 1 ? _tfms.First().GetShortFolderName(): default;
+        public string? Tfm => _tfms.Count() == 1 ? _tfms.First().GetShortFolderName() : default;
         private readonly HashSet<NuGetFramework> _tfms = new();
 
         public IEnumerator<PackageInfo> GetEnumerator() => _items.GetEnumerator();
