@@ -627,7 +627,7 @@ internal class TfmService {
         public string TargetFramework { get; set; } = string.Empty;
     }
 
-    private class NuGetLogger : ILogger {
+    private class NuGetLogger : global::NuGet.Common.ILogger {
         private readonly IConsoleOutput _console;
 
         public NuGetLogger(IConsoleOutput console) {
@@ -641,26 +641,26 @@ internal class TfmService {
         public void LogWarning(string data) => _console.WriteWarning(data);
         public void LogError(string data) => _console.WriteError(data);
         public void LogInformationSummary(string data) => _console.WriteInfo(data);
-        public void Log(NuGet.Common.LogLevel level, string data) {
+        public void Log(global::NuGet.Common.LogLevel level, string data) {
             switch (level) {
-                case NuGet.Common.LogLevel.Debug:
-                case NuGet.Common.LogLevel.Verbose:
+                case global::NuGet.Common.LogLevel.Debug:
+                case global::NuGet.Common.LogLevel.Verbose:
                     LogVerbose(data);
                     break;
-                case NuGet.Common.LogLevel.Information:
-                case NuGet.Common.LogLevel.Minimal:
+                case global::NuGet.Common.LogLevel.Information:
+                case global::NuGet.Common.LogLevel.Minimal:
                     LogInformation(data);
                     break;
-                case NuGet.Common.LogLevel.Warning:
+                case global::NuGet.Common.LogLevel.Warning:
                     LogWarning(data);
                     break;
-                case NuGet.Common.LogLevel.Error:
+                case global::NuGet.Common.LogLevel.Error:
                     LogError(data);
                     break;
             }
         }
 
-        public Task LogAsync(NuGet.Common.LogLevel level, string data) {
+        public Task LogAsync(global::NuGet.Common.LogLevel level, string data) {
             Log(level, data);
             return Task.CompletedTask;
         }

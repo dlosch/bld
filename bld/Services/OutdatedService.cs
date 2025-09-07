@@ -1,13 +1,10 @@
 using bld.Infrastructure;
 using bld.Models;
-using NuGet.Common;
+using bld.Services.NuGet;
 using NuGet.Frameworks;
 using NuGet.Protocol;
 using NuGet.Protocol.Core.Types;
 using NuGet.Versioning;
-using NugetMetadata.Configuration;
-using NugetMetadata.Models;
-using NugetMetadata.Services;
 using Spectre.Console;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;

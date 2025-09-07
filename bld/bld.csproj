@@ -35,10 +35,6 @@
     <PackageReference Include="NuGet.Frameworks" />
   </ItemGroup>
 
-  <ItemGroup>
-    <ProjectReference Include="..\..\nuget\src\NugetMetadata\NugetMetadata.csproj" />
-  </ItemGroup>
-
   <PropertyGroup>
     <CopyOutputSymbolsToPublishDirectory>false</CopyOutputSymbolsToPublishDirectory>
     <PackAsTool>true</PackAsTool>

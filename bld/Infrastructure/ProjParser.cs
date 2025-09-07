@@ -7,7 +7,11 @@ using System;
 using System.Configuration;
 
 namespace bld.Infrastructure;
-internal record class ProjectPackageReferenceInfo(ProjCfg Proj, string? TargetFramework, bool? UseCpm, string? CpmFile, Dictionary<string, string?> PackageReferences, Dictionary<string, string>? PackageVersions);
+
+//internal record class AggregatedPackageReferenceInfo(string PackageId, string? Version, bool PrivateAssets = false);
+internal record class ProjectPackageReferenceInfo(ProjCfg Proj, string[]? TargetFrameworks, bool? UseCpm, string? CpmFile, Dictionary<string, string?> PackageReferences, Dictionary<string, string>? PackageVersions) {
+    public string? TargetFramework => TargetFrameworks?.FirstOrDefault();
+}
 //internal record class ProjectPackageReferenceInfo(ProjCfg Proj, string? TargetFramework, bool? UseCpm, string? CpmFile, IEnumerable<ProjectPackage> PackageReferences, IEnumerable<ProjectPackage>? PackageVersions);
 internal record class ProjectPackage(string PackageId, string? Version);
 //internal class ProjectPackageVersion(string PackageId, string Version);
@@ -93,14 +97,18 @@ internal sealed class ProjParser(IConsoleOutput Console, ErrorSink ErrorSink, Cl
                 project = new Project(projectPath, properties, null, projectCollection);
                 var usesCpm = SafeBool(project.GetPropertyValue("ManagePackageVersionsCentrally"));
                 var retVal = new ProjectPackageReferenceInfo(proj,
-                    Safe(project.GetPropertyValue("TargetFramework")),
+
+                    // todo TargetFrameworks
+                    [Safe(project.GetPropertyValue("TargetFramework"))],
                     usesCpm,
                     (usesCpm ?? false) 
                         ? project.Imports.FirstOrDefault(imp => string.Equals(Path.GetFileName(imp.ImportedProject.FullPath), "Directory.Packages.props", StringComparison.OrdinalIgnoreCase)).ImportedProject?.FullPath
                         : default,
-                    // todo this pukes if a single package reference include is included more than once 
-                    // dotnet build picks the first not the highest or lowest and warns only
-                    project.GetItems("PackageReference")
+
+                     //var privateAssets = string.Equals(item.GetMetadataValue("PrivateAssets"), "all", StringComparison.OrdinalIgnoreCase);
+                // todo this pukes if a single package reference include is included more than once 
+                // dotnet build picks the first not the highest or lowest and warns only
+                project.GetItems("PackageReference")
                         .DistinctBy(pr => pr.Xml.Include, StringComparer.OrdinalIgnoreCase)
                         .ToDictionary(pr => pr.Xml.Include, pr => pr.Metadata?.FirstOrDefault(meta => meta.Name == "Version")?.EvaluatedValue, StringComparer.OrdinalIgnoreCase),
                     usesCpm ?? false ? 
