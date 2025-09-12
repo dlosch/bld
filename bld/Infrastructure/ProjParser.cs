@@ -3,23 +3,30 @@
 using bld.Models;
 using bld.Services;
 using Microsoft.Build.Evaluation;
+using System.Diagnostics;
 
 namespace bld.Infrastructure;
 
 internal record class Pkg(string Id, string? Version, string? VersionOverride = default, string? CpmVersion = default) {
-       public string EffectiveVersion => VersionOverride ?? Version ?? CpmVersion ?? string.Empty;
+    public string EffectiveVersion => VersionOverride ?? Version ?? CpmVersion ?? string.Empty;
 };
 
 //internal record class AggregatedPackageReferenceInfo(string PackageId, string? Version, bool PrivateAssets = false);
-internal record class ProjectPackageReferenceInfo(  
-        ProjCfg Proj, 
-        string[] TargetFrameworks, 
-        bool? UseCpm, 
+internal record class ProjectPackageReferenceInfo(
+        ProjCfg Proj,
+        string[] TargetFrameworks,
+        bool? UseCpm,
         string? CpmFile,
         //Dictionary<string, string?> PackageReferences,
-        Dictionary<string, Pkg?> PackageReferences, 
+        Dictionary<string, Pkg?> PackageReferences,
         Dictionary<string, string>? PackageVersions) {
-    public string TargetFramework => TargetFrameworks.First();
+    public string TargetFramework {
+        get {
+            //if (!(TargetFrameworks?.Any() ?? false)) Debugger.Launch(); 
+            return TargetFrameworks.First();
+        }
+    }
+
 }
 //internal record class ProjectPackageReferenceInfo(ProjCfg Proj, string? TargetFramework, bool? UseCpm, string? CpmFile, IEnumerable<ProjectPackage> PackageReferences, IEnumerable<ProjectPackage>? PackageVersions);
 internal record class ProjectPackage(string PackageId, string? Version);
@@ -127,8 +134,8 @@ internal sealed class ProjParser(IConsoleOutput Console, ErrorSink ErrorSink, Cl
                 // dotnet build picks the first not the highest or lowest and warns only
                 project.GetItems("PackageReference")
                         .DistinctBy(pr => pr.Xml.Include, StringComparer.OrdinalIgnoreCase)
-                        .ToDictionary(pr => pr.Xml.Include, pr => 
-                            
+                        .ToDictionary(pr => pr.Xml.Include, pr =>
+
                             new Pkg(pr.Xml.Include
                                 , pr.Metadata?.FirstOrDefault(meta => meta.Name == "Version")?.EvaluatedValue
                                 , pr.Metadata?.FirstOrDefault(meta => meta.Name == "VersionOverride")?.EvaluatedValue
@@ -223,7 +230,11 @@ internal sealed class ProjParser(IConsoleOutput Console, ErrorSink ErrorSink, Cl
 }
 
 internal static class ProjParserExtensions {
-    internal static string[] TfmOrTfmsSafe(this Project project) {
+
+    // 
+
+
+    internal static string[] TfmOrTfmsSafe(this Project project, bool FxProjStyleInclude = true) {
         var targetFramework = project.GetPropertyValue("TargetFramework");
         if (!string.IsNullOrEmpty(targetFramework)) {
             return [targetFramework];
@@ -232,6 +243,13 @@ internal static class ProjParserExtensions {
         var targetFrameworks = project.GetPropertyValue("TargetFrameworks");
         if (!string.IsNullOrEmpty(targetFrameworks)) {
             return targetFrameworks.Split(';', StringSplitOptions.RemoveEmptyEntries).ToArray();
+        }
+
+        if (!FxProjStyleInclude) return Array.Empty<string>();
+
+        var targetFrameworkVersion = project.GetPropertyValue("TargetFrameworkVersion");
+        if (!string.IsNullOrEmpty(targetFrameworkVersion)) {
+            return [targetFrameworkVersion];
         }
 
         return Array.Empty<string>();

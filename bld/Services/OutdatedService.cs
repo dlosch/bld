@@ -59,12 +59,17 @@ internal class OutdatedService {
 
                         var refs = projParser.GetPackageReferences(projCfg);
 
+                        if (refs?.PackageReferences is null || !refs.PackageReferences.Any()) {
+                            _console.WriteDebug($"No references in {projCfg.Path}");
+                            continue;
+                        }
+
                         var exnm = refs.PackageReferences.Select(re => new PackageInfo {
                             Id = re.Key,
                             FromProps = refs.UseCpm ?? false,
                             TargetFramework = refs.TargetFramework,
                             TargetFrameworks = refs.TargetFrameworks,
-                            ProjectPath = refs.Proj.Path,
+                            ProjectPath = refs.Proj?.Path,
                             PropsPath = refs.CpmFile,
                             Item  = re.Value
                             //, Version = re.Value ?? (refs.UseCpm == true && refs.PackageVersions is not null && refs.PackageVersions.TryGetValue(re.Key, out var v) ? v : null)
@@ -129,7 +134,10 @@ internal class OutdatedService {
                 var targetVer = default(string?);
                 if (request.CompatibleTargetFrameworks is { } && request.CompatibleTargetFrameworks.Count > 1) {
                     foreach (var item in request.CompatibleTargetFrameworks) {
-                        var curVer = result?.TargetFrameworkVersions?[item];
+                        var curVer = default(string?);
+                        var exists = result?.TargetFrameworkVersions?.TryGetValue(item, out curVer) ?? false;
+                        //if (!exists) Debugger.Break();
+
                         if (curVer is not null && targetVer is not null && 0 != string.Compare(curVer, targetVer, StringComparison.OrdinalIgnoreCase)) {
                             _console.WriteWarning($"Package {packageReference.Key} has multiple target framework versions: {targetVer} vs {curVer} for {string.Join(',', request.CompatibleTargetFrameworks)}");
                         }
@@ -168,7 +176,10 @@ internal class OutdatedService {
                     return;
                 }
 
-                outdatedPerPackage[packageReference.Key] = (currentMin, NuGetVersion.Parse(result?.TargetFrameworkVersions?[packageReference.Value.Select(u => NuGetFramework.Parse(u.TargetFramework).GetShortFolderName()).FirstOrDefault()]));
+                outdatedPerPackage[packageReference.Key] = (currentMin
+                , NuGetVersion.Parse(targetVer)
+                //, NuGetVersion.Parse(result?.TargetFrameworkVersions?[packageReference.Value.Select(u => NuGetFramework.Parse(u.TargetFramework).GetShortFolderName()).FirstOrDefault()])
+                );
             }
             catch (Exception xcptn) {
                 _console.WriteWarning($"Failed to parse version for {packageReference.Key}: {packageReference.Value.Tfm} {string.Join(',', result?.TargetFrameworkVersions?.Select(x => x.Key) ?? Array.Empty<string>())} {xcptn.Message}");
@@ -191,9 +202,9 @@ internal class OutdatedService {
 
         foreach (var kvp in outdatedPerPackage.OrderBy(k => k.Key)) {
             table.AddRow(
-                Markup.Escape(kvp.Key),
-                Markup.Escape(kvp.Value.CurrentMin.ToFullString()),
-                Markup.Escape(kvp.Value.Latest.ToFullString())
+                Markup.Escape(kvp.Key ?? ""),
+                Markup.Escape(kvp.Value.CurrentMin?.ToFullString() ?? ""),
+                Markup.Escape(kvp.Value.Latest?.ToFullString() ?? "")
             );
             //_console.WriteWarning($"{kvp.Key}: {kvp.Value.CurrentMin} → {kvp.Value.Latest}");
         }
