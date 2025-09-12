@@ -2,8 +2,10 @@
 using bld.Infrastructure;
 using NuGet.Frameworks;
 using NuGet.Versioning;
+using System.Linq;
 using System.Net.Http.Json;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Text.Json.Serialization;
 
 [assembly: InternalsVisibleTo("bld.Tests")]
@@ -28,6 +30,7 @@ public static class NugetMetadataService {
         return client;
     }
 
+    private static FrameworkReducer _frameworkReducer = new FrameworkReducer();
     private static DefaultCompatibilityProvider _compatibilityProvider = new DefaultCompatibilityProvider();
 
     internal static async ValueTask<PackageVersionResult?> GetLatestVersionWithFrameworkCheckAsync(
@@ -108,11 +111,13 @@ retry:
                         continue;
 
                     var supportedFrameworks = new Dictionary<string, string>(request.CompatibleTargetFrameworks?.Count ?? 1);
+                    var dependencyGroups = new Dictionary<string, DependencyGroup>(request.CompatibleTargetFrameworks?.Count ?? 1);
 
                     if (!(request.CompatibleTargetFrameworks?.Any() ?? false)) {
                         supportedFrameworks["any"] = versionItem.CatalogEntry.Version;
                     }
                     else {
+                        var bestMatchDependencyGroup = default(DependencyGroup);    
                         foreach (var reqFramework in request.CompatibleTargetFrameworks) {
                             //if (versionItem.CatalogEntry.DependencyGroups is null || !versionItem.CatalogEntry.DependencyGroups.Any()) continue;
                             if (versionItem.CatalogEntry.DependencyGroups is null || !versionItem.CatalogEntry.DependencyGroups.Any()) {
@@ -120,27 +125,77 @@ retry:
                                 supportedFrameworks[reqFramework] = versionItem.CatalogEntry.Version;
                             }
                             else {
-                                bool hasMatchingFramework = versionItem.CatalogEntry.DependencyGroups.Any(dg => {
-                                    if (string.IsNullOrWhiteSpace(dg.TargetFramework))
-                                        return true; // reqFramework.Equals("any", StringComparison.OrdinalIgnoreCase);
-                                    var dgFramework = NuGetFramework.Parse(dg.TargetFramework);
-                                    var reqNuGetFramework = NuGetFramework.Parse(reqFramework);
-                                    return _compatibilityProvider.IsCompatible(reqNuGetFramework, dgFramework);
-                                });
+                                var reqNuGetFramework = NuGetFramework.Parse(reqFramework);
+                                var hasMatchingFramework = false;
+                                if (versionItem.CatalogEntry.DependencyGroups.Count == 1) {
+                                    var dg = versionItem.CatalogEntry.DependencyGroups.First();
+                                    hasMatchingFramework = string.IsNullOrWhiteSpace(dg.TargetFramework)
+                                        || _compatibilityProvider.IsCompatible(reqNuGetFramework, NuGetFramework.Parse(dg.TargetFramework))
+                                        || reqFramework.Equals("any", StringComparison.OrdinalIgnoreCase);
+
+                                    if (hasMatchingFramework) bestMatchDependencyGroup = dg;
+                                }
+                                else {
+                                    var allTfms = versionItem.CatalogEntry.DependencyGroups
+                                        .Select(dg => NuGetFramework.Parse(dg.TargetFramework));
+
+                                    var bestMatch = _frameworkReducer.GetNearest(reqNuGetFramework, allTfms);
+                                    if (bestMatch != null) {
+                                        logger?.WriteDebug($"[{request.PackageId}@{reqFramework}] Best match for {reqFramework} is {bestMatch.GetShortFolderName()}");
+                                        hasMatchingFramework = true;
+
+                                        bestMatchDependencyGroup = versionItem.CatalogEntry.DependencyGroups.FirstOrDefault(dg => {
+                                            if (string.IsNullOrWhiteSpace(dg.TargetFramework) && bestMatch.IsAny)
+                                                return true;
+                                            var dgFramework = NuGetFramework.Parse(dg.TargetFramework);
+                                            return dgFramework.Equals(bestMatch);
+                                        });
+                                    }
+                                }
 
                                 if (hasMatchingFramework) {
                                     supportedFrameworks[reqFramework] = versionItem.CatalogEntry.Version;
+                                    if (bestMatchDependencyGroup != null) dependencyGroups[reqFramework] = bestMatchDependencyGroup!;                                 
                                 }
+
+
+                                //bool hasMatchingFramework = versionItem.CatalogEntry.DependencyGroups.Any(dg => {
+                                //    if (string.IsNullOrWhiteSpace(dg.TargetFramework))
+                                //        return true; // reqFramework.Equals("any", StringComparison.OrdinalIgnoreCase);
+                                //    var dgFramework = NuGetFramework.Parse(dg.TargetFramework);
+
+                                //    // this is not the best match!
+                                //    return _compatibilityProvider.IsCompatible(reqNuGetFramework, dgFramework);
+                                //});
+
+                                //if (hasMatchingFramework) {
+                                //    supportedFrameworks[reqFramework] = versionItem.CatalogEntry.Version;
+                                //}
                             }
                         }
                     }
 
                     if (supportedFrameworks.Any()) {
                         logger?.WriteDebug($"Found matching version {versionItem.CatalogEntry.Version} for {request.PackageId} with {supportedFrameworks.Count} supported frameworks");
+
+                        //if (dependencyGroups.Any()) {
+                        //    foreach (var dependencyGroup in dependencyGroups.Keys.Order()) {
+                        //        var grp = dependencyGroups[dependencyGroup];
+                        //        logger?.WriteDebug($"{dependencyGroup} Target {grp.TargetFramework}");
+
+                        //        foreach (var item in grp.Dependencies) {
+                        //            logger?.WriteDebug($"\t{item.PackageId} {item.Range}");
+                        //        }
+                        //    }
+                        //}
+                        
+                        
                         return new PackageVersionResult {
                             PackageId = request.PackageId,
                             TargetFrameworkVersions = supportedFrameworks,
-                            IsPrerelease = isPrerelease
+                            IsPrerelease = isPrerelease,
+
+                            Dependencies = dependencyGroups
                         };
                     }
                     else if (!allowPrerelease) {
@@ -292,4 +347,5 @@ public record PackageVersionResult {
     public required Dictionary<string, string> TargetFrameworkVersions { get; init; }
     public bool IsPrerelease { get; init; }
     public DateTime RetrievedAt { get; init; } = DateTime.UtcNow;
+    public Dictionary<string, DependencyGroup> Dependencies { get; internal set; }
 }

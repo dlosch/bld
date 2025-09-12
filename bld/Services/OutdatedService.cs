@@ -112,7 +112,7 @@ internal class OutdatedService {
                 CompatibleTargetFrameworks = packageReference.Value.Tfms.ToList() //  [packageReference.Value.Tfm]
             };
 
-            var result = await NugetMetadataService.GetLatestVersionWithFrameworkCheckAsync(client, options, default, request);
+            var result = await NugetMetadataService.GetLatestVersionWithFrameworkCheckAsync(client, options, _console, request);
 
             var currentMin = packageReference.Value
                 .Select(u => NuGetVersion.TryParse(u.Version, out var v) ? v : null)
