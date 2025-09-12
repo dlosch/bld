@@ -6,7 +6,7 @@ namespace bld.Services;
 /// Service for categorizing NuGet packages
 /// </summary>
 internal class NugetPackageCategorizer {
-    
+
     // Official Microsoft .NET packages - these are part of the core .NET ecosystem
     private static readonly HashSet<string> OfficialDotNetPrefixes = new(StringComparer.OrdinalIgnoreCase) {
         "System.",
@@ -79,7 +79,7 @@ internal class NugetPackageCategorizer {
             if (WhitelistBlacklistParser.FindMatchingPattern(packageName, packageVersion, _whitelistBlacklistRules.MicrosoftPatterns) != null) {
                 return NugetPackageCategory.MicrosoftNonOfficial;
             }
-            
+
             // Check if package is explicitly categorized as Trusted
             if (WhitelistBlacklistParser.FindMatchingPattern(packageName, packageVersion, _whitelistBlacklistRules.TrustedPatterns) != null) {
                 return NugetPackageCategory.TrustedThirdParty;
@@ -134,7 +134,7 @@ internal class NugetPackageCategorizer {
 
     public string GetCategoryDisplayName(NugetPackageCategory category) => category switch {
         NugetPackageCategory.MicrosoftOfficial => "Microsoft Official .NET Packages",
-        NugetPackageCategory.MicrosoftNonOfficial => "Microsoft Non-Official Packages", 
+        NugetPackageCategory.MicrosoftNonOfficial => "Microsoft Non-Official Packages",
         NugetPackageCategory.TrustedThirdParty => "Known Trusted Packages",
         NugetPackageCategory.Other => "Other Packages",
         _ => "Unknown"

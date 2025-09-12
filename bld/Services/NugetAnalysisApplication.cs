@@ -37,7 +37,7 @@ internal class NugetAnalysisApplication {
         var scanner = new SlnScanner(options, errorSink);
         var slnParser = new SlnParser(_console, errorSink);
         var fileSystem = new FileSystem(_console, errorSink);
-        
+
         // Parse whitelist/blacklist file if provided
         WhitelistBlacklistRules? whitelistBlacklistRules = null;
         if (!string.IsNullOrWhiteSpace(whitelistBlacklistFile)) {
@@ -54,7 +54,7 @@ internal class NugetAnalysisApplication {
                 return;
             }
         }
-        
+
         var categorizer = new NugetPackageCategorizer(whitelistBlacklistRules);
         var packageExtractor = new NugetPackageExtractor(_console, errorSink, categorizer);
 
@@ -73,7 +73,7 @@ internal class NugetAnalysisApplication {
                         try {
                             var globalProperties = GetGlobalProperties(options);
                             var analysis = packageExtractor.AnalyzeProject(projCfg, globalProperties);
-                            
+
                             if (analysis.Packages.Any()) {
                                 allProjectAnalyses.Add(analysis);
                             }
@@ -85,13 +85,13 @@ internal class NugetAnalysisApplication {
                 }
             }
 
-        // Display results with unique projects only (deduplicate by path)
-        var uniqueAnalyses = allProjectAnalyses
-            .GroupBy(a => a.ProjectPath)
-            .Select(g => g.First())
-            .ToList();
-            
-        await DisplayResults(uniqueAnalyses, categorizer);
+            // Display results with unique projects only (deduplicate by path)
+            var uniqueAnalyses = allProjectAnalyses
+                .GroupBy(a => a.ProjectPath)
+                .Select(g => g.First())
+                .ToList();
+
+            await DisplayResults(uniqueAnalyses, categorizer);
 
         }
         finally {
@@ -130,7 +130,7 @@ internal class NugetAnalysisApplication {
         // Summary
         var totalPackages = analyses.SelectMany(a => a.Packages).Count();
         var uniquePackages = analyses.SelectMany(a => a.Packages).Select(p => p.Name).Distinct().Count();
-        
+
         _console.WriteRule("[bold green]Summary[/]");
         _console.WriteInfo($"Total packages across all projects: {totalPackages}");
         _console.WriteInfo($"Unique packages: {uniquePackages}");
@@ -162,10 +162,10 @@ internal class NugetAnalysisApplication {
         }
 
         content.Add($"[bold yellow]{categoryName}:[/]");
-        
+
         foreach (var package in packageList.OrderBy(p => p.Name)) {
             var packageInfo = $"• {package.Name} ({package.Version})";
-            
+
             // Add coloring and pattern information based on whitelist/blacklist/microsoft/trusted
             if (!string.IsNullOrWhiteSpace(package.BlacklistMatch)) {
                 packageInfo = $"[red]{packageInfo} ({package.BlacklistMatch})[/]";
@@ -179,7 +179,7 @@ internal class NugetAnalysisApplication {
             else if (!string.IsNullOrWhiteSpace(package.TrustedMatch)) {
                 packageInfo = $"{packageInfo} ({package.TrustedMatch})";
             }
-            
+
             content.Add(packageInfo);
         }
         content.Add("");

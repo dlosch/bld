@@ -19,7 +19,7 @@ internal class CpmService {
     public async Task ConvertToCentralPackageManagementAsync(string rootPath, bool applyChanges, bool overwrite, CancellationToken cancellationToken) {
         // Initialize MSBuild before any Microsoft.Build.* types are loaded
         MSBuildInitializer.Initialize(_console, _options);
-        
+
         _console.WriteInfo("Starting Central Package Management conversion...");
 
         // Find solution file(s) to determine the root
@@ -32,14 +32,14 @@ internal class CpmService {
         await foreach (var slnPath in slnScanner.Enumerate(rootPath)) {
             _console.WriteVerbose($"Processing solution: {slnPath}");
             var solutionDir = Path.GetDirectoryName(slnPath)!;
-            
+
             var allPackageReferences = new Dictionary<string, string>(); // PackageId -> Version
             var projectFiles = new List<string>();
 
             await foreach (var projCfg in slnParser.ParseSolution(slnPath)) {
                 var projectPath = projCfg.Path;
                 projectFiles.Add(projectPath);
-                
+
                 var packageRefs = await ExtractPackageReferencesAsync(projectPath, cancellationToken);
                 foreach (var (packageId, version) in packageRefs) {
                     if (allPackageReferences.TryGetValue(packageId, out var existingVersion)) {
@@ -47,10 +47,12 @@ internal class CpmService {
                         if (CompareVersions(version, existingVersion) > 0) {
                             allPackageReferences[packageId] = version;
                             _console.WriteVerbose($"Updated {packageId} from {existingVersion} to {version}");
-                        } else if (!version.Equals(existingVersion, StringComparison.OrdinalIgnoreCase)) {
+                        }
+                        else if (!version.Equals(existingVersion, StringComparison.OrdinalIgnoreCase)) {
                             _console.WriteWarning($"Version conflict for {packageId}: {existingVersion} vs {version}. Using {allPackageReferences[packageId]}");
                         }
-                    } else {
+                    }
+                    else {
                         allPackageReferences[packageId] = version;
                     }
                 }
@@ -95,15 +97,16 @@ internal class CpmService {
                 }
 
                 _console.WriteInfo($"Updated {solution.ProjectFiles.Count} project files to use central package management");
-            } else {
+            }
+            else {
                 _console.WriteInfo("Dry run - showing what would be created:");
                 _console.WriteInfo($"Directory.Packages.props would be created at: {directoryPackagesPath}");
                 _console.WriteInfo("Package versions that would be centralized:");
-                
+
                 foreach (var (packageId, version) in solution.PackageReferences.OrderBy(x => x.Key)) {
                     _console.WriteInfo($"  {packageId} = {version}");
                 }
-                
+
                 _console.WriteInfo($"\n{solution.ProjectFiles.Count} project files would be updated to remove version attributes");
             }
         }
@@ -166,7 +169,7 @@ internal class CpmService {
             using (var readStream = File.OpenRead(projectPath)) {
                 doc = await XDocument.LoadAsync(readStream, LoadOptions.None, cancellationToken);
             }
-            
+
             var packageRefElements = doc.Descendants("PackageReference");
             var modified = false;
 

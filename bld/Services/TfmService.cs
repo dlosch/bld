@@ -29,7 +29,7 @@ internal class TfmService {
     public async Task<int> MigrateTargetFrameworkAsync(string rootPath, string fromTfm, string toTfm, bool applyChanges, CancellationToken cancellationToken) {
         // Initialize MSBuild before any Microsoft.Build.* types are loaded
         MSBuildInitializer.Initialize(_console, _options);
-        
+
         _console.WriteInfo($"Migrating projects from {fromTfm} to {toTfm}...");
 
         var projectsToMigrate = new List<ProjectMigrationInfo>();
@@ -38,11 +38,12 @@ internal class TfmService {
         if (File.Exists(rootPath) && Path.GetExtension(rootPath).Equals(".csproj", StringComparison.OrdinalIgnoreCase)) {
             _console.WriteVerbose($"Processing direct project file: {rootPath}");
             var migrationInfo = await AnalyzeProjectForMigrationAsync(rootPath, fromTfm, toTfm, cancellationToken);
-            
+
             if (migrationInfo != null) {
                 projectsToMigrate.Add(migrationInfo);
             }
-        } else {
+        }
+        else {
             // Use the existing solution-based logic
             var errorSink = new ErrorSink(_console);
             var slnScanner = new SlnScanner(_options, errorSink);
@@ -51,19 +52,19 @@ internal class TfmService {
 
             await foreach (var slnPath in slnScanner.Enumerate(rootPath)) {
                 _console.WriteVerbose($"Processing solution: {slnPath}");
-                
+
                 await foreach (var projCfg in slnParser.ParseSolution(slnPath)) {
                     var projectPath = projCfg.Path;
-                    
+
                     // Skip if we've already processed this project (due to multiple configurations)
                     if (processedProjects.Contains(projectPath)) {
                         continue;
                     }
-                    
+
                     processedProjects.Add(projectPath);
-                    
+
                     var migrationInfo = await AnalyzeProjectForMigrationAsync(projectPath, fromTfm, toTfm, cancellationToken);
-                    
+
                     if (migrationInfo != null) {
                         projectsToMigrate.Add(migrationInfo);
                     }
@@ -83,7 +84,8 @@ internal class TfmService {
             foreach (var project in projectsToMigrate) {
                 if (project.UsesTargetFrameworks) {
                     await UpdateProjectTargetFrameworksAsync(project, toTfm, cancellationToken);
-                } else {
+                }
+                else {
                     await UpdateProjectTargetFrameworkAsync(project.ProjectPath, project.CurrentTfm, toTfm, cancellationToken);
                     _console.WriteInfo($"Updated {Path.GetFileName(project.ProjectPath)} to {toTfm}");
                 }
@@ -104,7 +106,8 @@ internal class TfmService {
                     _console.WriteWarning($"  {issue.PackageId} {issue.CurrentVersion} in {Path.GetFileName(issue.ProjectPath)}");
                     if (!string.IsNullOrEmpty(issue.RecommendedVersion)) {
                         _console.WriteInfo($"    → Recommended: {issue.RecommendedVersion}");
-                    } else {
+                    }
+                    else {
                         _console.WriteError($"    → No compatible version found for {toTfm}");
                     }
                 }
@@ -120,31 +123,34 @@ internal class TfmService {
                 if (updatedPackages > 0) {
                     _console.WriteInfo($"Updated {updatedPackages} packages for {toTfm} compatibility");
                 }
-            } else {
+            }
+            else {
                 _console.WriteInfo("All packages are compatible with the new target framework");
             }
 
             _console.WriteInfo($"Migration complete! Migrated {projectsToMigrate.Count} projects to {toTfm}");
-        } else {
+        }
+        else {
             _console.WriteInfo("Dry run - showing what would be migrated:");
             foreach (var project in projectsToMigrate) {
                 if (project.UsesTargetFrameworks) {
                     var currentTfms = project.CurrentTfm.Split(';').Select(t => t.Trim()).Where(t => !string.IsNullOrEmpty(t)).ToList();
-                    var newTfms = currentTfms.Select(tfm => 
+                    var newTfms = currentTfms.Select(tfm =>
                         project.TargetFrameworksToUpdate.Contains(tfm, StringComparer.OrdinalIgnoreCase) ? toTfm : tfm
                     ).ToList();
-                    
+
                     _console.WriteInfo($"  {Path.GetFileName(project.ProjectPath)}:");
                     _console.WriteInfo($"    Current: {string.Join("; ", currentTfms)}");
                     _console.WriteInfo($"    New: {string.Join("; ", newTfms)}");
-                    
+
                     if (project.TargetFrameworksToUpdate.Count > 0) {
                         _console.WriteInfo($"    Updating: {string.Join(", ", project.TargetFrameworksToUpdate)} → {toTfm}");
                     }
-                } else {
+                }
+                else {
                     _console.WriteInfo($"  {Path.GetFileName(project.ProjectPath)}: {project.CurrentTfm} → {toTfm}");
                 }
-                
+
                 if (project.PackageReferences.Count > 0) {
                     _console.WriteVerbose($"    Packages: {string.Join(", ", project.PackageReferences.Select(p => $"{p.Id}@{p.Version}"))}");
                 }
@@ -162,7 +168,7 @@ internal class TfmService {
             var projParser = new ProjParser(_console, errorSink, _options);
             var proj = new Proj(projectPath, null);
             var projCfg = new ProjCfg(proj, null, null); // No specific configuration
-            
+
             var projectInfo = projParser.LoadProject(projCfg, Array.Empty<string>());
             if (projectInfo == null) {
                 _console.WriteWarning($"Failed to load project {Path.GetFileName(projectPath)}");
@@ -181,7 +187,7 @@ internal class TfmService {
             // Case A: TargetFramework specified (single target framework) and no TargetFrameworks
             if (hasTargetFramework && !hasTargetFrameworks) {
                 var tfmValue = projectInfo.TargetFramework!.Trim();
-                
+
                 // Skip if it contains variables (variables that weren't resolved would still contain $())
                 if (tfmValue.Contains("$(") && tfmValue.Contains(")")) {
                     _console.WriteVerbose($"Skipping {Path.GetFileName(projectPath)} - TargetFramework contains variable: {tfmValue}");
@@ -189,8 +195,8 @@ internal class TfmService {
                 }
 
                 // Check if it matches the from TFM (either exact match or if from wasn't specified, check if it's a predecessor)
-                bool matches = string.IsNullOrEmpty(fromTfm) ? 
-                    IsDirectPredecessor(tfmValue, toTfm) : 
+                bool matches = string.IsNullOrEmpty(fromTfm) ?
+                    IsDirectPredecessor(tfmValue, toTfm) :
                     tfmValue.Equals(fromTfm, StringComparison.OrdinalIgnoreCase);
 
                 if (!matches) {
@@ -212,7 +218,7 @@ internal class TfmService {
             // Case A with both: TargetFramework specified and TargetFrameworks exists - use TargetFramework as from
             if (hasTargetFramework && hasTargetFrameworks) {
                 var tfmValue = projectInfo.TargetFramework!.Trim();
-                
+
                 // Skip if it contains variables
                 if (tfmValue.Contains("$(") && tfmValue.Contains(")")) {
                     _console.WriteVerbose($"Skipping {Path.GetFileName(projectPath)} - TargetFramework contains variable: {tfmValue}");
@@ -225,7 +231,7 @@ internal class TfmService {
 
                 // For TargetFrameworks, determine which ones should be updated
                 var tfmsToUpdate = new List<string>();
-                
+
                 if (string.IsNullOrEmpty(fromTfm)) {
                     // No explicit from specified - find TFMs that are direct predecessors of toTfm
                     foreach (var tfm in tfms) {
@@ -233,7 +239,8 @@ internal class TfmService {
                             tfmsToUpdate.Add(tfm);
                         }
                     }
-                } else {
+                }
+                else {
                     // Explicit from specified - only update exact matches that are also valid for updating
                     foreach (var tfm in tfms) {
                         if (tfm.Equals(fromTfm, StringComparison.OrdinalIgnoreCase) && ShouldUpdateTfm(tfm, toTfm)) {
@@ -265,7 +272,7 @@ internal class TfmService {
 
                 // For TargetFrameworks, determine which ones should be updated
                 var tfmsToUpdate = new List<string>();
-                
+
                 if (string.IsNullOrEmpty(fromTfm)) {
                     // No explicit from specified - find TFMs that are direct predecessors of toTfm
                     foreach (var tfm in tfms) {
@@ -273,7 +280,8 @@ internal class TfmService {
                             tfmsToUpdate.Add(tfm);
                         }
                     }
-                } else {
+                }
+                else {
                     // Explicit from specified - only update exact matches that are also valid for updating
                     foreach (var tfm in tfms) {
                         if (tfm.Equals(fromTfm, StringComparison.OrdinalIgnoreCase) && ShouldUpdateTfm(tfm, toTfm)) {
@@ -315,7 +323,7 @@ internal class TfmService {
             }
 
             var targetFrameworkElement = doc.Descendants("TargetFramework").FirstOrDefault();
-            
+
             if (targetFrameworkElement != null && targetFrameworkElement.Value.Equals(fromTfm, StringComparison.OrdinalIgnoreCase)) {
                 targetFrameworkElement.Value = toTfm;
             }
@@ -347,9 +355,9 @@ internal class TfmService {
             }
 
             var currentTfms = targetFrameworksElement.Value.Split(';').Select(t => t.Trim()).Where(t => !string.IsNullOrEmpty(t)).ToList();
-            
+
             // Update only the TFMs that should be updated
-            var newTfms = currentTfms.Select(tfm => 
+            var newTfms = currentTfms.Select(tfm =>
                 project.TargetFrameworksToUpdate.Contains(tfm, StringComparer.OrdinalIgnoreCase) ? toTfm : tfm
             ).ToList();
 
@@ -361,7 +369,7 @@ internal class TfmService {
 
             // Prompt for confirmation
             bool confirmed = _console.Confirm("Apply this change?", false);
-            
+
             if (!confirmed) {
                 _console.WriteInfo($"Cancelled update for {Path.GetFileName(project.ProjectPath)}");
                 return;
@@ -378,7 +386,7 @@ internal class TfmService {
                 Async = true
             });
             await doc.SaveAsync(writer, cancellationToken);
-            
+
             _console.WriteInfo($"✓ Updated {Path.GetFileName(project.ProjectPath)} TargetFrameworks");
         }
         catch (Exception ex) {
@@ -395,7 +403,7 @@ internal class TfmService {
         foreach (var package in project.PackageReferences) {
             try {
                 var metadata = await packageMetadataResource.GetMetadataAsync(package.Id, true, true, _cache, _logger, cancellationToken);
-                
+
                 if (!NuGetVersion.TryParse(package.Version, out var currentVersion)) {
                     continue;
                 }
@@ -408,7 +416,7 @@ internal class TfmService {
                     var latestCompatible = metadata.Where(m => !m.Identity.Version.IsPrerelease)
                                                   .OrderByDescending(m => m.Identity.Version)
                                                   .FirstOrDefault();
-                    
+
                     if (latestCompatible != null && latestCompatible.Identity.Version > currentVersion) {
                         issues.Add(new PackageCompatibilityIssue {
                             ProjectPath = project.ProjectPath,
@@ -434,7 +442,7 @@ internal class TfmService {
             using (var readStream = File.OpenRead(projectPath)) {
                 doc = await XDocument.LoadAsync(readStream, LoadOptions.PreserveWhitespace, cancellationToken);
             }
-            
+
             var packageRefElements = doc.Descendants("PackageReference")
                 .Where(e => e.Attribute("Include")?.Value == packageId);
 
@@ -444,7 +452,8 @@ internal class TfmService {
 
                 if (versionAttr != null) {
                     versionAttr.Value = newVersion;
-                } else if (versionElement != null) {
+                }
+                else if (versionElement != null) {
                     versionElement.Value = newVersion;
                 }
             }
@@ -465,7 +474,7 @@ internal class TfmService {
 
     private async Task<List<PackageInfo>> ExtractPackageReferencesAsync(string projectPath) {
         var packageReferences = new List<PackageInfo>();
-        
+
         try {
             using var stream = File.OpenRead(projectPath);
             var doc = await XDocument.LoadAsync(stream, LoadOptions.None, default);
@@ -473,7 +482,7 @@ internal class TfmService {
 
             foreach (var element in packageRefElements) {
                 var include = element.Attribute("Include")?.Value;
-                var version = element.Attribute("Version")?.Value ?? 
+                var version = element.Attribute("Version")?.Value ??
                              element.Element("Version")?.Value;
 
                 if (!string.IsNullOrEmpty(include) && !string.IsNullOrEmpty(version)) {
@@ -559,7 +568,7 @@ internal class TfmService {
         // .NET (5.0+) and .NET Framework patterns - both start with "net"
         if (tfm.StartsWith("net") && tfm.Length > 3) {
             var versionStr = tfm.Substring(3);
-            
+
             // Try to parse as a full version (e.g., "8.0" from "net8.0")
             if (Version.TryParse(versionStr, out var parsedVersion)) {
                 if (parsedVersion.Major >= 5) {
@@ -567,14 +576,15 @@ internal class TfmService {
                     type = TfmType.DotNet;
                     version = parsedVersion;
                     return true;
-                } else if (parsedVersion.Major == 4) {
+                }
+                else if (parsedVersion.Major == 4) {
                     // .NET Framework with full version (rare but possible)
                     type = TfmType.DotNetFramework;
                     version = parsedVersion;
                     return true;
                 }
             }
-            
+
             // .NET Framework legacy patterns (net48, net472, etc.)
             if (versionStr.Length >= 2 && versionStr.Length <= 3 && versionStr.All(char.IsDigit)) {
                 if (versionStr.Length == 2) {
@@ -584,7 +594,8 @@ internal class TfmService {
                         version = legacyVersion;
                         return true;
                     }
-                } else if (versionStr.Length == 3) {
+                }
+                else if (versionStr.Length == 3) {
                     // net472 -> 4.7.2
                     if (Version.TryParse($"4.{versionStr[1]}.{versionStr[2]}", out var legacyVersion)) {
                         type = TfmType.DotNetFramework;

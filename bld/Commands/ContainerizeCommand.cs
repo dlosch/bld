@@ -2,7 +2,6 @@ using bld.Infrastructure;
 using bld.Models;
 using bld.Services;
 using System.CommandLine;
-using System.CommandLine.Parsing;
 
 namespace bld.Commands;
 
@@ -50,7 +49,7 @@ internal sealed class ContainerizeCommand : BaseCommand {
         try {
             var containerizeService = new ContainerizeService(Console, options);
             await containerizeService.ContainerizeProjectsAsync(rootPath, apply, cancellationToken);
-            
+
             Console.WriteInfo("Containerization process completed successfully.");
             return 0;
         }

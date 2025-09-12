@@ -20,7 +20,7 @@ internal record NugetPackageInfo {
 internal record PackagePattern {
     public string Name { get; init; } = string.Empty;
     public VersionConstraint? VersionConstraint { get; init; }
-    
+
     /// <summary>
     /// The original pattern string from the configuration file
     /// </summary>
@@ -33,7 +33,7 @@ internal record PackagePattern {
 internal record VersionConstraint {
     public VersionOperator Operator { get; init; }
     public Version Version { get; init; } = new Version();
-    
+
     /// <summary>
     /// Check if a version satisfies this constraint
     /// </summary>
@@ -74,16 +74,16 @@ internal record ProjectNugetAnalysis {
     public string ProjectPath { get; init; } = string.Empty;
     public string? ProjectName { get; init; }
     public IReadOnlyList<NugetPackageInfo> Packages { get; init; } = Array.Empty<NugetPackageInfo>();
-    
-    public IEnumerable<NugetPackageInfo> MicrosoftOfficialPackages => 
+
+    public IEnumerable<NugetPackageInfo> MicrosoftOfficialPackages =>
         Packages.Where(p => p.Category == NugetPackageCategory.MicrosoftOfficial);
-    
-    public IEnumerable<NugetPackageInfo> MicrosoftNonOfficialPackages => 
+
+    public IEnumerable<NugetPackageInfo> MicrosoftNonOfficialPackages =>
         Packages.Where(p => p.Category == NugetPackageCategory.MicrosoftNonOfficial);
-    
-    public IEnumerable<NugetPackageInfo> TrustedThirdPartyPackages => 
+
+    public IEnumerable<NugetPackageInfo> TrustedThirdPartyPackages =>
         Packages.Where(p => p.Category == NugetPackageCategory.TrustedThirdParty);
-    
-    public IEnumerable<NugetPackageInfo> OtherPackages => 
+
+    public IEnumerable<NugetPackageInfo> OtherPackages =>
         Packages.Where(p => p.Category == NugetPackageCategory.Other);
 }

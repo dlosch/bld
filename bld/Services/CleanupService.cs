@@ -1,10 +1,5 @@
 using bld.Infrastructure;
 using bld.Models;
-using Microsoft.Build.Evaluation;
-using Microsoft.Build.Locator;
-using NuGet.Frameworks;
-using NuGet.Packaging;
-using NuGet.Packaging.Core;
 using System.Runtime.CompilerServices;
 using System.Xml;
 using System.Xml.Linq;
@@ -24,7 +19,7 @@ internal class CleanupService {
     public async Task<int> AnalyzePackageReferencesAsync(string rootPath, bool removeRedundant, CancellationToken cancellationToken) {
         // Initialize MSBuild before any Microsoft.Build.* types are loaded
         MSBuildInitializer.Initialize(_console, _options);
-        
+
         _console.WriteInfo("Analyzing package references for redundant dependencies...");
 
         var errorSink = new ErrorSink(_console);
@@ -35,7 +30,7 @@ internal class CleanupService {
 
         await foreach (var slnPath in slnScanner.Enumerate(rootPath)) {
             _console.WriteVerbose($"Processing solution: {slnPath}");
-            
+
             await foreach (var projCfg in slnParser.ParseSolution(slnPath)) {
                 var projectPath = projCfg.Path;
                 var projectInfo = await AnalyzeProjectAsync(projectPath, cancellationToken);
@@ -66,7 +61,7 @@ internal class CleanupService {
         }
 
         _console.WriteInfo($"\nFound {redundantReferences.Count} potentially redundant package references:");
-        
+
         var groupedByProject = redundantReferences.GroupBy(r => r.ProjectPath);
         foreach (var projectGroup in groupedByProject.OrderBy(g => g.Key)) {
             _console.WriteWarning($"\n{Path.GetFileName(projectGroup.Key)}:");
@@ -82,7 +77,7 @@ internal class CleanupService {
         if (removeRedundant) {
             _console.WriteInfo("\nRemoving redundant package references...");
             var removedCount = 0;
-            
+
             foreach (var projectGroup in groupedByProject) {
                 var removed = await RemoveRedundantReferencesAsync(projectGroup.Key, projectGroup.ToList(), cancellationToken);
                 removedCount += removed;
@@ -90,9 +85,10 @@ internal class CleanupService {
                     _console.WriteInfo($"Removed {removed} redundant references from {Path.GetFileName(projectGroup.Key)}");
                 }
             }
-            
+
             _console.WriteInfo($"Removed {removedCount} redundant package references total");
-        } else {
+        }
+        else {
             _console.WriteInfo("\nUse --update to apply these changes.");
         }
 
@@ -102,7 +98,7 @@ internal class CleanupService {
     private async Task<ProjectInfo?> AnalyzeProjectAsync(string projectPath, CancellationToken cancellationToken) {
         try {
             _console.WriteVerbose($"Analyzing project: {Path.GetFileName(projectPath)}");
-            
+
             var doc = await XDocument.LoadAsync(File.OpenRead(projectPath), LoadOptions.None, cancellationToken);
             var targetFramework = doc.Descendants("TargetFramework").FirstOrDefault()?.Value ??
                                  doc.Descendants("TargetFrameworks").FirstOrDefault()?.Value?.Split(';')[0];
@@ -117,7 +113,7 @@ internal class CleanupService {
 
             foreach (var element in packageRefElements) {
                 var include = element.Attribute("Include")?.Value;
-                var version = element.Attribute("Version")?.Value ?? 
+                var version = element.Attribute("Version")?.Value ??
                              element.Element("Version")?.Value;
 
                 if (!string.IsNullOrEmpty(include) && !string.IsNullOrEmpty(version)) {
@@ -146,9 +142,9 @@ internal class CleanupService {
         try {
             // Simple heuristic-based analysis for now
             // In a full implementation, this would use NuGet dependency resolution
-            
+
             var packageIds = projectInfo.PackageReferences.Select(p => p.Id.ToLowerInvariant()).ToHashSet();
-            
+
             // Check for some common transitive dependencies that are often explicitly referenced
             var commonTransitives = new Dictionary<string, string[]> {
                 ["system.text.json"] = new[] { "microsoft.aspnetcore.app", "microsoft.aspnetcore.all" },
@@ -163,10 +159,10 @@ internal class CleanupService {
 
             foreach (var packageRef in projectInfo.PackageReferences) {
                 var packageIdLower = packageRef.Id.ToLowerInvariant();
-                
+
                 if (commonTransitives.TryGetValue(packageIdLower, out var transitiveProviders)) {
                     var providingPackages = transitiveProviders.Where(provider => packageIds.Contains(provider.ToLowerInvariant())).ToList();
-                    
+
                     if (providingPackages.Any()) {
                         redundantReferences.Add(new RedundantReferenceInfo {
                             ProjectPath = projectInfo.Path,
@@ -209,14 +205,14 @@ internal class CleanupService {
     private string GetPackageBaseName(string packageId) {
         // Simple heuristic to group related packages
         var lower = packageId.ToLowerInvariant();
-        
+
         if (lower.StartsWith("microsoft.extensions.")) {
             var parts = lower.Split('.');
             if (parts.Length > 2) {
                 return string.Join(".", parts.Take(3)); // e.g., microsoft.extensions.logging
             }
         }
-        
+
         if (lower.StartsWith("system.")) {
             var parts = lower.Split('.');
             if (parts.Length > 1) {
@@ -230,15 +226,15 @@ internal class CleanupService {
     private async Task<int> RemoveRedundantReferencesAsync(string projectPath, List<RedundantReferenceInfo> redundantRefs, CancellationToken cancellationToken) {
         try {
             XDocument doc;
-            
+
             // Read the file with explicit disposal to ensure file handle is released
             using (var readStream = File.OpenRead(projectPath)) {
                 doc = await XDocument.LoadAsync(readStream, LoadOptions.PreserveWhitespace, cancellationToken);
             }
-            
+
             // Small delay to ensure file handle is fully released on some file systems
             await Task.Delay(10, cancellationToken);
-            
+
             var removedCount = 0;
 
             foreach (var redundantRef in redundantRefs) {
@@ -257,7 +253,7 @@ internal class CleanupService {
                 // Ensure file is not locked by forcing garbage collection
                 GC.Collect();
                 GC.WaitForPendingFinalizers();
-                
+
                 using var writeStream = File.Create(projectPath);
                 using var writer = XmlWriter.Create(writeStream, new XmlWriterSettings {
                     Indent = true,

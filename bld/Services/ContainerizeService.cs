@@ -20,7 +20,7 @@ internal class ContainerizeService {
     public async Task ContainerizeProjectsAsync(string rootPath, bool applyChanges, CancellationToken cancellationToken) {
         // Initialize MSBuild before any Microsoft.Build.* types are loaded
         MSBuildInitializer.Initialize(_console, _options);
-        
+
         _console.WriteInfo("Starting containerization process...");
 
         // Discover solutions and projects
@@ -32,11 +32,11 @@ internal class ContainerizeService {
 
         await foreach (var slnPath in slnScanner.Enumerate(rootPath)) {
             _console.WriteVerbose($"Processing solution: {slnPath}");
-            
+
             await foreach (var projCfg in slnParser.ParseSolution(slnPath)) {
                 var projParser = new ProjParser(_console, errorSink, _options);
                 var projectInfo = projParser.LoadProject(projCfg, Array.Empty<string>());
-                
+
                 if (projectInfo != null) {
                     var projectDir = Path.GetDirectoryName(projectInfo.ProjectPath);
                     if (projectDir != null) {
@@ -78,17 +78,19 @@ internal class ContainerizeService {
 
             if (containerProperties.Any()) {
                 _console.WriteInfo($"  Found {containerProperties.Count} container properties to convert");
-                
+
                 if (applyChanges) {
                     await ApplyContainerPropertiesToProjectAsync(project.ProjectPath, containerProperties, cancellationToken);
                     _console.WriteInfo($"  Updated project file with container properties");
-                } else {
+                }
+                else {
                     _console.WriteInfo("  Container properties that would be added:");
                     foreach (var prop in containerProperties) {
                         _console.WriteInfo($"    {prop.Key} = {prop.Value}");
                     }
                 }
-            } else {
+            }
+            else {
                 _console.WriteInfo("  No convertible container properties found");
             }
         }
@@ -100,24 +102,27 @@ internal class ContainerizeService {
     private Dictionary<string, string> ParseDockerfile(string dockerfileContent) {
         var properties = new Dictionary<string, string>();
         var lines = dockerfileContent.Split('\n', StringSplitOptions.RemoveEmptyEntries);
-        
+
         for (int i = 0; i < lines.Length; i++) {
             var trimmedLine = lines[i].Trim();
-            
+
             // Parse FROM instruction to get base image
             if (trimmedLine.StartsWith("FROM ", StringComparison.OrdinalIgnoreCase)) {
                 var fromMatch = Regex.Match(trimmedLine, @"FROM\s+([^\s]+)", RegexOptions.IgnoreCase);
                 if (fromMatch.Success) {
                     var baseImage = fromMatch.Groups[1].Value;
-                    
+
                     // Convert common .NET base images to container properties
                     if (baseImage.Contains("mcr.microsoft.com/dotnet/runtime")) {
                         properties["ContainerBaseImage"] = baseImage;
-                    } else if (baseImage.Contains("mcr.microsoft.com/dotnet/aspnet")) {
+                    }
+                    else if (baseImage.Contains("mcr.microsoft.com/dotnet/aspnet")) {
                         properties["ContainerBaseImage"] = baseImage;
-                    } else if (baseImage.Contains("alpine")) {
+                    }
+                    else if (baseImage.Contains("alpine")) {
                         properties["ContainerBaseImage"] = baseImage;
-                    } else {
+                    }
+                    else {
                         properties["ContainerBaseImage"] = baseImage;
                     }
                 }
@@ -126,7 +131,7 @@ internal class ContainerizeService {
             // Parse LABEL instructions - support both single-line and multi-line with trailing \
             if (trimmedLine.StartsWith("LABEL ", StringComparison.OrdinalIgnoreCase)) {
                 var labelContent = trimmedLine.Substring(6); // Remove "LABEL "
-                
+
                 // Handle multi-line labels with trailing \
                 while (labelContent.EndsWith("\\") && i + 1 < lines.Length) {
                     labelContent = labelContent.Substring(0, labelContent.Length - 1).Trim(); // Remove trailing \
@@ -134,14 +139,14 @@ internal class ContainerizeService {
                     var nextLine = lines[i].Trim();
                     labelContent += " " + nextLine;
                 }
-                
+
                 ParseLabelContent(labelContent, properties);
             }
 
             // Parse ENV instructions
             if (trimmedLine.StartsWith("ENV ", StringComparison.OrdinalIgnoreCase)) {
                 var envContent = trimmedLine.Substring(4); // Remove "ENV "
-                
+
                 // Handle multi-line ENV with trailing \
                 while (envContent.EndsWith("\\") && i + 1 < lines.Length) {
                     envContent = envContent.Substring(0, envContent.Length - 1).Trim(); // Remove trailing \
@@ -149,7 +154,7 @@ internal class ContainerizeService {
                     var nextLine = lines[i].Trim();
                     envContent += " " + nextLine;
                 }
-                
+
                 ParseEnvContent(envContent, properties);
             }
 
@@ -174,38 +179,38 @@ internal class ContainerizeService {
 
         return properties;
     }
-    
+
     private void ParseLabelContent(string labelContent, Dictionary<string, string> properties) {
         // Parse multiple key=value pairs in a single LABEL instruction
         // Support both LABEL key1=value1 key2=value2 and LABEL key="value"
         // Handle complex cases with spaces in values and quoted strings
-        
+
         var keyValuePairs = new List<(string key, string value)>();
-        
+
         // More robust parsing that handles quoted values and spaces
         var currentKey = "";
         var currentValue = "";
         var inQuotes = false;
         var parsingValue = false;
         var i = 0;
-        
+
         while (i < labelContent.Length) {
             var c = labelContent[i];
-            
+
             // Handle quotes
             if (c == '"' && (i == 0 || labelContent[i - 1] != '\\')) {
                 inQuotes = !inQuotes;
                 i++;
                 continue;
             }
-            
+
             // Handle equals sign
             if (c == '=' && !inQuotes && !parsingValue) {
                 parsingValue = true;
                 i++;
                 continue;
             }
-            
+
             // Handle spaces
             if (c == ' ' && !inQuotes) {
                 if (parsingValue && !string.IsNullOrEmpty(currentValue)) {
@@ -214,34 +219,36 @@ internal class ContainerizeService {
                     currentKey = "";
                     currentValue = "";
                     parsingValue = false;
-                } else if (!parsingValue && !string.IsNullOrEmpty(currentKey)) {
+                }
+                else if (!parsingValue && !string.IsNullOrEmpty(currentKey)) {
                     // Space in key (shouldn't happen in well-formed labels)
                     currentKey += c;
                 }
                 i++;
                 continue;
             }
-            
+
             // Add character to current key or value
             if (parsingValue) {
                 currentValue += c;
-            } else {
+            }
+            else {
                 currentKey += c;
             }
-            
+
             i++;
         }
-        
+
         // Add the final pair if we have one
         if (!string.IsNullOrEmpty(currentKey) && parsingValue) {
             keyValuePairs.Add((currentKey.Trim(), currentValue.Trim()));
         }
-        
+
         // Convert parsed key-value pairs to container properties
         foreach (var (key, value) in keyValuePairs) {
             var cleanKey = key.Trim();
             var cleanValue = value.Trim().Trim('"');
-            
+
             // Convert OCI and common labels to container properties
             switch (cleanKey.ToLowerInvariant()) {
                 case "org.opencontainers.image.title":
@@ -270,18 +277,19 @@ internal class ContainerizeService {
                     // Add custom labels
                     if (!properties.ContainsKey("ContainerLabel")) {
                         properties["ContainerLabel"] = $"{cleanKey}={cleanValue}";
-                    } else {
+                    }
+                    else {
                         properties["ContainerLabel"] += $";{cleanKey}={cleanValue}";
                     }
                     break;
             }
         }
     }
-    
+
     private void ParseEnvContent(string envContent, Dictionary<string, string> properties) {
         // Parse ENV key=value or ENV key value pairs
         var envVars = new List<(string key, string value)>();
-        
+
         // Improved parsing that handles both formats and quoted values
         if (envContent.Contains('=')) {
             // Format: ENV KEY1=value1 KEY2=value2 or ENV KEY="value with spaces"
@@ -289,22 +297,22 @@ internal class ContainerizeService {
             var currentValue = "";
             var inQuotes = false;
             var parsingValue = false;
-            
+
             for (int i = 0; i < envContent.Length; i++) {
                 var c = envContent[i];
-                
+
                 // Handle quotes
                 if (c == '"' && (i == 0 || envContent[i - 1] != '\\')) {
                     inQuotes = !inQuotes;
                     continue;
                 }
-                
+
                 // Handle equals sign
                 if (c == '=' && !inQuotes && !parsingValue) {
                     parsingValue = true;
                     continue;
                 }
-                
+
                 // Handle spaces
                 if (c == ' ' && !inQuotes) {
                     if (parsingValue && !string.IsNullOrEmpty(currentValue)) {
@@ -313,29 +321,33 @@ internal class ContainerizeService {
                         currentKey = "";
                         currentValue = "";
                         parsingValue = false;
-                    } else if (!parsingValue) {
+                    }
+                    else if (!parsingValue) {
                         // Skip spaces between key=value pairs
                         continue;
-                    } else {
+                    }
+                    else {
                         // Space in unquoted value
                         currentValue += c;
                     }
                     continue;
                 }
-                
+
                 // Add character to current key or value
                 if (parsingValue) {
                     currentValue += c;
-                } else {
+                }
+                else {
                     currentKey += c;
                 }
             }
-            
+
             // Add the final pair if we have one
             if (!string.IsNullOrEmpty(currentKey) && parsingValue) {
                 envVars.Add((currentKey.Trim(), currentValue.Trim()));
             }
-        } else {
+        }
+        else {
             // Format: ENV KEY value (single key-value pair)
             var parts = envContent.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
             if (parts.Length == 2) {
@@ -344,15 +356,16 @@ internal class ContainerizeService {
                 envVars.Add((key, value));
             }
         }
-        
+
         // Convert ENV variables to ContainerEnvironmentVariable properties
         foreach (var (key, value) in envVars) {
             var cleanKey = key.Trim();
             var cleanValue = value.Trim().Trim('"');
-            
+
             if (!properties.ContainsKey("ContainerEnvironmentVariable")) {
                 properties["ContainerEnvironmentVariable"] = $"{cleanKey}={cleanValue}";
-            } else {
+            }
+            else {
                 properties["ContainerEnvironmentVariable"] += $";{cleanKey}={cleanValue}";
             }
         }
@@ -382,7 +395,8 @@ internal class ContainerizeService {
             var existingProperty = containerPropertyGroup.Element(property.Key);
             if (existingProperty == null) {
                 containerPropertyGroup.Add(new XElement(property.Key, property.Value));
-            } else {
+            }
+            else {
                 existingProperty.Value = property.Value;
             }
         }

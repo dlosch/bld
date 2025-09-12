@@ -114,18 +114,23 @@ retry:
                     }
                     else {
                         foreach (var reqFramework in request.CompatibleTargetFrameworks) {
-                            if (versionItem.CatalogEntry.DependencyGroups is null || !versionItem.CatalogEntry.DependencyGroups.Any()) continue;
-
-                            bool hasMatchingFramework = versionItem.CatalogEntry.DependencyGroups.Any(dg => {
-                                if (string.IsNullOrWhiteSpace(dg.TargetFramework))
-                                    return reqFramework.Equals("any", StringComparison.OrdinalIgnoreCase);
-                                var dgFramework = NuGetFramework.Parse(dg.TargetFramework);
-                                var reqNuGetFramework = NuGetFramework.Parse(reqFramework);
-                                return _compatibilityProvider.IsCompatible(reqNuGetFramework, dgFramework);
-                            });
-
-                            if (hasMatchingFramework) {
+                            //if (versionItem.CatalogEntry.DependencyGroups is null || !versionItem.CatalogEntry.DependencyGroups.Any()) continue;
+                            if (versionItem.CatalogEntry.DependencyGroups is null || !versionItem.CatalogEntry.DependencyGroups.Any()) {
+                                logger?.WriteDebug($"Package {request.PackageId} version {versionItem.CatalogEntry.Version} has no dependency groups, assuming it supports all frameworks");
                                 supportedFrameworks[reqFramework] = versionItem.CatalogEntry.Version;
+                            }
+                            else {
+                                bool hasMatchingFramework = versionItem.CatalogEntry.DependencyGroups.Any(dg => {
+                                    if (string.IsNullOrWhiteSpace(dg.TargetFramework))
+                                        return true; // reqFramework.Equals("any", StringComparison.OrdinalIgnoreCase);
+                                    var dgFramework = NuGetFramework.Parse(dg.TargetFramework);
+                                    var reqNuGetFramework = NuGetFramework.Parse(reqFramework);
+                                    return _compatibilityProvider.IsCompatible(reqNuGetFramework, dgFramework);
+                                });
+
+                                if (hasMatchingFramework) {
+                                    supportedFrameworks[reqFramework] = versionItem.CatalogEntry.Version;
+                                }
                             }
                         }
                     }

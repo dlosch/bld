@@ -2,7 +2,6 @@ using bld.Infrastructure;
 using bld.Models;
 using bld.Services;
 using System.CommandLine;
-using System.CommandLine.Parsing;
 
 namespace bld.Commands;
 
@@ -58,7 +57,7 @@ internal sealed class CpmCommand : BaseCommand {
         try {
             var cpmService = new CpmService(Console, options);
             await cpmService.ConvertToCentralPackageManagementAsync(rootPath, apply, overwrite, cancellationToken);
-            
+
             Console.WriteInfo("Central Package Management conversion completed successfully.");
             return 0;
         }

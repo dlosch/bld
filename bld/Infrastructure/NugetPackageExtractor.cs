@@ -23,37 +23,37 @@ internal sealed class NugetPackageExtractor {
     /// </summary>
     public IReadOnlyList<NugetPackageInfo> ExtractPackageReferences(ProjCfg projCfg, Dictionary<string, string> globalProperties) {
         var packages = new List<NugetPackageInfo>();
-        
+
         using var projectCollection = new ProjectCollection();
-        
+
         var properties = new Dictionary<string, string>(globalProperties);
         properties["Configuration"] = projCfg.Configuration;
-        
+
         try {
             var project = new Project(projCfg.Path, properties, null, projectCollection);
-            
+
             // Load Directory.Packages.props if it exists for centrally managed versions
             var centralVersions = LoadCentralPackageVersions(projCfg.Path, projectCollection, properties);
-            
+
             // Get PackageReference items
             var packageReferenceItems = project.GetItems("PackageReference");
-            
+
             foreach (var item in packageReferenceItems) {
                 var packageName = item.EvaluatedInclude;
                 var version = item.GetMetadataValue("Version");
-                
+
                 // If no direct version, check centrally managed packages
                 if (string.IsNullOrWhiteSpace(version) && centralVersions.ContainsKey(packageName)) {
                     version = centralVersions[packageName];
                 }
-                
+
                 if (string.IsNullOrWhiteSpace(packageName)) {
                     continue;
                 }
-                
+
                 var category = _categorizer.CategorizePackage(packageName, version);
                 var (whitelistMatch, blacklistMatch, microsoftMatch, trustedMatch) = _categorizer.GetAllMatches(packageName, version);
-                
+
                 packages.Add(new NugetPackageInfo {
                     Name = packageName,
                     Version = string.IsNullOrWhiteSpace(version) ? "Unknown" : version,
@@ -70,7 +70,7 @@ internal sealed class NugetPackageExtractor {
             _errorSink.AddError($"Failed to extract package references from project.", exception: ex, config: projCfg);
             _console.WriteError($"Could not extract packages from {projCfg.Path}: {ex.Message}");
         }
-        
+
         return packages.AsReadOnly();
     }
 
@@ -79,7 +79,7 @@ internal sealed class NugetPackageExtractor {
     /// </summary>
     private Dictionary<string, string> LoadCentralPackageVersions(string projectPath, ProjectCollection projectCollection, Dictionary<string, string> properties) {
         var centralVersions = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        
+
         try {
             // Look for Directory.Packages.props in the project directory and parent directories
             var currentDir = Path.GetDirectoryName(projectPath);
@@ -88,7 +88,7 @@ internal sealed class NugetPackageExtractor {
                 if (File.Exists(centralPackagesFile)) {
                     var centralProject = new Project(centralPackagesFile, properties, null, projectCollection);
                     var packageVersionItems = centralProject.GetItems("PackageVersion");
-                    
+
                     foreach (var item in packageVersionItems) {
                         var packageName = item.EvaluatedInclude;
                         var version = item.GetMetadataValue("Version");
@@ -104,7 +104,7 @@ internal sealed class NugetPackageExtractor {
         catch (Exception ex) {
             _console.WriteDebug($"Could not load central package versions: {ex.Message}");
         }
-        
+
         return centralVersions;
     }
 
@@ -113,7 +113,7 @@ internal sealed class NugetPackageExtractor {
     /// </summary>
     public ProjectNugetAnalysis AnalyzeProject(ProjCfg projCfg, Dictionary<string, string> globalProperties) {
         var packages = ExtractPackageReferences(projCfg, globalProperties);
-        
+
         // Extract project name for display
         string? projectName = null;
         try {
@@ -129,7 +129,7 @@ internal sealed class NugetPackageExtractor {
         catch {
             projectName = Path.GetFileNameWithoutExtension(projCfg.Path);
         }
-        
+
         return new ProjectNugetAnalysis {
             ProjectPath = projCfg.Path,
             ProjectName = projectName,

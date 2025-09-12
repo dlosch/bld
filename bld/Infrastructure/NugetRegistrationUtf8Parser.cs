@@ -29,7 +29,8 @@ internal static class NugetRegistrationUtf8Parser {
                     if (TryParseCatalogEntry(ref reader, out var info)) {
                         results.Add(info);
                     }
-                } else {
+                }
+                else {
                     // Skip non-object value (defensive)
                     SkipValue(ref reader);
                 }
@@ -63,7 +64,8 @@ internal static class NugetRegistrationUtf8Parser {
                 if (!reader.Read()) break;
                 if (reader.TokenType == JsonTokenType.String) {
                     version = reader.GetString() ?? string.Empty;
-                } else {
+                }
+                else {
                     // non-string version - skip
                     SkipValue(ref reader);
                 }
@@ -78,11 +80,13 @@ internal static class NugetRegistrationUtf8Parser {
                         if (reader.TokenType == JsonTokenType.EndArray) break;
                         if (reader.TokenType == JsonTokenType.StartObject) {
                             ParseDependencyGroup(ref reader, tfms);
-                        } else {
+                        }
+                        else {
                             SkipValue(ref reader);
                         }
                     }
-                } else {
+                }
+                else {
                     SkipValue(ref reader);
                 }
                 continue;
@@ -108,7 +112,8 @@ internal static class NugetRegistrationUtf8Parser {
                 if (reader.TokenType == JsonTokenType.String) {
                     var tfm = reader.GetString();
                     if (!string.IsNullOrEmpty(tfm)) tfms.Add(tfm);
-                } else {
+                }
+                else {
                     SkipValue(ref reader);
                 }
                 continue;

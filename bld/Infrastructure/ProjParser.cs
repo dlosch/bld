@@ -3,8 +3,6 @@
 using bld.Models;
 using bld.Services;
 using Microsoft.Build.Evaluation;
-using System;
-using System.Configuration;
 
 namespace bld.Infrastructure;
 
@@ -101,17 +99,17 @@ internal sealed class ProjParser(IConsoleOutput Console, ErrorSink ErrorSink, Cl
                     // todo TargetFrameworks
                     [Safe(project.GetPropertyValue("TargetFramework"))],
                     usesCpm,
-                    (usesCpm ?? false) 
+                    (usesCpm ?? false)
                         ? project.Imports.FirstOrDefault(imp => string.Equals(Path.GetFileName(imp.ImportedProject.FullPath), "Directory.Packages.props", StringComparison.OrdinalIgnoreCase)).ImportedProject?.FullPath
                         : default,
 
-                     //var privateAssets = string.Equals(item.GetMetadataValue("PrivateAssets"), "all", StringComparison.OrdinalIgnoreCase);
+                //var privateAssets = string.Equals(item.GetMetadataValue("PrivateAssets"), "all", StringComparison.OrdinalIgnoreCase);
                 // todo this pukes if a single package reference include is included more than once 
                 // dotnet build picks the first not the highest or lowest and warns only
                 project.GetItems("PackageReference")
                         .DistinctBy(pr => pr.Xml.Include, StringComparer.OrdinalIgnoreCase)
                         .ToDictionary(pr => pr.Xml.Include, pr => pr.Metadata?.FirstOrDefault(meta => meta.Name == "Version")?.EvaluatedValue, StringComparer.OrdinalIgnoreCase),
-                    usesCpm ?? false ? 
+                    usesCpm ?? false ?
                         project.GetItems("PackageVersion")?
                             .DistinctBy(pr => pr.Xml.Include, StringComparer.OrdinalIgnoreCase)
                          .ToDictionary(pr => pr.Xml.Include, pr => pr.Metadata?.FirstOrDefault(meta => meta.Name == "Version")?.EvaluatedValue, StringComparer.OrdinalIgnoreCase)
@@ -132,7 +130,7 @@ internal sealed class ProjParser(IConsoleOutput Console, ErrorSink ErrorSink, Cl
                 //        }
                 //    }
                 //}
-                
+
                 //var vers = project.GetItems("PackageVersion").ToList();
                 //return project.GetItems("PackageReference").ToList();
             }

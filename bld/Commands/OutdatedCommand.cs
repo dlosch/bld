@@ -2,7 +2,6 @@ using bld.Infrastructure;
 using bld.Models;
 using bld.Services;
 using System.CommandLine;
-using System.CommandLine.Parsing;
 
 namespace bld.Commands;
 

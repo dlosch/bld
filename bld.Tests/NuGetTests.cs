@@ -19,6 +19,56 @@ public class ManualTests {
         //_service = serviceProvider.GetRequiredService<INugetMetadataService>();
     }
 
+
+    [Theory]
+    [InlineData("coverlet.collector", "net9.0")]
+    [InlineData("xunit", "net9.0")]
+    [InlineData("NSwag.ApiDescription.Client", "net8.0")]
+    [InlineData("Microsoft.Sbom.Targets", "net8.0")]
+    [InlineData("Microsoft.Extensions.ApiDescription.Server", "net9.0")]
+    [InlineData("Microsoft.Extensions.ApiDescription.Client", "net8.0")]
+    [InlineData("MemoryPack.Generator", "net10.0")]
+    public async Task NoCompatibleVersion(string packageId, string tfm) {
+        Console.WriteLine($"https://api.nuget.org/v3/registration5-gz-semver2/{packageId.ToLower()}/index.json");
+        var request = new PackageVersionRequest {
+            PackageId = packageId,
+            AllowPrerelease = false,
+            CompatibleTargetFrameworks = [tfm]
+        };
+        var options = new NugetMetadataOptions { MaxParallelRequests = 1 /* configure */ };
+        var client = NugetMetadataService.CreateHttpClient(options);
+        // Act
+        var result = await NugetMetadataService.GetLatestVersionWithFrameworkCheckAsync(client, options, default, request);
+        // Assert
+        Assert.NotNull(result);
+        Assert.NotEmpty(result.TargetFrameworkVersions);
+        Console.WriteLine($"Found versions: {string.Join(", ", result.TargetFrameworkVersions.Select(kv => $"{kv.Key}:{kv.Value}"))}");
+
+    }
+
+    [Theory]
+    [InlineData("Grpc.AspNetCore")]
+    public async Task HandleMetapackageDetection(string packageId) {
+        // https://api.nuget.org/v3/registration5-gz-semver2/grpc.aspnetcore/index.json
+        // 
+
+        // Arrange
+        var request = new PackageVersionRequest {
+            PackageId = packageId,
+            AllowPrerelease = false,
+            CompatibleTargetFrameworks = []
+        };
+        var options = new NugetMetadataOptions { MaxParallelRequests = 1 /* configure */ };
+        var client = NugetMetadataService.CreateHttpClient(options);
+        // Act
+        var result = await NugetMetadataService.GetLatestVersionWithFrameworkCheckAsync(client, options, default, request);
+        // Assert
+        Assert.NotNull(result);
+        Assert.NotEmpty(result.TargetFrameworkVersions);
+        Console.WriteLine($"Found versions: {string.Join(", ", result.TargetFrameworkVersions.Select(kv => $"{kv.Key}:{kv.Value}"))}");
+    }
+
+
     // "NSwag.ApiDescription.Client" net9.0
     [Theory()]
     //[InlineData("NugetMetadata.Configuration")] // no such package afaik

@@ -95,7 +95,7 @@ internal sealed class TfmCommand : BaseCommand {
             // Initialize MSBuild first for SlnScanner/SlnParser
             var tempOptions = new CleaningOptions();
             MSBuildInitializer.Initialize(Console, tempOptions);
-            
+
             var errorSink = new ErrorSink(Console);
             var projParser = new ProjParser(Console, errorSink, tempOptions);
 
@@ -107,7 +107,7 @@ internal sealed class TfmCommand : BaseCommand {
                     var proj = new Proj(rootPath, null);
                     var projCfg = new ProjCfg(proj, null, null); // No specific configuration
                     var projectInfo = projParser.LoadProject(projCfg, Array.Empty<string>());
-                    
+
                     if (projectInfo == null) {
                         Console.WriteVerbose($"Could not load project {rootPath}");
                         return null;
@@ -121,7 +121,8 @@ internal sealed class TfmCommand : BaseCommand {
                             return null;
                         }
                         return projectInfo.TargetFramework.Trim();
-                    } else if (projectInfo.TargetFrameworks.Count > 0) {
+                    }
+                    else if (projectInfo.TargetFrameworks.Count > 0) {
                         // If TargetFrameworks exists (multiple), we can't auto-detect
                         var tfmsValue = string.Join(";", projectInfo.TargetFrameworks);
                         Console.WriteVerbose($"Project {Path.GetFileName(rootPath)} has multiple TargetFrameworks: {tfmsValue}");
@@ -132,7 +133,8 @@ internal sealed class TfmCommand : BaseCommand {
                     Console.WriteVerbose($"Could not read {rootPath}: {ex.Message}");
                     return null;
                 }
-            } else {
+            }
+            else {
                 // Use the existing solution-based logic
                 var slnScanner = new SlnScanner(tempOptions, errorSink);
                 var slnParser = new SlnParser(Console, errorSink);
@@ -143,7 +145,7 @@ internal sealed class TfmCommand : BaseCommand {
                             // Create a ProjCfg without specific Configuration to load project properties
                             var projForLoading = new ProjCfg(projCfg.Proj, null, projCfg.Platform);
                             var projectInfo = projParser.LoadProject(projForLoading, Array.Empty<string>());
-                            
+
                             if (projectInfo == null) {
                                 Console.WriteVerbose($"Could not load project {projCfg.Path}");
                                 continue;
@@ -158,7 +160,8 @@ internal sealed class TfmCommand : BaseCommand {
                                     continue;
                                 }
                                 targetFrameworks.Add(projectInfo.TargetFramework.Trim());
-                            } else if (projectInfo.TargetFrameworks.Count > 0) {
+                            }
+                            else if (projectInfo.TargetFrameworks.Count > 0) {
                                 // If TargetFrameworks exists (multiple), we can't auto-detect
                                 var tfmsValue = string.Join(";", projectInfo.TargetFrameworks);
                                 Console.WriteVerbose($"Project {Path.GetFileName(projCfg.Path)} has multiple TargetFrameworks: {tfmsValue}");

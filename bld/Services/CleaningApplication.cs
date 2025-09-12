@@ -63,7 +63,7 @@ internal class CleaningApplication(IConsoleOutput _console, Func<IConsoleOutput,
                                 _console.WriteWarning($"Error evaluating project properties for {projCfg.Path} and configuration {projCfg.Configuration}.");
                                 continue;
                             }
-                          
+
                             await markDeleteProcessor.ProcessAsync(projCfg, properties);
                         }
                     });
