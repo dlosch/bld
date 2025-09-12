@@ -42,16 +42,16 @@ internal class OutdatedService {
         var propsContentCache = new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
 
         var allPackageReferences = new Dictionary<string, PackageInfoContainer>(StringComparer.OrdinalIgnoreCase);
-        var projectFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        //var projectFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         try {
-            var packageRefs = new PackageInfoContainer(); // new List<PackageInfo>();
             var projParser = new ProjParser(_console, errorSink, _options);
 
             await foreach (var slnPath in slnScanner.Enumerate(rootPath)) {
                 await _console.StartStatusAsync($"Processing solution {slnPath}", async ctx => {
                     var currentProject = default(string);
                     await foreach (var projCfg in slnParser.ParseSolution(slnPath, fileSystem)) {
+                        var packageRefs = new PackageInfoContainer(); // new List<PackageInfo>();
                         // Only process "Release" configuration as per spec
                         // todo 20250830 aggregate
                         if (!string.Equals(projCfg.Configuration, "Release", StringComparison.OrdinalIgnoreCase)) continue;
@@ -63,9 +63,11 @@ internal class OutdatedService {
                             Id = re.Key,
                             FromProps = refs.UseCpm ?? false,
                             TargetFramework = refs.TargetFramework,
+                            TargetFrameworks = refs.TargetFrameworks,
                             ProjectPath = refs.Proj.Path,
                             PropsPath = refs.CpmFile,
-                            Version = re.Value ?? (refs.UseCpm == true && refs.PackageVersions is not null && refs.PackageVersions.TryGetValue(re.Key, out var v) ? v : null)
+                            Item  = re.Value
+                            //, Version = re.Value ?? (refs.UseCpm == true && refs.PackageVersions is not null && refs.PackageVersions.TryGetValue(re.Key, out var v) ? v : null)
                         });
 
                         var bad = exnm.Where(e => string.IsNullOrEmpty(e.Version)).ToList();
@@ -92,16 +94,16 @@ internal class OutdatedService {
             return 0;
         }
 
-        _console.WriteInfo($"Found {allPackageReferences.Count} unique packages across {projectFiles.Count} projects");
+        _console.WriteInfo($"Found {allPackageReferences.Count} unique packages across {cache.Count} projects");
 
         // Determine latest versions per package and prepare updates
-        var packageSource = Repository.Factory.GetCoreV3("https://api.nuget.org/v3/index.json");
-        var metadataResource = await packageSource.GetResourceAsync<PackageMetadataResource>(cancellationToken);
+        //var packageSource = Repository.Factory.GetCoreV3("https://api.nuget.org/v3/index.json");
+        //var metadataResource = await packageSource.GetResourceAsync<PackageMetadataResource>(cancellationToken);
 
         var latestPerPackage = new Dictionary<string, NuGetVersion>(StringComparer.OrdinalIgnoreCase);
         var outdatedPerPackage = new Dictionary<string, (NuGetVersion CurrentMin, NuGetVersion Latest)>(StringComparer.OrdinalIgnoreCase);
 
-        var options = new NugetMetadataOptions { MaxParallelRequests = 12 /* configure */ };
+        var options = new NugetMetadataOptions { MaxParallelRequests = Environment.ProcessorCount /* configure */ };
         var client = NugetMetadataService.CreateHttpClient(options);
 
         await Parallel.ForEachAsync(allPackageReferences, new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount }, async (packageReference, ct) => {
@@ -113,6 +115,10 @@ internal class OutdatedService {
             };
 
             var result = await NugetMetadataService.GetLatestVersionWithFrameworkCheckAsync(client, options, _console, request);
+            if (result is null) {
+                _console.WriteWarning($"Failed to retrieve NuGet metadata for {request.PackageId}.");
+                return;
+            }
 
             var currentMin = packageReference.Value
                 .Select(u => NuGetVersion.TryParse(u.Version, out var v) ? v : null)
@@ -120,7 +126,35 @@ internal class OutdatedService {
                 .Min()!;
 
             try {
-                var targetVer = result?.TargetFrameworkVersions?[packageReference.Value.Select(u => NuGetFramework.Parse(u.TargetFramework).GetShortFolderName()).FirstOrDefault()];
+                var targetVer = default(string?);
+                if (request.CompatibleTargetFrameworks is { } && request.CompatibleTargetFrameworks.Count > 1) {
+                    foreach (var item in request.CompatibleTargetFrameworks) {
+                        var curVer = result?.TargetFrameworkVersions?[item];
+                        if (curVer is not null && targetVer is not null && 0 != string.Compare(curVer, targetVer, StringComparison.OrdinalIgnoreCase)) {
+                            _console.WriteWarning($"Package {packageReference.Key} has multiple target framework versions: {targetVer} vs {curVer} for {string.Join(',', request.CompatibleTargetFrameworks)}");
+                        }
+
+                        targetVer ??= curVer;
+                    }
+                }
+                else {
+                    if (result.TargetFrameworkVersions.Values.Distinct().Count() == 1) {
+                        targetVer = result.TargetFrameworkVersions.Values.First();
+                    }
+
+                    else {
+
+                        targetVer = result?.TargetFrameworkVersions?[packageReference.Value.Select(u => NuGetFramework.Parse(u.TargetFramework).GetShortFolderName()).FirstOrDefault()];
+
+                    }
+                }
+
+                //var targetVersions = packageReference.Value.SelectMany(u => u.TargetFrameworks).Select(NuGetFramework.Parse).Select(x => x.GetShortFolderName()).Distinct();
+                //if (targetVersions.Count() > 1) {
+                //    Debugger.Break();
+                //}
+
+
                 if (targetVer is null) {
                     _console.WriteInfo($"No compatible version found for {packageReference.Key} {packageReference.Value.Tfm} {result?.ToString()} {string.Join(',', result?.TargetFrameworkVersions?.Select(x => x.Key) ?? Array.Empty<string>())}");
                     return;
@@ -288,14 +322,22 @@ internal class OutdatedService {
     }
 
     internal class PackageInfoContainer : IEnumerable<OutdatedService.PackageInfo> {
-        private readonly List<PackageInfo> _items = new();
+        private readonly HashSet<PackageInfo> _items = new(new PackageInfoComparer());
         internal void Add(PackageInfo item) {
-            if (item.TargetFramework is { }) {
+            if (item.TargetFrameworks is { } && item.TargetFrameworks.Length > 0) {
+                for (int odx = 0; odx < item.TargetFrameworks.Length; odx++) {
+                    var nuTfm = NuGetFramework.Parse(item.TargetFrameworks[odx]);
+                    _tfms.Add(nuTfm);
+                }
+            }
+            else if (item.TargetFramework is { }) {
                 var nuTfm = NuGetFramework.Parse(item.TargetFramework);
                 _tfms.Add(nuTfm);
 
             }
-            _items.Add(item);
+            var added = _items.Add(item);
+            if (!added) {
+            }
         }
 
         internal void AddRange(IEnumerable<PackageInfo> exnm) {
@@ -310,11 +352,55 @@ internal class OutdatedService {
         System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => _items.GetEnumerator();
     }
 
-    internal class PackageInfo {
+    internal sealed class PackageInfoComparer : IEqualityComparer<PackageInfo>
+    {
+        public bool Equals(PackageInfo? x, PackageInfo? y)
+        {
+            if (ReferenceEquals(x, y)) return true;
+            if (x is null || y is null) return false;
+            return string.Equals(x.Id, y.Id, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(x.Version, y.Version, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(x.ProjectPath, y.ProjectPath, StringComparison.OrdinalIgnoreCase)
+                && 
+                //string.Equals(x.TargetFramework, y.TargetFramework, StringComparison.OrdinalIgnoreCase)
+                //&& ((x.TargetFrameworks == null && y.TargetFrameworks == null) ||
+                    (x.TargetFrameworks != null && y.TargetFrameworks != null &&
+                     x.TargetFrameworks.SequenceEqual(y.TargetFrameworks, StringComparer.OrdinalIgnoreCase))
+                    //)
+                && string.Equals(x.PropsPath, y.PropsPath, StringComparison.OrdinalIgnoreCase)
+                && x.FromProps == y.FromProps;
+        }
+
+        public int GetHashCode(PackageInfo obj)
+        {
+            if (obj is null) return 0;
+            int hash = 17;
+            hash = hash * 23 + (obj.Id?.ToLowerInvariant().GetHashCode() ?? 0);
+            hash = hash * 23 + (obj.Version?.ToLowerInvariant().GetHashCode() ?? 0);
+            hash = hash * 23 + (obj.ProjectPath?.ToLowerInvariant().GetHashCode() ?? 0);
+            //hash = hash * 23 + (obj.TargetFramework?.ToLowerInvariant().GetHashCode() ?? 0);
+            if (obj.TargetFrameworks != null)
+            {
+                foreach (var tfm in obj.TargetFrameworks)
+                {
+                    hash = hash * 23 + (tfm?.ToLowerInvariant().GetHashCode() ?? 0);
+                }
+            }
+            hash = hash * 23 + (obj.PropsPath?.ToLowerInvariant().GetHashCode() ?? 0);
+            hash = hash * 23 + obj.FromProps.GetHashCode();
+            return hash;
+        }
+    }
+
+    internal record class PackageInfo {
         public string Id { get; set; } = string.Empty;
-        public string Version { get; set; } = string.Empty;
+        public Pkg Item { get; set; } = default!;
+
+        public string Version => Item.EffectiveVersion; // { get; set; } = string.Empty;
+        
         public string ProjectPath { get; set; } = string.Empty;
-        public string? TargetFramework { get; set; }
+        public string TargetFramework { get; set; } = default!;
+        public string[] TargetFrameworks { get; set; } = default!;
         public string? PropsPath { get; set; }
         public bool FromProps { get; set; }
     }

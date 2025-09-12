@@ -157,20 +157,6 @@ retry:
                                     supportedFrameworks[reqFramework] = versionItem.CatalogEntry.Version;
                                     if (bestMatchDependencyGroup != null) dependencyGroups[reqFramework] = bestMatchDependencyGroup!;                                 
                                 }
-
-
-                                //bool hasMatchingFramework = versionItem.CatalogEntry.DependencyGroups.Any(dg => {
-                                //    if (string.IsNullOrWhiteSpace(dg.TargetFramework))
-                                //        return true; // reqFramework.Equals("any", StringComparison.OrdinalIgnoreCase);
-                                //    var dgFramework = NuGetFramework.Parse(dg.TargetFramework);
-
-                                //    // this is not the best match!
-                                //    return _compatibilityProvider.IsCompatible(reqNuGetFramework, dgFramework);
-                                //});
-
-                                //if (hasMatchingFramework) {
-                                //    supportedFrameworks[reqFramework] = versionItem.CatalogEntry.Version;
-                                //}
                             }
                         }
                     }
@@ -178,18 +164,6 @@ retry:
                     if (supportedFrameworks.Any()) {
                         logger?.WriteDebug($"Found matching version {versionItem.CatalogEntry.Version} for {request.PackageId} with {supportedFrameworks.Count} supported frameworks");
 
-                        //if (dependencyGroups.Any()) {
-                        //    foreach (var dependencyGroup in dependencyGroups.Keys.Order()) {
-                        //        var grp = dependencyGroups[dependencyGroup];
-                        //        logger?.WriteDebug($"{dependencyGroup} Target {grp.TargetFramework}");
-
-                        //        foreach (var item in grp.Dependencies) {
-                        //            logger?.WriteDebug($"\t{item.PackageId} {item.Range}");
-                        //        }
-                        //    }
-                        //}
-                        
-                        
                         return new PackageVersionResult {
                             PackageId = request.PackageId,
                             TargetFrameworkVersions = supportedFrameworks,

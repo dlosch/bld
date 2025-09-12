@@ -6,9 +6,20 @@ using Microsoft.Build.Evaluation;
 
 namespace bld.Infrastructure;
 
+internal record class Pkg(string Id, string? Version, string? VersionOverride = default, string? CpmVersion = default) {
+       public string EffectiveVersion => VersionOverride ?? Version ?? CpmVersion ?? string.Empty;
+};
+
 //internal record class AggregatedPackageReferenceInfo(string PackageId, string? Version, bool PrivateAssets = false);
-internal record class ProjectPackageReferenceInfo(ProjCfg Proj, string[]? TargetFrameworks, bool? UseCpm, string? CpmFile, Dictionary<string, string?> PackageReferences, Dictionary<string, string>? PackageVersions) {
-    public string? TargetFramework => TargetFrameworks?.FirstOrDefault();
+internal record class ProjectPackageReferenceInfo(  
+        ProjCfg Proj, 
+        string[] TargetFrameworks, 
+        bool? UseCpm, 
+        string? CpmFile,
+        //Dictionary<string, string?> PackageReferences,
+        Dictionary<string, Pkg?> PackageReferences, 
+        Dictionary<string, string>? PackageVersions) {
+    public string TargetFramework => TargetFrameworks.First();
 }
 //internal record class ProjectPackageReferenceInfo(ProjCfg Proj, string? TargetFramework, bool? UseCpm, string? CpmFile, IEnumerable<ProjectPackage> PackageReferences, IEnumerable<ProjectPackage>? PackageVersions);
 internal record class ProjectPackage(string PackageId, string? Version);
@@ -48,36 +59,36 @@ internal sealed class ProjParser(IConsoleOutput Console, ErrorSink ErrorSink, Cl
 
 
 
-    internal void SetPackageReferences(ProjCfg proj, ProjectPackageReferenceInfo info) {
-        string projectPath = proj.Path;
-        string? configuration = proj.Configuration;
+    //internal void SetPackageReferences(ProjCfg proj, ProjectPackageReferenceInfo info) {
+    //    string projectPath = proj.Path;
+    //    string? configuration = proj.Configuration;
 
-        using (var projectCollection = new ProjectCollection()) {
-            var project = default(Project);
+    //    using (var projectCollection = new ProjectCollection()) {
+    //        var project = default(Project);
 
-            var properties = new Dictionary<string, string>(GlobalProperties);
-            if (!string.IsNullOrEmpty(configuration)) {
-                properties["Configuration"] = configuration;
-            }
-            try {
-                project.RemoveItems(project.GetItems("PackageReference"));
-                // Add new PackageReference items
-                foreach (var pr in info.PackageReferences) {
-                    var item = project.AddItem("PackageReference", pr.Key);
-                    if (!string.IsNullOrEmpty(pr.Value)) {
-                        item[0].SetMetadataValue("Version", pr.Value);
-                    }
-                }
-                // Save the modified project file
-                project.Save();
-            }
-            catch {
+    //        var properties = new Dictionary<string, string>(GlobalProperties);
+    //        if (!string.IsNullOrEmpty(configuration)) {
+    //            properties["Configuration"] = configuration;
+    //        }
+    //        try {
+    //            project.RemoveItems(project.GetItems("PackageReference"));
+    //            // Add new PackageReference items
+    //            foreach (var pr in info.PackageReferences) {
+    //                var item = project.AddItem("PackageReference", pr.Key);
+    //                if (!string.IsNullOrEmpty(pr.Value)) {
+    //                    item[0].SetMetadataValue("Version", pr.Value);
+    //                }
+    //            }
+    //            // Save the modified project file
+    //            project.Save();
+    //        }
+    //        catch {
 
-            }
+    //        }
 
 
-        }
-    }
+    //    }
+    //}
 
     internal ProjectPackageReferenceInfo GetPackageReferences(ProjCfg proj) {
         Console.WriteDebug($"Loading project {proj.Path} [{proj.Configuration}]...");
@@ -94,10 +105,18 @@ internal sealed class ProjParser(IConsoleOutput Console, ErrorSink ErrorSink, Cl
             try {
                 project = new Project(projectPath, properties, null, projectCollection);
                 var usesCpm = SafeBool(project.GetPropertyValue("ManagePackageVersionsCentrally"));
+
+                var versions = usesCpm ?? false ?
+                    project.GetItems("PackageVersion")?
+                        .DistinctBy(pr => pr.Xml.Include, StringComparer.OrdinalIgnoreCase)
+                     .ToDictionary(pr => pr.Xml.Include, pr => pr.Metadata?.FirstOrDefault(meta => meta.Name == "Version")?.EvaluatedValue, StringComparer.OrdinalIgnoreCase)
+                    : default;
+
                 var retVal = new ProjectPackageReferenceInfo(proj,
 
                     // todo TargetFrameworks
-                    [Safe(project.GetPropertyValue("TargetFramework"))],
+                    //[Safe(project.GetPropertyValue("TargetFramework"))],
+                    project.TfmOrTfmsSafe(),
                     usesCpm,
                     (usesCpm ?? false)
                         ? project.Imports.FirstOrDefault(imp => string.Equals(Path.GetFileName(imp.ImportedProject.FullPath), "Directory.Packages.props", StringComparison.OrdinalIgnoreCase)).ImportedProject?.FullPath
@@ -108,12 +127,18 @@ internal sealed class ProjParser(IConsoleOutput Console, ErrorSink ErrorSink, Cl
                 // dotnet build picks the first not the highest or lowest and warns only
                 project.GetItems("PackageReference")
                         .DistinctBy(pr => pr.Xml.Include, StringComparer.OrdinalIgnoreCase)
-                        .ToDictionary(pr => pr.Xml.Include, pr => pr.Metadata?.FirstOrDefault(meta => meta.Name == "Version")?.EvaluatedValue, StringComparer.OrdinalIgnoreCase),
-                    usesCpm ?? false ?
-                        project.GetItems("PackageVersion")?
-                            .DistinctBy(pr => pr.Xml.Include, StringComparer.OrdinalIgnoreCase)
-                         .ToDictionary(pr => pr.Xml.Include, pr => pr.Metadata?.FirstOrDefault(meta => meta.Name == "Version")?.EvaluatedValue, StringComparer.OrdinalIgnoreCase)
-                        : default
+                        .ToDictionary(pr => pr.Xml.Include, pr => 
+                            
+                            new Pkg(pr.Xml.Include
+                                , pr.Metadata?.FirstOrDefault(meta => meta.Name == "Version")?.EvaluatedValue
+                                , pr.Metadata?.FirstOrDefault(meta => meta.Name == "VersionOverride")?.EvaluatedValue
+                                , versions?.GetValueOrDefault(pr.Xml.Include)
+                                )
+                            //pr.Metadata?.FirstOrDefault(meta => meta.Name == "Version")?.EvaluatedValue
+                            //?? pr.Metadata?.FirstOrDefault(meta => meta.Name == "VersionOverride")?.EvaluatedValue
+                            , StringComparer.OrdinalIgnoreCase)
+                        ,
+                            versions
                 //project.GetItems("PackageReference").Select(pr => new ProjectPackage(pr.Xml.Include, pr.Metadata?.FirstOrDefault(meta => meta.Name == "Version")?.EvaluatedValue)),
                 //project.GetItems("PackageVersion")?.Select(pr => new ProjectPackage(pr.Xml.Include, pr.Metadata?.FirstOrDefault(meta => meta.Name == "Version")?.EvaluatedValue))
                 );
@@ -194,5 +219,21 @@ internal sealed class ProjParser(IConsoleOutput Console, ErrorSink ErrorSink, Cl
 
             return info;
         }
+    }
+}
+
+internal static class ProjParserExtensions {
+    internal static string[] TfmOrTfmsSafe(this Project project) {
+        var targetFramework = project.GetPropertyValue("TargetFramework");
+        if (!string.IsNullOrEmpty(targetFramework)) {
+            return [targetFramework];
+        }
+
+        var targetFrameworks = project.GetPropertyValue("TargetFrameworks");
+        if (!string.IsNullOrEmpty(targetFrameworks)) {
+            return targetFrameworks.Split(';', StringSplitOptions.RemoveEmptyEntries).ToArray();
+        }
+
+        return Array.Empty<string>();
     }
 }
