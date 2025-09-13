@@ -5,7 +5,18 @@ using Xunit.Abstractions;
 
 namespace bld.Tests;
 
-public class UnitTest1(ITestOutputHelper Console) {
+public class DotNetTests(ITestOutputHelper Console) {
+    [Fact]
+    public void PathCombineLinux() {
+        Assert.Throws<ArgumentNullException>(() => Path.Combine("/mnt/d/tests", null, "child"));
+    }
+
+    [Fact]
+    public void PathCombineWin() {
+        Assert.Throws<ArgumentNullException>(() => Path.Combine("d:\\tests", null, "child"));
+    }
+}
+public class NuGetFrameworkTests(ITestOutputHelper Console) {
     [Fact]
     public void Test1() {
         string[] tfms = new[]

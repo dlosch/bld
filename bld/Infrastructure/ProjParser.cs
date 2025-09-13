@@ -18,8 +18,8 @@ internal record class ProjectPackageReferenceInfo(
         bool? UseCpm,
         string? CpmFile,
         //Dictionary<string, string?> PackageReferences,
-        Dictionary<string, Pkg?> PackageReferences,
-        Dictionary<string, string>? PackageVersions) {
+        Dictionary<string, Pkg> PackageReferences,
+        Dictionary<string, string?>? PackageVersions) {
     public string TargetFramework {
         get {
             //if (!(TargetFrameworks?.Any() ?? false)) Debugger.Launch(); 
@@ -97,7 +97,7 @@ internal sealed class ProjParser(IConsoleOutput Console, ErrorSink ErrorSink, Cl
     //    }
     //}
 
-    internal ProjectPackageReferenceInfo GetPackageReferences(ProjCfg proj) {
+    internal ProjectPackageReferenceInfo? GetPackageReferences(ProjCfg proj) {
         Console.WriteDebug($"Loading project {proj.Path} [{proj.Configuration}]...");
         string projectPath = proj.Path;
         string? configuration = proj.Configuration;
@@ -116,7 +116,10 @@ internal sealed class ProjParser(IConsoleOutput Console, ErrorSink ErrorSink, Cl
                 var versions = usesCpm ?? false ?
                     project.GetItems("PackageVersion")?
                         .DistinctBy(pr => pr.Xml.Include, StringComparer.OrdinalIgnoreCase)
-                     .ToDictionary(pr => pr.Xml.Include, pr => pr.Metadata?.FirstOrDefault(meta => meta.Name == "Version")?.EvaluatedValue, StringComparer.OrdinalIgnoreCase)
+                        .ToDictionary(
+                                pr => pr.Xml.Include
+                                , pr => pr.Metadata?.FirstOrDefault(meta => meta.Name == "Version")?.EvaluatedValue
+                                , StringComparer.OrdinalIgnoreCase)
                     : default;
 
                 var retVal = new ProjectPackageReferenceInfo(proj,
@@ -128,23 +131,22 @@ internal sealed class ProjParser(IConsoleOutput Console, ErrorSink ErrorSink, Cl
                     (usesCpm ?? false)
                         ? project.Imports.FirstOrDefault(imp => string.Equals(Path.GetFileName(imp.ImportedProject.FullPath), "Directory.Packages.props", StringComparison.OrdinalIgnoreCase)).ImportedProject?.FullPath
                         : default,
+                        //var privateAssets = string.Equals(item.GetMetadataValue("PrivateAssets"), "all", StringComparison.OrdinalIgnoreCase);
+                        // todo this pukes if a single package reference include is included more than once 
+                        // dotnet build picks the first not the highest or lowest and warns only
+                        project.GetItems("PackageReference")
+                                .DistinctBy(pr => pr.Xml.Include, StringComparer.OrdinalIgnoreCase)
+                                .ToDictionary(pr => pr.Xml.Include, pr =>
 
-                //var privateAssets = string.Equals(item.GetMetadataValue("PrivateAssets"), "all", StringComparison.OrdinalIgnoreCase);
-                // todo this pukes if a single package reference include is included more than once 
-                // dotnet build picks the first not the highest or lowest and warns only
-                project.GetItems("PackageReference")
-                        .DistinctBy(pr => pr.Xml.Include, StringComparer.OrdinalIgnoreCase)
-                        .ToDictionary(pr => pr.Xml.Include, pr =>
-
-                            new Pkg(pr.Xml.Include
-                                , pr.Metadata?.FirstOrDefault(meta => meta.Name == "Version")?.EvaluatedValue
-                                , pr.Metadata?.FirstOrDefault(meta => meta.Name == "VersionOverride")?.EvaluatedValue
-                                , versions?.GetValueOrDefault(pr.Xml.Include)
-                                )
-                            //pr.Metadata?.FirstOrDefault(meta => meta.Name == "Version")?.EvaluatedValue
-                            //?? pr.Metadata?.FirstOrDefault(meta => meta.Name == "VersionOverride")?.EvaluatedValue
-                            , StringComparer.OrdinalIgnoreCase)
-                        ,
+                                    new Pkg(pr.Xml.Include
+                                        , pr.Metadata?.FirstOrDefault(meta => meta.Name == "Version")?.EvaluatedValue
+                                        , pr.Metadata?.FirstOrDefault(meta => meta.Name == "VersionOverride")?.EvaluatedValue
+                                        , versions?.GetValueOrDefault(pr.Xml.Include)
+                                        )
+                                    //pr.Metadata?.FirstOrDefault(meta => meta.Name == "Version")?.EvaluatedValue
+                                    //?? pr.Metadata?.FirstOrDefault(meta => meta.Name == "VersionOverride")?.EvaluatedValue
+                                    , StringComparer.OrdinalIgnoreCase)
+                                ,
                             versions
                 //project.GetItems("PackageReference").Select(pr => new ProjectPackage(pr.Xml.Include, pr.Metadata?.FirstOrDefault(meta => meta.Name == "Version")?.EvaluatedValue)),
                 //project.GetItems("PackageVersion")?.Select(pr => new ProjectPackage(pr.Xml.Include, pr.Metadata?.FirstOrDefault(meta => meta.Name == "Version")?.EvaluatedValue))

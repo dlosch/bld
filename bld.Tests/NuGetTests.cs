@@ -177,12 +177,16 @@ public class ManualTests {
 
 public static class Ext {
     public static string Deps(this PackageVersionResult result) {
+        if (result.Dependencies is null) {
+            return "<null>";
+        }
+         
         if (result.Dependencies?.Count == 0) {
             return "<none>";
         }
 
         var txt = "Deps:\r\n";
-        foreach (var item in result.Dependencies.Keys.Order()) {
+        foreach (var item in result.Dependencies!.Keys.Order()) {
             var elem = result.Dependencies[item].Dependencies;
             foreach (var dep in elem) {
                 txt += $"- {item}: {dep.PackageId} {dep.Range}\r\n";

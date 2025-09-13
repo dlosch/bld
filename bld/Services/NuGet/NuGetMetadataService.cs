@@ -321,5 +321,5 @@ public record PackageVersionResult {
     public required Dictionary<string, string> TargetFrameworkVersions { get; init; }
     public bool IsPrerelease { get; init; }
     public DateTime RetrievedAt { get; init; } = DateTime.UtcNow;
-    public Dictionary<string, DependencyGroup> Dependencies { get; internal set; }
+    public Dictionary<string, DependencyGroup>? Dependencies { get; internal set; }
 }

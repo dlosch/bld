@@ -91,7 +91,7 @@ internal class NugetAnalysisApplication {
                 .Select(g => g.First())
                 .ToList();
 
-            await DisplayResults(uniqueAnalyses, categorizer);
+            DisplayResults(uniqueAnalyses, categorizer);
 
         }
         finally {
@@ -115,7 +115,7 @@ internal class NugetAnalysisApplication {
         return dict;
     }
 
-    private async Task DisplayResults(List<ProjectNugetAnalysis> analyses, NugetPackageCategorizer categorizer) {
+    private void DisplayResults(List<ProjectNugetAnalysis> analyses, NugetPackageCategorizer categorizer) {
         if (!analyses.Any()) {
             _console.WriteWarning("No projects with NuGet package references found.");
             return;
@@ -124,7 +124,7 @@ internal class NugetAnalysisApplication {
         _console.WriteInfo($"Found {analyses.Count} project(s) with NuGet packages:");
 
         foreach (var analysis in analyses.OrderBy(a => a.ProjectName)) {
-            await DisplayProjectAnalysis(analysis, categorizer);
+            DisplayProjectAnalysis(analysis, categorizer);
         }
 
         // Summary
@@ -136,17 +136,17 @@ internal class NugetAnalysisApplication {
         _console.WriteInfo($"Unique packages: {uniquePackages}");
     }
 
-    private async Task DisplayProjectAnalysis(ProjectNugetAnalysis analysis, NugetPackageCategorizer categorizer) {
+    private void DisplayProjectAnalysis(ProjectNugetAnalysis analysis, NugetPackageCategorizer categorizer) {
         var content = new List<string>();
         content.Add($"[dim]Path: {analysis.ProjectPath}[/]");
         content.Add($"[dim]Total packages: {analysis.Packages.Count}[/]");
         content.Add("");
 
         // Display packages by category
-        await AddCategorySection(content, "Microsoft Official .NET Packages", analysis.MicrosoftOfficialPackages);
-        await AddCategorySection(content, "Microsoft Non-Official Packages", analysis.MicrosoftNonOfficialPackages);
-        await AddCategorySection(content, "Known Trusted Packages", analysis.TrustedThirdPartyPackages);
-        await AddCategorySection(content, "Other Packages", analysis.OtherPackages);
+        AddCategorySection(content, "Microsoft Official .NET Packages", analysis.MicrosoftOfficialPackages);
+        AddCategorySection(content, "Microsoft Non-Official Packages", analysis.MicrosoftNonOfficialPackages);
+        AddCategorySection(content, "Known Trusted Packages", analysis.TrustedThirdPartyPackages);
+        AddCategorySection(content, "Other Packages", analysis.OtherPackages);
 
         var panel = new Panel(string.Join("\n", content))
             .Header($"[bold blue]{analysis.ProjectName}[/]")
@@ -155,7 +155,7 @@ internal class NugetAnalysisApplication {
         AnsiConsole.Write(panel);
     }
 
-    private async Task AddCategorySection(List<string> content, string categoryName, IEnumerable<NugetPackageInfo> packages) {
+    private void AddCategorySection(List<string> content, string categoryName, IEnumerable<NugetPackageInfo> packages) {
         var packageList = packages.ToList();
         if (!packageList.Any()) {
             return;

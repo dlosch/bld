@@ -2,8 +2,6 @@ using bld.Infrastructure;
 using bld.Models;
 using bld.Services.NuGet;
 using NuGet.Frameworks;
-using NuGet.Protocol;
-using NuGet.Protocol.Core.Types;
 using NuGet.Versioning;
 using Spectre.Console;
 using System.Diagnostics;
@@ -24,7 +22,6 @@ internal class OutdatedService {
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     public async Task<int> CheckOutdatedPackagesAsync(string rootPath, bool updatePackages, bool skipTfmCheck, bool includePrerelease, CancellationToken cancellationToken) {
-        // Initialize MSBuild before any Microsoft.Build.* types are loaded – same pattern as CleaningApplication
         MSBuildService.RegisterMSBuildDefaults(_console, _options);
 
         _console.WriteRule("[bold blue]bld outdated (BETA)[/]");
@@ -42,14 +39,12 @@ internal class OutdatedService {
         var propsContentCache = new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
 
         var allPackageReferences = new Dictionary<string, PackageInfoContainer>(StringComparer.OrdinalIgnoreCase);
-        //var projectFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         try {
             var projParser = new ProjParser(_console, errorSink, _options);
 
             await foreach (var slnPath in slnScanner.Enumerate(rootPath)) {
                 await _console.StartStatusAsync($"Processing solution {slnPath}", async ctx => {
-                    var currentProject = default(string);
                     await foreach (var projCfg in slnParser.ParseSolution(slnPath, fileSystem)) {
                         var packageRefs = new PackageInfoContainer(); // new List<PackageInfo>();
                         // Only process "Release" configuration as per spec
@@ -69,7 +64,7 @@ internal class OutdatedService {
                             FromProps = refs.UseCpm ?? false,
                             TargetFramework = refs.TargetFramework,
                             TargetFrameworks = refs.TargetFrameworks,
-                            ProjectPath = refs.Proj?.Path,
+                            ProjectPath = refs.Proj.Path,
                             PropsPath = refs.CpmFile,
                             Item  = re.Value
                             //, Version = re.Value ?? (refs.UseCpm == true && refs.PackageVersions is not null && refs.PackageVersions.TryGetValue(re.Key, out var v) ? v : null)
@@ -113,6 +108,11 @@ internal class OutdatedService {
 
         await Parallel.ForEachAsync(allPackageReferences, new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount }, async (packageReference, ct) => {
 
+            if (packageReference.Value is null || !packageReference.Value.Any()) { 
+                _console.WriteWarning($"No references found for package {packageReference.Key}");
+                return;
+            }
+
             var request = new PackageVersionRequest {
                 PackageId = packageReference.Key,
                 AllowPrerelease = includePrerelease,
@@ -151,9 +151,7 @@ internal class OutdatedService {
                     }
 
                     else {
-
-                        targetVer = result?.TargetFrameworkVersions?[packageReference.Value.Select(u => NuGetFramework.Parse(u.TargetFramework).GetShortFolderName()).FirstOrDefault()];
-
+                        targetVer = result?.TargetFrameworkVersions?[packageReference.Value.Select(u => NuGetFramework.Parse(u.TargetFramework).GetShortFolderName()).First()];
                     }
                 }
 

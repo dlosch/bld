@@ -27,7 +27,8 @@ internal sealed class NugetPackageExtractor {
         using var projectCollection = new ProjectCollection();
 
         var properties = new Dictionary<string, string>(globalProperties);
-        properties["Configuration"] = projCfg.Configuration;
+        // todo configuration hardcoded
+        properties["Configuration"] = projCfg.Configuration ?? "Release";
 
         try {
             var project = new Project(projCfg.Path, properties, null, projectCollection);
@@ -41,6 +42,7 @@ internal sealed class NugetPackageExtractor {
             foreach (var item in packageReferenceItems) {
                 var packageName = item.EvaluatedInclude;
                 var version = item.GetMetadataValue("Version");
+                // todo VersionOverride
 
                 // If no direct version, check centrally managed packages
                 if (string.IsNullOrWhiteSpace(version) && centralVersions.ContainsKey(packageName)) {
@@ -119,7 +121,8 @@ internal sealed class NugetPackageExtractor {
         try {
             using var projectCollection = new ProjectCollection();
             var properties = new Dictionary<string, string>(globalProperties);
-            properties["Configuration"] = projCfg.Configuration;
+            // todo Configuration hardcoded
+            properties["Configuration"] = projCfg.Configuration ?? "Release";
             var project = new Project(projCfg.Path, properties, null, projectCollection);
             projectName = project.GetPropertyValue("ProjectName");
             if (string.IsNullOrWhiteSpace(projectName)) {

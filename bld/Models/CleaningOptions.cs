@@ -1,15 +1,11 @@
 namespace bld.Models;
 
-/// <summary>
-/// Configuration options for cleaning operations
-/// </summary>
 internal record CleaningOptions {
 
     internal string Filter => "*.sln?";
 
     public bool UseVSInstance { get; init; } = false;
 
-    // public bool DryRun => true; // { get; init; } = true;
     public bool CleanOnlyNonCurrentTfms { get; init; } = false;
     public bool CleanObjDirectory { get; init; } = true;
     public bool CleanNupkgFiles { get; init; } = false;
@@ -21,7 +17,6 @@ internal record CleaningOptions {
 
     internal Predicate<string> FileNameFilter { get; init; } = FilterSupportedSlnFileFormats;
     public string? OutputFile { get; internal set; }
-    //public string? LogFile { get; internal set; }
     public string? VSToolsPath { get; internal set; }
     public string? VSRootPath { get; internal set; }
     public bool NoResolveVSToolsPath { get; internal set; } = false;
@@ -34,9 +29,6 @@ internal record CleaningOptions {
         || file.EndsWith(".slnx", StringComparison.OrdinalIgnoreCase);
 }
 
-/// <summary>
-/// Log levels for output control
-/// </summary>
 internal enum LogLevel {
     Debug,
     Verbose,

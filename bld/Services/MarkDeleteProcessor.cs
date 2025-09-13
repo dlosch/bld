@@ -66,8 +66,8 @@ internal sealed class MarkDeleteProcessor : IProjectProcessor {
         }
         else if (!string.IsNullOrEmpty(info.BaseOutputPath) && (info.TargetFrameworks?.Any() ?? false)) {
             foreach (var item in info.TargetFrameworks) {
-                _console.WriteDebug($"Output directory {Path.Combine(info.BaseOutputPath, cfg.Configuration, item)}->{DirExt.EnsureRooted(Path.Combine(info.BaseOutputPath, cfg.Configuration, item), cfg.ProjDir)}");
-                var outDir = DirExt.EnsureRooted(Path.Combine(info.BaseOutputPath, cfg.Configuration, item), cfg.ProjDir);
+                _console.WriteDebug($"Output directory {Path.Combine(info.BaseOutputPath, cfg.ConfigurationOrDefault, item)}->{DirExt.EnsureRooted(PathUtils.SafeCombine(info.BaseOutputPath, cfg.Configuration, item), cfg.ProjDir)}");
+                var outDir = DirExt.EnsureRooted(PathUtils.SafeCombine(info.BaseOutputPath, cfg.Configuration, item), cfg.ProjDir);
                 await AddDirInternal(outDir, DirType.OutDir, absProjPath, projName, info.Configuration, tfms, cfg.ProjDir);
             }
         }
@@ -254,4 +254,16 @@ internal sealed class MarkDeleteProcessor : IProjectProcessor {
     /// Get the directories marked for deletion
     /// </summary>
     public IReadOnlyDictionary<string, List<Dir>> GetMarkedDirectories() => _deleteDirs;
+}
+
+
+internal static class PathUtils {
+    public static string SafeCombine(params string?[] parts) {
+        if (parts is null) throw new ArgumentNullException(nameof(parts));
+        
+        var partsRes = parts.Where(p => !string.IsNullOrWhiteSpace(p)).Cast<string>().ToArray();
+        if (!partsRes.Any()) throw new ArgumentException(nameof(parts));
+
+        return Path.Combine(partsRes);
+    }
 }
