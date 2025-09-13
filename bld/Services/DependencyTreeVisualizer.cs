@@ -152,7 +152,7 @@ internal class DependencyTreeVisualizer {
         }
         
         // Add framework
-        text += $" [cyan]\\[{Markup.Escape(node.TargetFramework)}][/]";
+        text += $" [cyan]{Markup.Escape(node.TargetFramework)}[/]";
         
         // Add warnings/issues
         var issues = new List<string>();
