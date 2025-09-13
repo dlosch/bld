@@ -24,6 +24,21 @@ internal enum ProjectType {
 }
 
 /// <summary>
+/// Enumeration types for file scanning
+/// </summary>
+internal enum EnumerationType {
+    /// <summary>
+    /// Scan for solution files (.sln, .slnx, .slnf)
+    /// </summary>
+    Sln,
+    
+    /// <summary>
+    /// Scan for project files (.csproj, .vbproj, .sqlproj, etc.)
+    /// </summary>
+    Project
+}
+
+/// <summary>
 /// Represents a directory with associated project information for cleaning
 /// </summary>
 internal record class Dir(
