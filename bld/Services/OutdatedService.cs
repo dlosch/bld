@@ -263,6 +263,123 @@ internal class OutdatedService {
         return 0;
     }
 
+    /// <summary>
+    /// Builds and analyzes a comprehensive dependency graph from discovered package references
+    /// </summary>
+    /// <param name="rootPath">Root path to scan for solutions/projects</param>
+    /// <param name="includePrerelease">Whether to include prerelease packages</param>
+    /// <param name="maxDepth">Maximum depth to traverse dependencies</param>
+    /// <param name="showAnalysis">Whether to show detailed analysis</param>
+    /// <param name="exportPath">Optional path to export dependency graph data</param>
+    /// <param name="cancellationToken">Cancellation token</param>
+    /// <returns>Exit code</returns>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public async Task<int> BuildDependencyGraphAsync(
+        string rootPath, 
+        bool includePrerelease = false, 
+        int maxDepth = 5, 
+        bool showAnalysis = true,
+        string? exportPath = null,
+        CancellationToken cancellationToken = default) {
+        
+        MSBuildService.RegisterMSBuildDefaults(_console, _options);
+
+        _console.WriteRule("[bold blue]bld dependency-graph (BETA)[/]");
+        _console.WriteInfo("Discovering packages and building dependency graph...");
+
+        var errorSink = new ErrorSink(_console);
+        var slnScanner = new SlnScanner(_options, errorSink);
+        var slnParser = new SlnParser(_console, errorSink);
+        var fileSystem = new FileSystem(_console, errorSink);
+        var cache = new ProjCfgCache(_console);
+
+        var stopwatch = Stopwatch.StartNew();
+        var allPackageReferences = new Dictionary<string, PackageInfoContainer>(StringComparer.OrdinalIgnoreCase);
+
+        try {
+            var projParser = new ProjParser(_console, errorSink, _options);
+
+            // First, discover all package references (similar to CheckOutdatedPackagesAsync)
+            await foreach (var slnPath in slnScanner.Enumerate(rootPath)) {
+                await _console.StartStatusAsync($"Processing solution {slnPath}", async ctx => {
+                    await foreach (var projCfg in slnParser.ParseSolution(slnPath, fileSystem)) {
+                        var packageRefs = new PackageInfoContainer();
+                        
+                        if (!string.Equals(projCfg.Configuration, "Release", StringComparison.OrdinalIgnoreCase)) continue;
+                        if (!cache.Add(projCfg)) continue;
+
+                        var refs = projParser.GetPackageReferences(projCfg);
+                        if (refs?.PackageReferences is null || !refs.PackageReferences.Any()) {
+                            _console.WriteDebug($"No references in {projCfg.Path}");
+                            continue;
+                        }
+
+                        var exnm = refs.PackageReferences.Select(re => new PackageInfo {
+                            Id = re.Key,
+                            FromProps = refs.UseCpm ?? false,
+                            TargetFramework = refs.TargetFramework,
+                            TargetFrameworks = refs.TargetFrameworks,
+                            ProjectPath = refs.Proj.Path,
+                            PropsPath = refs.CpmFile,
+                            Item = re.Value
+                        });
+
+                        var bad = exnm.Where(e => string.IsNullOrEmpty(e.Version)).ToList();
+                        if (bad.Any()) _console.WriteWarning($"Project {projCfg.Path} has package references with no resolvable version: {string.Join(", ", bad.Select(b => b.Id))}");
+                        packageRefs.AddRange(exnm);
+
+                        foreach (var pkg in packageRefs) {
+                            if (!allPackageReferences.TryGetValue(pkg.Id, out var list)) {
+                                list = new PackageInfoContainer();
+                                allPackageReferences[pkg.Id] = list;
+                            }
+                            list.Add(pkg);
+                        }
+                    }
+                });
+            }
+        }
+        catch (Exception ex) {
+            _console.WriteException(ex);
+            return 1;
+        }
+
+        if (allPackageReferences.Count == 0) {
+            _console.WriteInfo("No package references found.");
+            return 0;
+        }
+
+        _console.WriteInfo($"Found {allPackageReferences.Count} unique packages across {cache.Count} projects");
+
+        // Now build the dependency graph using the new functionality
+        try {
+            var dependencyGraph = await allPackageReferences.BuildAndShowDependencyGraphAsync(
+                _console, 
+                includePrerelease, 
+                maxDepth, 
+                showAnalysis, 
+                cancellationToken);
+
+            // Export if requested
+            if (!string.IsNullOrEmpty(exportPath)) {
+                var format = Path.GetExtension(exportPath).TrimStart('.').ToLowerInvariant();
+                if (string.IsNullOrEmpty(format)) format = "json";
+                
+                await dependencyGraph.ExportDependencyGraphAsync(exportPath, format, _console);
+            }
+
+            stopwatch.Stop();
+            _console.WriteInfo($"Total elapsed time: {stopwatch.Elapsed}");
+            errorSink.WriteTo();
+
+            return 0;
+        }
+        catch (Exception ex) {
+            _console.WriteException(ex);
+            return 1;
+        }
+    }
+
     private async Task UpdatePropsFileAsync(string propsPath, IReadOnlyDictionary<string, string> updates, CancellationToken cancellationToken) {
         try {
             XDocument doc;
