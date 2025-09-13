@@ -176,6 +176,161 @@ internal class Enumerator(CleaningOptions Options, ErrorSink ErrorSink) {
             _ => false
         };
     }
+
+    /// <summary>
+    /// Enumerates project configurations based on the specified enumeration type
+    /// This method performs the same logic as SlnParser.ParseSolution, extracting
+    /// project configurations from solution files or creating default configurations for projects
+    /// </summary>
+    /// <param name="path">Base directory path to scan</param>
+    /// <param name="enumerationType">Type of files to enumerate (Sln or Project)</param>
+    /// <param name="createDefaultDebugConfiguration">Whether to create a default Debug configuration when no configurations are found</param>
+    /// <returns>Async enumerable of project configurations</returns>
+    public async IAsyncEnumerable<ProjCfg> EnumerateProjCfg(string path, EnumerationType enumerationType, bool createDefaultDebugConfiguration = true) {
+        if (string.IsNullOrWhiteSpace(path)) {
+            yield break;
+        }
+
+        // Handle single file case
+        if (File.Exists(path)) {
+            if (enumerationType == EnumerationType.Sln && IsSolutionFile(path)) {
+                await foreach (var projCfg in EnumerateProjCfgFromSolution(path, createDefaultDebugConfiguration)) {
+                    yield return projCfg;
+                }
+            }
+            else if (enumerationType == EnumerationType.Project && IsProjectFile(path)) {
+                await foreach (var projCfg in CreateDefaultProjCfgForProject(path, createDefaultDebugConfiguration)) {
+                    yield return projCfg;
+                }
+            }
+            yield break;
+        }
+
+        // Handle directory case
+        var pathRooted = DirExt.EnsureRooted(path, Environment.CurrentDirectory);
+        if (!Directory.Exists(pathRooted)) {
+            ErrorSink.AddError($"Input path {path} (translated to {pathRooted}) not found.");
+            yield break;
+        }
+
+        if (enumerationType == EnumerationType.Sln) {
+            await foreach (var projCfg in EnumerateProjCfgFromSolutions(pathRooted, createDefaultDebugConfiguration)) {
+                yield return projCfg;
+            }
+        }
+        else {
+            await foreach (var projCfg in EnumerateProjCfgFromProjects(pathRooted, createDefaultDebugConfiguration)) {
+                yield return projCfg;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Enumerates solution files in the specified directory and extracts all project configurations
+    /// </summary>
+    private async IAsyncEnumerable<ProjCfg> EnumerateProjCfgFromSolutions(string directoryPath, bool createDefaultDebugConfiguration) {
+        var solutionFiles = await GetSolutionFilesAsync(directoryPath);
+        
+        // Process solutions sequentially to maintain order (like SlnParser.ParseSolution does)
+        foreach (var slnPath in solutionFiles) {
+            await foreach (var projCfg in EnumerateProjCfgFromSolution(slnPath, createDefaultDebugConfiguration)) {
+                yield return projCfg;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Enumerates all project configurations from a single solution file
+    /// This method replicates the logic from SlnParser.ParseSolution
+    /// </summary>
+    private async IAsyncEnumerable<ProjCfg> EnumerateProjCfgFromSolution(string slnPath, bool createDefaultDebugConfiguration) {
+        SolutionFile? solution = null;
+        var sln = new Sln(slnPath);
+        
+        try {
+            solution = await Task.Run(() => SolutionFile.Parse(slnPath));
+        }
+        catch (Exception xcptn) {
+            ErrorSink.AddError($"Failed to parse solution file.", exception: xcptn, sln: sln);
+            yield break;
+        }
+
+        // Process projects in order, similar to SlnParser.ParseSolution
+        foreach (var project in solution.ProjectsInOrder
+            .Where(p => File.Exists(p.AbsolutePath) && 
+                       p.ProjectType == SolutionProjectType.KnownToBeMSBuildFormat &&
+                       IsProjectFile(p.AbsolutePath))) {
+            
+            var fullyQualifiedPath = project.AbsolutePath;
+            var queryPlatform = false;
+            
+            // Determine if we need to query platform based on project type (same logic as SlnParser)
+            switch (Path.GetExtension(fullyQualifiedPath)!.ToLowerInvariant()) {
+                case ".csproj":
+                case ".fsproj":
+                case ".sqlproj":
+                case ".vbproj": // old proj do not have the <tfm>
+                    queryPlatform = false;
+                    break;
+                case ".vcxproj":
+                    queryPlatform = true;
+                    break;
+                default:
+                    continue;
+            }
+
+            var proj = new Proj(fullyQualifiedPath, sln);
+            
+            if (project.ProjectConfigurations is { }) {
+                // Extract configurations from solution, similar to SlnParser.ParseSolution
+                foreach (var cfg in project.ProjectConfigurations
+                      .Select(x => (x.Value?.ConfigurationName, queryPlatform ? x.Value?.PlatformName : null))
+                            .Where(x => x.ConfigurationName is not null)
+                            .Distinct()) {
+                    var projCfg = new ProjCfg(proj, cfg.ConfigurationName!, cfg.Item2);
+                    yield return projCfg;
+                }
+            }
+            else {
+                // Create default configurations when none are found, same as SlnParser
+                if (createDefaultDebugConfiguration) {
+                    var projCfg = new ProjCfg(proj, "Debug", null);
+                    yield return projCfg;
+                }
+                var projCfgRelease = new ProjCfg(proj, "Release", null);
+                yield return projCfgRelease;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Enumerates project files directly from the directory and creates default configurations
+    /// </summary>
+    private async IAsyncEnumerable<ProjCfg> EnumerateProjCfgFromProjects(string directoryPath, bool createDefaultDebugConfiguration) {
+        var projectFiles = await GetProjectFilesAsync(directoryPath);
+        
+        foreach (var projectFile in projectFiles) {
+            await foreach (var projCfg in CreateDefaultProjCfgForProject(projectFile, createDefaultDebugConfiguration)) {
+                yield return projCfg;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Creates default project configurations for a single project file
+    /// </summary>
+    private async IAsyncEnumerable<ProjCfg> CreateDefaultProjCfgForProject(string projectPath, bool createDefaultDebugConfiguration) {
+        // Since we're not parsing from a solution, we create a standalone project
+        var proj = new Proj(projectPath, null);
+        
+        // Create default configurations
+        if (createDefaultDebugConfiguration) {
+            yield return new ProjCfg(proj, "Debug", null);
+        }
+        yield return new ProjCfg(proj, "Release", null);
+        
+        await Task.CompletedTask; // Make this async for consistency
+    }
 }
 
 /// <summary>
