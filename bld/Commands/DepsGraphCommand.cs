@@ -22,12 +22,24 @@ internal sealed class DepsGraphCommand : BaseCommand {
         DefaultValueFactory = _ => false
     };
 
+    private readonly Option<bool> _reverseOption = new Option<bool>("--reverse") {
+        Description = "Display reverse dependency graph showing which packages depend on each package.",
+        DefaultValueFactory = _ => false
+    };
+
+    private readonly Option<bool> _excludeFrameworkOption = new Option<bool>("--exclude-framework") {
+        Description = "Exclude framework packages (Microsoft.*/System.*/NETStandard.*) from reverse dependency analysis.",
+        DefaultValueFactory = _ => false
+    };
+
     public DepsGraphCommand(IConsoleOutput console) : base("deps", "Check for outdated NuGet packages and optionally update them to latest versions.", console) {
         Add(_rootOption);
         Add(_depthOption);
         Add(_applyOption);
         Add(_skipTfmCheckOption);
         Add(_prereleaseOption);
+        Add(_reverseOption);
+        Add(_excludeFrameworkOption);
         Add(_logLevelOption);
         Add(_vsToolsPath);
         Add(_noResolveVsToolsPath);
@@ -57,8 +69,15 @@ internal sealed class DepsGraphCommand : BaseCommand {
         var applyUpdates = parseResult.GetValue(_applyOption);
         var skipTfmCheck = parseResult.GetValue(_skipTfmCheckOption);
         var includePrerelease = parseResult.GetValue(_prereleaseOption);
+        var showReverse = parseResult.GetValue(_reverseOption);
+        var excludeFramework = parseResult.GetValue(_excludeFrameworkOption);
 
         var service = new OutdatedService(Console, options);
-        return await service.BuildDependencyGraphAsync(rootValue, includePrerelease, cancellationToken: cancellationToken);
+        
+        if (showReverse) {
+            return await service.BuildReverseDependencyGraphAsync(rootValue, includePrerelease, excludeFramework, cancellationToken: cancellationToken);
+        } else {
+            return await service.BuildDependencyGraphAsync(rootValue, includePrerelease, cancellationToken: cancellationToken);
+        }
     }
 }

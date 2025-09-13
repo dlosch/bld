@@ -77,6 +77,51 @@ internal static class OutdatedServiceExtensions {
     }
     
     /// <summary>
+    /// Builds and displays a reverse dependency graph from discovered packages
+    /// </summary>
+    /// <param name="allPackageReferences">Package references discovered by OutdatedService</param>
+    /// <param name="console">Console output service</param>
+    /// <param name="includePrerelease">Whether to include prerelease packages</param>
+    /// <param name="maxDepth">Maximum depth to traverse</param>
+    /// <param name="excludeFrameworkPackages">Whether to exclude Microsoft/System/NETStandard packages</param>
+    /// <param name="cancellationToken">Cancellation token</param>
+    /// <returns>The reverse dependency analysis</returns>
+    public static async Task<ReverseDependencyAnalysis> BuildAndShowReverseDependencyGraphAsync(
+        this Dictionary<string, OutdatedService.PackageInfoContainer> allPackageReferences,
+        IConsoleOutput console,
+        bool includePrerelease = false,
+        int maxDepth = 5,
+        bool excludeFrameworkPackages = false,
+        CancellationToken cancellationToken = default) {
+        
+        ArgumentNullException.ThrowIfNull(allPackageReferences);
+        ArgumentNullException.ThrowIfNull(console);
+        
+        // First build the forward dependency graph
+        var forwardGraph = await BuildAndShowDependencyGraphAsync(
+            allPackageReferences, 
+            console, 
+            includePrerelease, 
+            maxDepth, 
+            showAnalysis: false, // Don't show analysis for forward graph
+            showVulnerabilities: false, // Don't show vulnerabilities for forward graph
+            cancellationToken);
+        
+        // Build reverse dependency graph
+        var reverseService = new ReverseDependencyGraphService(console);
+        var reverseAnalysis = reverseService.BuildReverseDependencyGraph(forwardGraph, excludeFrameworkPackages);
+        
+        // Display reverse dependency visualization
+        var reverseVisualizer = new ReverseDependencyTreeVisualizer(console);
+        await reverseVisualizer.DisplayReverseDependencyAnalysisAsync(
+            reverseAnalysis, 
+            excludeFrameworkPackages, 
+            cancellationToken);
+        
+        return reverseAnalysis;
+    }
+    
+    /// <summary>
     /// Displays a legacy summary for backward compatibility
     /// </summary>
     private static void DisplayLegacySummary(EnhancedDependencyAnalysis analysis, IConsoleOutput console) {
