@@ -5,6 +5,8 @@ using NuGet.Frameworks;
 using NuGet.Versioning;
 using Spectre.Console;
 using System.Diagnostics;
+using System.Linq;
+using System.Net.NetworkInformation;
 using System.Runtime.CompilerServices;
 using System.Xml;
 using System.Xml.Linq;
@@ -66,7 +68,7 @@ internal class OutdatedService {
                             TargetFrameworks = refs.TargetFrameworks,
                             ProjectPath = refs.Proj.Path,
                             PropsPath = refs.CpmFile,
-                            Item  = re.Value
+                            Item = re.Value
                             //, Version = re.Value ?? (refs.UseCpm == true && refs.PackageVersions is not null && refs.PackageVersions.TryGetValue(re.Key, out var v) ? v : null)
                         });
 
@@ -108,7 +110,7 @@ internal class OutdatedService {
 
         await Parallel.ForEachAsync(allPackageReferences, new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount }, async (packageReference, ct) => {
 
-            if (packageReference.Value is null || !packageReference.Value.Any()) { 
+            if (packageReference.Value is null || !packageReference.Value.Any()) {
                 _console.WriteWarning($"No references found for package {packageReference.Key}");
                 return;
             }
@@ -133,7 +135,7 @@ internal class OutdatedService {
             try {
                 var targetVer = default(string?);
                 if (request.CompatibleTargetFrameworks is { } && request.CompatibleTargetFrameworks.Count > 1) {
-                    foreach (var item in request.CompatibleTargetFrameworks) {
+                    foreach (var item in request.CompatibleTargetFrameworksTyped) {
                         var curVer = default(string?);
                         var exists = result?.TargetFrameworkVersions?.TryGetValue(item, out curVer) ?? false;
                         //if (!exists) Debugger.Break();
@@ -151,7 +153,9 @@ internal class OutdatedService {
                     }
 
                     else {
-                        targetVer = result?.TargetFrameworkVersions?[packageReference.Value.Select(u => NuGetFramework.Parse(u.TargetFramework).GetShortFolderName()).First()];
+                        targetVer = result?.TargetFrameworkVersions?[packageReference.Value.Select(u => NuGetFramework.Parse(u.TargetFramework)
+                        //.GetShortFolderName())
+                        ).First()];
                     }
                 }
 
@@ -162,7 +166,7 @@ internal class OutdatedService {
 
 
                 if (targetVer is null) {
-                    _console.WriteInfo($"No compatible version found for {packageReference.Key} {packageReference.Value.Tfm} {result?.ToString()} {string.Join(',', result?.TargetFrameworkVersions?.Select(x => x.Key) ?? Array.Empty<string>())}");
+                    _console.WriteInfo($"No compatible version found for {packageReference.Key} {packageReference.Value.Tfm} {result?.ToString()} {string.Join(',', result?.TargetFrameworkVersions?.Select(x => x.Key.GetShortFolderName()) ?? Array.Empty<string>())}");
                     return;
                 }
                 if (!NuGetVersion.TryParse(targetVer, out var latestVer)) {
@@ -180,7 +184,7 @@ internal class OutdatedService {
                 );
             }
             catch (Exception xcptn) {
-                _console.WriteWarning($"Failed to parse version for {packageReference.Key}: {packageReference.Value.Tfm} {string.Join(',', result?.TargetFrameworkVersions?.Select(x => x.Key) ?? Array.Empty<string>())} {xcptn.Message}");
+                _console.WriteWarning($"Failed to parse version for {packageReference.Key}: {packageReference.Value.Tfm} {string.Join(',', result?.TargetFrameworkVersions?.Select(x => x.Key.GetShortFolderName()) ?? Array.Empty<string>())} {xcptn.Message}");
             }
         });
 
@@ -192,49 +196,125 @@ internal class OutdatedService {
             return 0;
         }
 
-        _console.WriteInfo($"\nFound {outdatedPerPackage.Count} packages with available updates:");
-        var table = new Table().Border(TableBorder.Rounded);
-        table.AddColumn(new TableColumn("PackageId").LeftAligned());
-        table.AddColumn(new TableColumn("current").LeftAligned());
-        table.AddColumn(new TableColumn("latest").LeftAligned());
+        {
+            _console.WriteInfo($"\nFound {outdatedPerPackage.Count} packages with available updates:");
+            var table = new Table().Border(TableBorder.Rounded);
+            table.AddColumn(new TableColumn("PackageId").LeftAligned());
+            table.AddColumn(new TableColumn("current").LeftAligned());
+            table.AddColumn(new TableColumn("latest").LeftAligned());
 
-        foreach (var kvp in outdatedPerPackage.OrderBy(k => k.Key)) {
-            table.AddRow(
-                Markup.Escape(kvp.Key ?? ""),
-                Markup.Escape(kvp.Value.CurrentMin?.ToFullString() ?? ""),
-                Markup.Escape(kvp.Value.Latest?.ToFullString() ?? "")
-            );
-            //_console.WriteWarning($"{kvp.Key}: {kvp.Value.CurrentMin} → {kvp.Value.Latest}");
+            foreach (var kvp in outdatedPerPackage.OrderBy(k => k.Key)) {
+                table.AddRow(
+                    Markup.Escape(kvp.Key ?? ""),
+                    Markup.Escape(kvp.Value.CurrentMin?.ToFullString() ?? ""),
+                    Markup.Escape(kvp.Value.Latest?.ToFullString() ?? "")
+                );
+                //_console.WriteWarning($"{kvp.Key}: {kvp.Value.CurrentMin} → {kvp.Value.Latest}");
+            }
+            _console.WriteTable(table);
         }
-        _console.WriteTable(table);
 
         // Prepare batch updates: props file -> (package -> version) and project -> (package -> version)
-        var propsUpdates = new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
-        var projectUpdates = new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
+        var propsUpdates = new Dictionary<string, Dictionary<string, (string target, string? current)>>(StringComparer.OrdinalIgnoreCase);
+        var projectUpdates = new Dictionary<string, Dictionary<string, (string target,string? current,VersionReason reason)>>(StringComparer.OrdinalIgnoreCase);
 
+        static bool HasVersionUpdate(string latest, string current) {
+            if (string.IsNullOrWhiteSpace(current)) return true;
+            if (NuGetVersion.TryParse(latest, out var latestVer) && NuGetVersion.TryParse(current, out var currentVer)) {
+                return latestVer > currentVer;
+            }
+            return !string.Equals(latest, current, StringComparison.OrdinalIgnoreCase);
+        }
         foreach (var (packageId, versions) in outdatedPerPackage) {
+            if (versions.Latest is null) {
+                _console.WriteWarning($"No latest version found for {packageId}");
+                continue;
+            }
             var latest = versions.Latest.ToString();
             foreach (var usage in allPackageReferences[packageId]) {
                 // Only update entries that contributed their version (direct ref or props)
-                if (usage.FromProps && !string.IsNullOrEmpty(usage.PropsPath)) {
+                var fromProps = !usage.CustomVersion && usage.FromProps && !string.IsNullOrEmpty(usage.PropsPath);
+                if (fromProps) {
                     var propsPath = usage.PropsPath!
 ;
                     if (!propsUpdates.TryGetValue(propsPath, out var map)) {
-                        map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                        map = new Dictionary<string, (string target, string? current)>(StringComparer.OrdinalIgnoreCase);
                         propsUpdates[propsPath] = map;
                     }
-                    map[packageId] = latest;
+                    if (HasVersionUpdate(latest, usage.Item.EffectiveVersion)) map[packageId] = (latest, usage.Item.EffectiveVersion);
                 }
-                else if (!usage.FromProps) {
+                //else if (!usage.FromProps) {
+                else {
                     if (!projectUpdates.TryGetValue(usage.ProjectPath, out var pmap)) {
-                        pmap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                        pmap = new Dictionary<string, (string,string?,VersionReason)>(StringComparer.OrdinalIgnoreCase);
                         projectUpdates[usage.ProjectPath] = pmap;
                     }
-                    pmap[packageId] = latest;
+                    static VersionReason Reason(Pkg item) {
+                        if (item.VersionOverride is not null) return VersionReason.VersionOverrideProj;
+                        if (item.Version is not null) return VersionReason.PackageReferenceProj;
+                        return VersionReason.PackageVersionCpm;
+                    }
+                    if (HasVersionUpdate(latest, usage.Item.EffectiveVersion)) pmap[packageId] = (latest, usage.Item.EffectiveVersion, Reason(usage.Item));
                 }
             }
         }
 
+        //////////
+        ///
+        {
+           
+            foreach (var kvp in propsUpdates.OrderBy(kvp => kvp.Key)) {
+                if (!kvp.Value.Any()) continue;
+
+                _console.WriteHeader($"{kvp.Key}", "Version upgrades to central package management file.");
+                var table = new Table().Border(TableBorder.Rounded);
+                table.AddColumn(new TableColumn("Package").LeftAligned());
+                table.AddColumn(new TableColumn("current").LeftAligned());
+                table.AddColumn(new TableColumn("target").LeftAligned());
+
+                foreach (var item in kvp.Value.OrderBy(kvp2 => kvp2.Key)) {
+                    table.AddRow(
+                        Markup.Escape(item.Key ?? ""),
+                        Markup.Escape(item.Value.current ?? ""),
+                        Markup.Escape(item.Value.target ?? "")
+                    );
+                }
+
+                _console.WriteTable(table);
+            }
+        }
+        {
+            foreach (var kvp in projectUpdates.OrderBy(kvp => kvp.Key)) {
+                if (!kvp.Value.Any()) continue;
+                
+                _console.WriteHeader($"{kvp.Key}", "Version upgrades to project file.");
+                var table = new Table().Border(TableBorder.Rounded);
+                table.AddColumn(new TableColumn("Package").LeftAligned());
+                table.AddColumn(new TableColumn("current").LeftAligned());
+                table.AddColumn(new TableColumn("target").LeftAligned());
+                table.AddColumn(new TableColumn("reason").LeftAligned());
+
+                static string Reason(VersionReason vr) => vr switch {
+                    VersionReason.PackageReferenceProj => "Version in PackageReference in project file",
+                    VersionReason.VersionOverrideProj => "VersionOverride in project file",
+                    VersionReason.PackageVersionCpm => "Central package management.",
+                    _ => ""
+                };
+
+                foreach (var item in kvp.Value.OrderBy(kvp2 => kvp2.Key)) {
+                    table.AddRow(
+                        Markup.Escape(item.Key ?? ""),
+                        Markup.Escape(item.Value.current ?? ""),
+                        Markup.Escape(item.Value.target ?? ""),
+                        Markup.Escape(Reason(item.Value.reason))
+                    );
+                }
+
+                _console.WriteTable(table);
+            }
+        }
+
+        ///////////////////////////////////////////
         if (updatePackages) {
             _console.WriteInfo("\nUpdating packages to latest versions...");
 
@@ -253,7 +333,7 @@ internal class OutdatedService {
             }
         }
         else {
-            _console.WriteInfo("\nUse --update to apply these changes.");
+            _console.WriteOutput("Use --apply to apply these changes.", default);
         }
 
         stopwatch.Stop();
@@ -380,7 +460,7 @@ internal class OutdatedService {
         }
     }
 
-    private async Task UpdatePropsFileAsync(string propsPath, IReadOnlyDictionary<string, string> updates, CancellationToken cancellationToken) {
+    private async Task UpdatePropsFileAsync(string propsPath, IReadOnlyDictionary<string, (string target, string? current)> updates, CancellationToken cancellationToken) {
         try {
             XDocument doc;
             using (var readStream = File.OpenRead(propsPath)) {
@@ -393,7 +473,7 @@ internal class OutdatedService {
                 if (include is null) continue;
                 if (updates.TryGetValue(include, out var newVersion)) {
                     var versionAttr = element.Attribute("Version");
-                    if (versionAttr != null) versionAttr.Value = newVersion;
+                    if (versionAttr != null) versionAttr.Value = newVersion.target;
                 }
             }
 
@@ -411,7 +491,7 @@ internal class OutdatedService {
         }
     }
 
-    private async Task UpdatePackageVersionAsync(string projectPath, string packageId, string newVersion, CancellationToken cancellationToken) {
+    private async Task UpdatePackageVersionAsync(string projectPath, string packageId, (string target, string? currentVersion, VersionReason reason) newVersion, CancellationToken cancellationToken) {
         try {
             XDocument doc;
             using (var readStream = File.OpenRead(projectPath)) {
@@ -422,14 +502,27 @@ internal class OutdatedService {
                 .Where(e => e.Attribute("Include")?.Value == packageId);
 
             foreach (var element in packageRefElements) {
-                var versionAttr = element.Attribute("Version");
-                var versionElement = element.Element("Version");
-
-                if (versionAttr != null) {
-                    versionAttr.Value = newVersion;
+                if (VersionReason.VersionOverrideProj == newVersion.reason) {
+                    var verOverrideElem = element.Element("VersionOverride");
+                    if (verOverrideElem != null) {
+                        verOverrideElem.Value = newVersion.target;
+                        continue;
+                    }
+                    else {
+                        // Fallback to Version element if VersionOverride not found
+                        _console.WriteWarning($"Expected VersionOverride element for {packageId} in {projectPath} not found. Falling back to Version element.");
+                    }
                 }
-                else if (versionElement != null) {
-                    versionElement.Value = newVersion;
+                else {
+                    var versionAttr = element.Attribute("Version");
+                    var versionElement = element.Element("Version");
+
+                    if (versionAttr != null) {
+                        versionAttr.Value = newVersion.target;
+                    }
+                    else if (versionElement != null) {
+                        versionElement.Value = newVersion.target;
+                    }
                 }
             }
 
@@ -478,37 +571,32 @@ internal class OutdatedService {
         System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => _items.GetEnumerator();
     }
 
-    internal sealed class PackageInfoComparer : IEqualityComparer<PackageInfo>
-    {
-        public bool Equals(PackageInfo? x, PackageInfo? y)
-        {
+    internal sealed class PackageInfoComparer : IEqualityComparer<PackageInfo> {
+        public bool Equals(PackageInfo? x, PackageInfo? y) {
             if (ReferenceEquals(x, y)) return true;
             if (x is null || y is null) return false;
             return string.Equals(x.Id, y.Id, StringComparison.OrdinalIgnoreCase)
                 && string.Equals(x.Version, y.Version, StringComparison.OrdinalIgnoreCase)
                 && string.Equals(x.ProjectPath, y.ProjectPath, StringComparison.OrdinalIgnoreCase)
-                && 
-                //string.Equals(x.TargetFramework, y.TargetFramework, StringComparison.OrdinalIgnoreCase)
-                //&& ((x.TargetFrameworks == null && y.TargetFrameworks == null) ||
+                &&
+                    //string.Equals(x.TargetFramework, y.TargetFramework, StringComparison.OrdinalIgnoreCase)
+                    //&& ((x.TargetFrameworks == null && y.TargetFrameworks == null) ||
                     (x.TargetFrameworks != null && y.TargetFrameworks != null &&
                      x.TargetFrameworks.SequenceEqual(y.TargetFrameworks, StringComparer.OrdinalIgnoreCase))
-                    //)
+                //)
                 && string.Equals(x.PropsPath, y.PropsPath, StringComparison.OrdinalIgnoreCase)
                 && x.FromProps == y.FromProps;
         }
 
-        public int GetHashCode(PackageInfo obj)
-        {
+        public int GetHashCode(PackageInfo obj) {
             if (obj is null) return 0;
             int hash = 17;
             hash = hash * 23 + (obj.Id?.ToLowerInvariant().GetHashCode() ?? 0);
             hash = hash * 23 + (obj.Version?.ToLowerInvariant().GetHashCode() ?? 0);
             hash = hash * 23 + (obj.ProjectPath?.ToLowerInvariant().GetHashCode() ?? 0);
             //hash = hash * 23 + (obj.TargetFramework?.ToLowerInvariant().GetHashCode() ?? 0);
-            if (obj.TargetFrameworks != null)
-            {
-                foreach (var tfm in obj.TargetFrameworks)
-                {
+            if (obj.TargetFrameworks != null) {
+                foreach (var tfm in obj.TargetFrameworks) {
                     hash = hash * 23 + (tfm?.ToLowerInvariant().GetHashCode() ?? 0);
                 }
             }
@@ -523,13 +611,22 @@ internal class OutdatedService {
         public Pkg Item { get; set; } = default!;
 
         public string Version => Item.EffectiveVersion; // { get; set; } = string.Empty;
-        
+
         public string ProjectPath { get; set; } = string.Empty;
         public string TargetFramework { get; set; } = default!;
         public string[] TargetFrameworks { get; set; } = default!;
         public string? PropsPath { get; set; }
         public bool FromProps { get; set; }
+
+        public bool CustomVersion => !string.IsNullOrWhiteSpace(Item.Version) || !string.IsNullOrWhiteSpace(Item.VersionOverride);
     }
 
 
+}
+
+internal enum VersionReason {
+    PackageReferenceProj,
+    VersionOverrideProj,
+
+    PackageVersionCpm,
 }

@@ -110,28 +110,29 @@ retry:
                     if (!allowPrerelease && isPrerelease)
                         continue;
 
-                    var supportedFrameworks = new Dictionary<string, string>(request.CompatibleTargetFrameworks?.Count ?? 1);
-                    var dependencyGroups = new Dictionary<string, DependencyGroup>(request.CompatibleTargetFrameworks?.Count ?? 1);
+                    var supportedFrameworks = new Dictionary<NuGetFramework, string>(request.CompatibleTargetFrameworks?.Count ?? 1);
+                    var dependencyGroups = new Dictionary<NuGetFramework, DependencyGroup>(request.CompatibleTargetFrameworks?.Count ?? 1);
 
                     if (!(request.CompatibleTargetFrameworks?.Any() ?? false)) {
-                        supportedFrameworks["any"] = versionItem.CatalogEntry.Version;
+                        supportedFrameworks[NuGetFramework.AnyFramework] = versionItem.CatalogEntry.Version;
                     }
                     else {
                         var bestMatchDependencyGroup = default(DependencyGroup);    
-                        foreach (var reqFramework in request.CompatibleTargetFrameworks) {
+                        foreach (var reqFramework in request.CompatibleTargetFrameworksTyped) {
                             //if (versionItem.CatalogEntry.DependencyGroups is null || !versionItem.CatalogEntry.DependencyGroups.Any()) continue;
                             if (versionItem.CatalogEntry.DependencyGroups is null || !versionItem.CatalogEntry.DependencyGroups.Any()) {
                                 logger?.WriteDebug($"Package {request.PackageId} version {versionItem.CatalogEntry.Version} has no dependency groups, assuming it supports all frameworks");
                                 supportedFrameworks[reqFramework] = versionItem.CatalogEntry.Version;
                             }
                             else {
-                                var reqNuGetFramework = NuGetFramework.Parse(reqFramework);
+                                var reqNuGetFramework = reqFramework; // NuGetFramework.Parse(reqFramework);
                                 var hasMatchingFramework = false;
                                 if (versionItem.CatalogEntry.DependencyGroups.Count == 1) {
                                     var dg = versionItem.CatalogEntry.DependencyGroups.First();
                                     hasMatchingFramework = string.IsNullOrWhiteSpace(dg.TargetFramework)
                                         || _compatibilityProvider.IsCompatible(reqNuGetFramework, NuGetFramework.Parse(dg.TargetFramework))
-                                        || reqFramework.Equals("any", StringComparison.OrdinalIgnoreCase);
+                                        //|| reqFramework.Equals("any", StringComparison.OrdinalIgnoreCase);
+                                        || reqFramework.Equals(NuGetFramework.AnyFramework);
 
                                     if (hasMatchingFramework) bestMatchDependencyGroup = dg;
                                 }
@@ -312,14 +313,25 @@ public record PackageVersionRequest {
     public required string PackageId { get; init; }
     public bool AllowPrerelease { get; init; }
     public bool IsPrivateAssets { get; init; } = false;
+    // todo CompatibleTargetFrameworks should be a typed list of NuGetFramework
     public required IReadOnlyList<string> CompatibleTargetFrameworks { get; init; }
+    public IEnumerable<NuGetFramework> CompatibleTargetFrameworksTyped => CompatibleTargetFrameworks
+        .Where(x => !string.IsNullOrWhiteSpace(x))
+        .Select(tf => NuGetFramework.Parse(tf));
+
+    // todo CompatibleTargetFrameworks should be a typed list of NuGetFramework
+    public IEnumerable<string> CompatibleTargetFrameworksOrdered => CompatibleTargetFrameworksTyped
+        .OrderDescending()
+        .Select(tf => tf.GetShortFolderName());
+        
 }
 
 
 public record PackageVersionResult {
     public required string PackageId { get; init; }
-    public required Dictionary<string, string> TargetFrameworkVersions { get; init; }
+    //public required Dictionary<string, string> TargetFrameworkVersions { get; init; }
+    public required Dictionary<NuGetFramework, string> TargetFrameworkVersions { get; init; }
     public bool IsPrerelease { get; init; }
     public DateTime RetrievedAt { get; init; } = DateTime.UtcNow;
-    public Dictionary<string, DependencyGroup>? Dependencies { get; internal set; }
+    public Dictionary<NuGetFramework, DependencyGroup>? Dependencies { get; internal set; }
 }
