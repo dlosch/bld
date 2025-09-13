@@ -119,3 +119,76 @@ internal record DependencyResolutionOptions {
     /// </summary>
     public required IReadOnlyList<NuGetFramework> TargetFrameworks { get; init; }
 }
+
+/// <summary>
+/// Represents vulnerability information for a NuGet package
+/// </summary>
+internal record PackageVulnerability {
+    public required string PackageId { get; init; }
+    public required string AffectedVersionRange { get; init; }
+    public required string AdvisoryUrl { get; init; }
+    public required string Severity { get; init; }
+    public required string Title { get; init; }
+    public string? Description { get; init; }
+    public DateTime PublishedDate { get; init; }
+    public string? CvssScore { get; init; }
+}
+
+/// <summary>
+/// Enhanced dependency analysis with vulnerability and conflict detection
+/// </summary>
+internal record EnhancedDependencyAnalysis {
+    public int TotalPackages { get; init; }
+    public int ExplicitPackages { get; init; }
+    public int TransitivePackages { get; init; }
+    public int MaxDepth { get; init; }
+    public int UnresolvedPackages { get; init; }
+    public int MicrosoftPackages { get; init; }
+    public int ThirdPartyPackages { get; init; }
+    public int VulnerablePackages { get; init; }
+    
+    public IReadOnlyList<DependencyFrequency> MostCommonDependencies { get; init; } = [];
+    public IReadOnlyDictionary<int, int> PackagesByDepth { get; init; } = new Dictionary<int, int>();
+    public IReadOnlyList<VersionConflict> VersionConflicts { get; init; } = [];
+    public IReadOnlyList<VersionIncompatibility> VersionIncompatibilities { get; init; } = [];
+    public IReadOnlyList<PackageVulnerability> Vulnerabilities { get; init; } = [];
+}
+
+/// <summary>
+/// Represents a version incompatibility where package versions may not work together
+/// </summary>
+internal record VersionIncompatibility {
+    public required string PackageId { get; init; }
+    public required IReadOnlyList<string> IncompatibleVersions { get; init; }
+    public required string Reason { get; init; }
+}
+
+/// <summary>
+/// Enhanced package reference with vulnerability and conflict information
+/// </summary>
+internal record EnhancedPackageReference : PackageReference {
+    /// <summary>
+    /// Whether this package is explicitly referenced (vs. transitive)
+    /// </summary>
+    public bool IsExplicit { get; init; }
+    
+    /// <summary>
+    /// Vulnerability information for this package
+    /// </summary>
+    public IReadOnlyList<PackageVulnerability> Vulnerabilities { get; init; } = [];
+    
+    /// <summary>
+    /// Version conflicts this package participates in
+    /// </summary>
+    public IReadOnlyList<string> ConflictingVersions { get; init; } = [];
+    
+    /// <summary>
+    /// Whether this package has any security vulnerabilities
+    /// </summary>
+    public bool HasVulnerabilities => Vulnerabilities.Any();
+    
+    /// <summary>
+    /// Whether this package has version conflicts
+    /// </summary>
+    public bool HasVersionConflicts => ConflictingVersions.Any();
+}

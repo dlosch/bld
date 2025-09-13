@@ -437,7 +437,8 @@ internal class OutdatedService {
                 _console, 
                 includePrerelease, 
                 maxDepth, 
-                showAnalysis, 
+                showAnalysis,
+                true, // showVulnerabilities
                 cancellationToken);
 
             // Export if requested

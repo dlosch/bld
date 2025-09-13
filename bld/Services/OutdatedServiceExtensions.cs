@@ -18,6 +18,7 @@ internal static class OutdatedServiceExtensions {
     /// <param name="includePrerelease">Whether to include prerelease packages</param>
     /// <param name="maxDepth">Maximum depth to traverse</param>
     /// <param name="showAnalysis">Whether to show detailed analysis</param>
+    /// <param name="showVulnerabilities">Whether to check and display vulnerability information</param>
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>The built dependency graph</returns>
     public static async Task<PackageDependencyGraph> BuildAndShowDependencyGraphAsync(
@@ -26,6 +27,7 @@ internal static class OutdatedServiceExtensions {
         bool includePrerelease = false,
         int maxDepth = 5,
         bool showAnalysis = true,
+        bool showVulnerabilities = true,
         CancellationToken cancellationToken = default) {
         
         ArgumentNullException.ThrowIfNull(allPackageReferences);
@@ -40,83 +42,96 @@ internal static class OutdatedServiceExtensions {
             maxDepth, 
             cancellationToken);
         
-        // Display summary table
-        DisplayDependencyGraphSummary(dependencyGraph, console);
+        // Get vulnerability information if requested
+        Dictionary<string, List<PackageVulnerability>>? vulnerabilities = null;
+        if (showVulnerabilities) {
+            using var httpClient = new HttpClient();
+            var vulnerabilityService = new VulnerabilityService(httpClient, console);
+            var packageIds = dependencyGraph.AllPackages.Select(p => p.PackageId).Distinct();
+            vulnerabilities = await vulnerabilityService.GetVulnerabilitiesAsync(packageIds, cancellationToken);
+        }
         
+        // Perform enhanced analysis
+        var enhancedAnalysis = await graphService.AnalyzeDependencyGraphEnhancedAsync(
+            dependencyGraph, 
+            vulnerabilities, 
+            cancellationToken);
+        
+        // Create and display enhanced tree visualization
+        using var httpClient2 = new HttpClient();
+        var vulnerabilityService2 = new VulnerabilityService(httpClient2, console);
+        var treeVisualizer = new DependencyTreeVisualizer(console, vulnerabilityService2);
+        
+        await treeVisualizer.DisplayDependencyTreeAsync(
+            dependencyGraph, 
+            enhancedAnalysis, 
+            showVulnerabilities, 
+            cancellationToken);
+        
+        // Show legacy summary if requested
         if (showAnalysis) {
-            var analysis = graphService.AnalyzeDependencyGraph(dependencyGraph);
-            DisplayDependencyGraphAnalysis(analysis, console);
+            DisplayLegacySummary(enhancedAnalysis, console);
         }
         
         return dependencyGraph;
     }
     
     /// <summary>
-    /// Displays a summary table of the dependency graph
+    /// Displays a legacy summary for backward compatibility
     /// </summary>
-    private static void DisplayDependencyGraphSummary(PackageDependencyGraph graph, IConsoleOutput console) {
-        var summaryTable = new Table().Border(TableBorder.Rounded);
-        summaryTable.AddColumn(new TableColumn("Metric").LeftAligned());
-        summaryTable.AddColumn(new TableColumn("Count").RightAligned());
-        
-        summaryTable.AddRow("Root Packages", graph.RootPackages.Count.ToString());
-        summaryTable.AddRow("Total Packages", graph.TotalPackageCount.ToString());
-        summaryTable.AddRow("Max Depth", graph.MaxDepth.ToString());
-        summaryTable.AddRow("Unresolved", graph.UnresolvedPackages.Count.ToString());
-        
-        console.WriteTable(summaryTable);
-    }
-    
-    /// <summary>
-    /// Displays detailed analysis of the dependency graph
-    /// </summary>
-    private static void DisplayDependencyGraphAnalysis(DependencyGraphAnalysis analysis, IConsoleOutput console) {
-        console.WriteInfo("\n[bold]Dependency Analysis:[/]");
-        
-        // Package distribution
-        console.WriteInfo($"Microsoft packages: {analysis.MicrosoftPackages}");
-        console.WriteInfo($"Third-party packages: {analysis.ThirdPartyPackages}");
+    private static void DisplayLegacySummary(EnhancedDependencyAnalysis analysis, IConsoleOutput console) {
+        console.WriteRule("[bold green]Additional Analysis Details[/]");
         
         // Depth distribution
         if (analysis.PackagesByDepth.Any()) {
-            console.WriteInfo("\nPackages by depth:");
+            console.WriteInfo("\n[bold]Package Distribution by Depth:[/]");
+            var depthTable = new Table().Border(TableBorder.Simple);
+            depthTable.AddColumn("Depth");
+            depthTable.AddColumn("Package Count");
+            depthTable.AddColumn("Percentage");
+            
             foreach (var (depth, count) in analysis.PackagesByDepth.OrderBy(kvp => kvp.Key)) {
-                console.WriteInfo($"  Depth {depth}: {count} packages");
+                var percentage = (count * 100.0 / analysis.TotalPackages).ToString("F1");
+                depthTable.AddRow(
+                    depth.ToString(), 
+                    count.ToString(),
+                    $"{percentage}%"
+                );
             }
+            console.WriteTable(depthTable);
         }
         
         // Most common dependencies
         if (analysis.MostCommonDependencies.Any()) {
-            console.WriteInfo("\nMost common dependencies:");
+            console.WriteInfo("\n[bold]Most Common Transitive Dependencies:[/]");
             var depTable = new Table().Border(TableBorder.Simple);
             depTable.AddColumn("Package");
-            depTable.AddColumn("Used By");
+            depTable.AddColumn("Used By # Projects");
+            depTable.AddColumn("Category");
             
             foreach (var dep in analysis.MostCommonDependencies) {
-                depTable.AddRow(dep.PackageId, dep.Frequency.ToString());
+                var category = CategorizePackage(dep.PackageId);
+                depTable.AddRow(
+                    Markup.Escape(dep.PackageId), 
+                    dep.Frequency.ToString(),
+                    category
+                );
             }
             console.WriteTable(depTable);
         }
-        
-        // Version conflicts
-        if (analysis.VersionConflicts.Any()) {
-            console.WriteWarning($"\n[yellow]Version conflicts detected ({analysis.VersionConflicts.Count} packages):[/]");
-            var conflictTable = new Table().Border(TableBorder.Simple);
-            conflictTable.AddColumn("Package");
-            conflictTable.AddColumn("Versions");
-            
-            foreach (var conflict in analysis.VersionConflicts.Take(10)) {
-                conflictTable.AddRow(
-                    conflict.PackageId,
-                    string.Join(", ", conflict.Versions)
-                );
-            }
-            console.WriteTable(conflictTable);
-            
-            if (analysis.VersionConflicts.Count > 10) {
-                console.WriteWarning($"... and {analysis.VersionConflicts.Count - 10} more conflicts");
-            }
-        }
+    }
+    
+    private static string CategorizePackage(string packageId) {
+        return packageId.ToLowerInvariant() switch {
+            var p when p.StartsWith("microsoft.") => "[blue]Microsoft[/]",
+            var p when p.StartsWith("system.") => "[blue]System[/]",
+            var p when p.StartsWith("newtonsoft.") => "[green]JSON/Serialization[/]",
+            var p when p.Contains("logging") => "[cyan]Logging[/]",
+            var p when p.Contains("test") => "[yellow]Testing[/]",
+            var p when p.Contains("entity") => "[purple]Data/ORM[/]",
+            var p when p.Contains("http") => "[orange3]HTTP/Web[/]",
+            _ => "[dim]Third-party[/]"
+        };
     }
     
     /// <summary>

@@ -1,6 +1,7 @@
 using bld.Infrastructure;
 using bld.Models;
 using NuGet.Frameworks;
+using NuGet.Versioning;
 
 namespace bld.Services.NuGet;
 
@@ -136,6 +137,119 @@ internal class DependencyGraphService {
             PackagesByDepth = packagesByDepth,
             VersionConflicts = versionConflicts
         };
+    }
+
+    /// <summary>
+    /// Performs enhanced analysis including vulnerability and compatibility checks
+    /// </summary>
+    public async Task<EnhancedDependencyAnalysis> AnalyzeDependencyGraphEnhancedAsync(
+        PackageDependencyGraph graph, 
+        Dictionary<string, List<PackageVulnerability>>? vulnerabilities = null,
+        CancellationToken cancellationToken = default) {
+        
+        ArgumentNullException.ThrowIfNull(graph);
+        
+        var basicAnalysis = AnalyzeDependencyGraph(graph);
+        
+        // Count explicit vs transitive packages
+        var explicitPackages = graph.AllPackages.Count(p => p.IsRootPackage);
+        var transitivePackages = graph.TotalPackageCount - explicitPackages;
+        
+        // Find version incompatibilities (more sophisticated than conflicts)
+        var versionIncompatibilities = FindVersionIncompatibilities(graph);
+        
+        // Count vulnerable packages
+        var vulnerablePackages = 0;
+        var allVulns = new List<PackageVulnerability>();
+        
+        if (vulnerabilities != null) {
+            foreach (var (packageId, packageVulns) in vulnerabilities) {
+                if (packageVulns.Any()) {
+                    // Check if any package versions are actually vulnerable
+                    var packageVersions = graph.AllPackages
+                        .Where(p => p.PackageId.Equals(packageId, StringComparison.OrdinalIgnoreCase))
+                        .Select(p => p.Version)
+                        .Distinct();
+                    
+                    var isVulnerable = await IsAnyVersionVulnerableAsync(packageVersions, packageVulns);
+                    if (isVulnerable) {
+                        vulnerablePackages++;
+                        allVulns.AddRange(packageVulns);
+                    }
+                }
+            }
+        }
+        
+        return new EnhancedDependencyAnalysis {
+            TotalPackages = basicAnalysis.TotalPackages,
+            ExplicitPackages = explicitPackages,
+            TransitivePackages = transitivePackages,
+            MaxDepth = basicAnalysis.MaxDepth,
+            UnresolvedPackages = basicAnalysis.UnresolvedPackages,
+            MicrosoftPackages = basicAnalysis.MicrosoftPackages,
+            ThirdPartyPackages = basicAnalysis.ThirdPartyPackages,
+            VulnerablePackages = vulnerablePackages,
+            MostCommonDependencies = basicAnalysis.MostCommonDependencies,
+            PackagesByDepth = basicAnalysis.PackagesByDepth,
+            VersionConflicts = basicAnalysis.VersionConflicts,
+            VersionIncompatibilities = versionIncompatibilities,
+            Vulnerabilities = allVulns
+        };
+    }
+    
+    private List<VersionIncompatibility> FindVersionIncompatibilities(PackageDependencyGraph graph) {
+        var incompatibilities = new List<VersionIncompatibility>();
+        
+        // Group packages by ID to find those with multiple versions
+        var packageGroups = graph.AllPackages
+            .GroupBy(p => p.PackageId, StringComparer.OrdinalIgnoreCase)
+            .Where(g => g.Select(p => p.Version).Distinct().Count() > 1);
+        
+        foreach (var group in packageGroups) {
+            var versions = group.Select(p => p.Version).Distinct().ToList();
+            
+            // Check for major version differences (likely incompatible)
+            if (versions.Count >= 2) {
+                var parsedVersions = versions
+                    .Select(v => NuGetVersion.TryParse(v, out var parsed) ? parsed : null)
+                    .Where(v => v != null)
+                    .ToList();
+                
+                if (parsedVersions.Count >= 2) {
+                    var majorVersions = parsedVersions.Select(v => v!.Major).Distinct().ToList();
+                    
+                    if (majorVersions.Count > 1) {
+                        incompatibilities.Add(new VersionIncompatibility {
+                            PackageId = group.Key,
+                            IncompatibleVersions = versions,
+                            Reason = $"Major version differences: {string.Join(", ", majorVersions)} may be incompatible"
+                        });
+                    }
+                }
+            }
+        }
+        
+        return incompatibilities;
+    }
+    
+    private Task<bool> IsAnyVersionVulnerableAsync(
+        IEnumerable<string> versions, 
+        List<PackageVulnerability> vulnerabilities) {
+        
+        foreach (var version in versions) {
+            if (!NuGetVersion.TryParse(version, out var nugetVersion)) {
+                continue;
+            }
+            
+            foreach (var vuln in vulnerabilities) {
+                if (VersionRange.TryParse(vuln.AffectedVersionRange, out var range) &&
+                    range.Satisfies(nugetVersion)) {
+                    return Task.FromResult(true);
+                }
+            }
+        }
+        
+        return Task.FromResult(false);
     }
 }
 
