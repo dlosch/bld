@@ -166,7 +166,7 @@ internal class OutdatedService {
 
 
                 if (targetVer is null) {
-                    _console.WriteInfo($"No compatible version found for {packageReference.Key} {packageReference.Value.Tfm} {result?.ToString()} {string.Join(',', result?.TargetFrameworkVersions?.Select(x => x.Key.GetShortFolderName()) ?? Array.Empty<string>())}");
+                    _console.WriteInfo($"No compatible version found for {packageReference.Key} {packageReference.Value.Tfm} {result?.ToString()} {string.Join(',', result?.TargetFrameworkVersions?.Select(x => x.Key.GetNormalizedShortFolderName()) ?? Array.Empty<string>())}");
                     return;
                 }
                 if (!NuGetVersion.TryParse(targetVer, out var latestVer)) {
@@ -184,7 +184,7 @@ internal class OutdatedService {
                 );
             }
             catch (Exception xcptn) {
-                _console.WriteWarning($"Failed to parse version for {packageReference.Key}: {packageReference.Value.Tfm} {string.Join(',', result?.TargetFrameworkVersions?.Select(x => x.Key.GetShortFolderName()) ?? Array.Empty<string>())} {xcptn.Message}");
+                _console.WriteWarning($"Failed to parse version for {packageReference.Key}: {packageReference.Value.Tfm} {string.Join(',', result?.TargetFrameworkVersions?.Select(x => x.Key.GetNormalizedShortFolderName()) ?? Array.Empty<string>())} {xcptn.Message}");
             }
         });
 
@@ -357,79 +357,25 @@ internal class OutdatedService {
     public async Task<int> BuildDependencyGraphAsync(
         string rootPath, 
         bool includePrerelease = false, 
-        int maxDepth = 5, 
+        int maxDepth = 8, 
         bool showAnalysis = true,
         string? exportPath = null,
         CancellationToken cancellationToken = default) {
         
-        MSBuildService.RegisterMSBuildDefaults(_console, _options);
-
         _console.WriteRule("[bold blue]bld dependency-graph (BETA)[/]");
         _console.WriteInfo("Discovering packages and building dependency graph...");
 
-        var errorSink = new ErrorSink(_console);
-        var slnScanner = new SlnScanner(_options, errorSink);
-        var slnParser = new SlnParser(_console, errorSink);
-        var fileSystem = new FileSystem(_console, errorSink);
-        var cache = new ProjCfgCache(_console);
-
         var stopwatch = Stopwatch.StartNew();
-        var allPackageReferences = new Dictionary<string, PackageInfoContainer>(StringComparer.OrdinalIgnoreCase);
 
-        try {
-            var projParser = new ProjParser(_console, errorSink, _options);
-
-            // First, discover all package references (similar to CheckOutdatedPackagesAsync)
-            await foreach (var slnPath in slnScanner.Enumerate(rootPath)) {
-                await _console.StartStatusAsync($"Processing solution {slnPath}", async ctx => {
-                    await foreach (var projCfg in slnParser.ParseSolution(slnPath, fileSystem)) {
-                        var packageRefs = new PackageInfoContainer();
-                        
-                        if (!string.Equals(projCfg.Configuration, "Release", StringComparison.OrdinalIgnoreCase)) continue;
-                        if (!cache.Add(projCfg)) continue;
-
-                        var refs = projParser.GetPackageReferences(projCfg);
-                        if (refs?.PackageReferences is null || !refs.PackageReferences.Any()) {
-                            _console.WriteDebug($"No references in {projCfg.Path}");
-                            continue;
-                        }
-
-                        var exnm = refs.PackageReferences.Select(re => new PackageInfo {
-                            Id = re.Key,
-                            FromProps = refs.UseCpm ?? false,
-                            TargetFramework = refs.TargetFramework,
-                            TargetFrameworks = refs.TargetFrameworks,
-                            ProjectPath = refs.Proj.Path,
-                            PropsPath = refs.CpmFile,
-                            Item = re.Value
-                        });
-
-                        var bad = exnm.Where(e => string.IsNullOrEmpty(e.Version)).ToList();
-                        if (bad.Any()) _console.WriteWarning($"Project {projCfg.Path} has package references with no resolvable version: {string.Join(", ", bad.Select(b => b.Id))}");
-                        packageRefs.AddRange(exnm);
-
-                        foreach (var pkg in packageRefs) {
-                            if (!allPackageReferences.TryGetValue(pkg.Id, out var list)) {
-                                list = new PackageInfoContainer();
-                                allPackageReferences[pkg.Id] = list;
-                            }
-                            list.Add(pkg);
-                        }
-                    }
-                });
-            }
-        }
-        catch (Exception ex) {
-            _console.WriteException(ex);
-            return 1;
-        }
+        var discoveryService = new PackageDiscoveryService(_console, _options);
+        var (allPackageReferences, projectCount, errorSink) = await discoveryService.DiscoverPackageReferencesAsync(rootPath, cancellationToken);
 
         if (allPackageReferences.Count == 0) {
             _console.WriteInfo("No package references found.");
             return 0;
         }
 
-        _console.WriteInfo($"Found {allPackageReferences.Count} unique packages across {cache.Count} projects");
+        _console.WriteInfo($"Found {allPackageReferences.Count} unique packages across {projectCount} projects");
 
         // Now build the dependency graph using the new functionality
         try {
@@ -476,78 +422,24 @@ internal class OutdatedService {
         string rootPath,
         bool includePrerelease = false,
         bool excludeFrameworkPackages = false,
-        int maxDepth = 5,
+        int maxDepth = 8,
         string? exportPath = null,
         CancellationToken cancellationToken = default) {
         
-        MSBuildService.RegisterMSBuildDefaults(_console, _options);
-
         _console.WriteRule("[bold blue]bld reverse-dependency-graph (BETA)[/]");
         _console.WriteInfo("Discovering packages and building reverse dependency graph...");
 
-        var errorSink = new ErrorSink(_console);
-        var slnScanner = new SlnScanner(_options, errorSink);
-        var slnParser = new SlnParser(_console, errorSink);
-        var fileSystem = new FileSystem(_console, errorSink);
-        var cache = new ProjCfgCache(_console);
-
         var stopwatch = Stopwatch.StartNew();
-        var allPackageReferences = new Dictionary<string, PackageInfoContainer>(StringComparer.OrdinalIgnoreCase);
 
-        try {
-            var projParser = new ProjParser(_console, errorSink, _options);
-
-            // First, discover all package references (similar to CheckOutdatedPackagesAsync)
-            await foreach (var slnPath in slnScanner.Enumerate(rootPath)) {
-                await _console.StartStatusAsync($"Processing solution {slnPath}", async ctx => {
-                    await foreach (var projCfg in slnParser.ParseSolution(slnPath, fileSystem)) {
-                        var packageRefs = new PackageInfoContainer();
-                        
-                        if (!string.Equals(projCfg.Configuration, "Release", StringComparison.OrdinalIgnoreCase)) continue;
-                        if (!cache.Add(projCfg)) continue;
-
-                        var refs = projParser.GetPackageReferences(projCfg);
-                        if (refs?.PackageReferences is null || !refs.PackageReferences.Any()) {
-                            _console.WriteDebug($"No references in {projCfg.Path}");
-                            continue;
-                        }
-
-                        var exnm = refs.PackageReferences.Select(re => new PackageInfo {
-                            Id = re.Key,
-                            FromProps = refs.UseCpm ?? false,
-                            TargetFramework = refs.TargetFramework,
-                            TargetFrameworks = refs.TargetFrameworks,
-                            ProjectPath = refs.Proj.Path,
-                            PropsPath = refs.CpmFile,
-                            Item = re.Value
-                        });
-
-                        var bad = exnm.Where(e => string.IsNullOrEmpty(e.Version)).ToList();
-                        if (bad.Any()) _console.WriteWarning($"Project {projCfg.Path} has package references with no resolvable version: {string.Join(", ", bad.Select(b => b.Id))}");
-                        packageRefs.AddRange(exnm);
-
-                        foreach (var pkg in packageRefs) {
-                            if (!allPackageReferences.TryGetValue(pkg.Id, out var list)) {
-                                list = new PackageInfoContainer();
-                                allPackageReferences[pkg.Id] = list;
-                            }
-                            list.Add(pkg);
-                        }
-                    }
-                });
-            }
-        }
-        catch (Exception ex) {
-            _console.WriteException(ex);
-            return 1;
-        }
+        var discoveryService = new PackageDiscoveryService(_console, _options);
+        var (allPackageReferences, projectCount, errorSink) = await discoveryService.DiscoverPackageReferencesAsync(rootPath, cancellationToken);
 
         if (allPackageReferences.Count == 0) {
             _console.WriteInfo("No package references found.");
             return 0;
         }
 
-        _console.WriteInfo($"Found {allPackageReferences.Count} unique packages across {cache.Count} projects");
+        _console.WriteInfo($"Found {allPackageReferences.Count} unique packages across {projectCount} projects");
 
         // Now build the reverse dependency graph using the new functionality
         try {
@@ -722,8 +614,8 @@ internal class OutdatedService {
             foreach (var item in exnm) Add(item);
         }
 
-        public IEnumerable<string> Tfms => _tfms.Select(nuTfm => nuTfm.GetShortFolderName());
-        public string? Tfm => _tfms.Count() == 1 ? _tfms.First().GetShortFolderName() : default;
+        public IEnumerable<string> Tfms => _tfms.Select(nuTfm => nuTfm.GetNormalizedShortFolderName());
+        public string? Tfm => _tfms.Count() == 1 ? _tfms.First().GetNormalizedShortFolderName() : default;
         private readonly HashSet<NuGetFramework> _tfms = new();
 
         public IEnumerator<PackageInfo> GetEnumerator() => _items.GetEnumerator();

@@ -1,5 +1,6 @@
 ﻿//using XUnit.Framework;
 
+using bld.Infrastructure;
 using NuGet.Frameworks;
 using Xunit.Abstractions;
 
@@ -8,12 +9,12 @@ namespace bld.Tests;
 public class DotNetTests(ITestOutputHelper Console) {
     [Fact]
     public void PathCombineLinux() {
-        Assert.Throws<ArgumentNullException>(() => Path.Combine("/mnt/d/tests", null, "child"));
+        Assert.Throws<ArgumentNullException>(() => Path.Combine("/mnt/d/tests", null!, "child"));
     }
 
     [Fact]
     public void PathCombineWin() {
-        Assert.Throws<ArgumentNullException>(() => Path.Combine("d:\\tests", null, "child"));
+        Assert.Throws<ArgumentNullException>(() => Path.Combine("d:\\tests", null!, "child"));
     }
 }
 public class NuGetFrameworkTests(ITestOutputHelper Console) {
@@ -39,7 +40,17 @@ public class NuGetFrameworkTests(ITestOutputHelper Console) {
         foreach (var tfm in tfms) {
             var framework = NuGetFramework.Parse(tfm);
             string normalizedTfm = framework.GetShortFolderName();
-            Console.WriteLine($"Original: {tfm}, Normalized: {normalizedTfm}");
+            string customNormalizedTfm = framework.GetNormalizedShortFolderName();
+            
+            Console.WriteLine($"Original: {tfm}, Standard: {normalizedTfm}, Normalized: {customNormalizedTfm}");
+            
+            // Test that our normalization handles the net100 -> net10.0 case
+            if (normalizedTfm == "net100") {
+                Assert.Equal("net10.0", customNormalizedTfm);
+            } else {
+                // For other cases, they should be the same unless there's another issue we need to handle
+                Assert.Equal(normalizedTfm, customNormalizedTfm);
+            }
         }
     }
 }

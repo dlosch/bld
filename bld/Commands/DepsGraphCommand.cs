@@ -32,9 +32,15 @@ internal sealed class DepsGraphCommand : BaseCommand {
         DefaultValueFactory = _ => false
     };
 
+    private readonly Option<int> _maxDepthOption = new Option<int>("--max-depth") {
+        Description = "Maximum depth to traverse in the dependency tree (default: 8).",
+        DefaultValueFactory = _ => 8
+    };
+
     public DepsGraphCommand(IConsoleOutput console) : base("deps", "Check for outdated NuGet packages and optionally update them to latest versions.", console) {
         Add(_rootOption);
         Add(_depthOption);
+        Add(_maxDepthOption);
         Add(_applyOption);
         Add(_skipTfmCheckOption);
         Add(_prereleaseOption);
@@ -71,13 +77,14 @@ internal sealed class DepsGraphCommand : BaseCommand {
         var includePrerelease = parseResult.GetValue(_prereleaseOption);
         var showReverse = parseResult.GetValue(_reverseOption);
         var excludeFramework = parseResult.GetValue(_excludeFrameworkOption);
+        var maxDepth = parseResult.GetValue(_maxDepthOption);
 
         var service = new OutdatedService(Console, options);
         
         if (showReverse) {
-            return await service.BuildReverseDependencyGraphAsync(rootValue, includePrerelease, excludeFramework, cancellationToken: cancellationToken);
+            return await service.BuildReverseDependencyGraphAsync(rootValue, includePrerelease, excludeFramework, maxDepth, cancellationToken: cancellationToken);
         } else {
-            return await service.BuildDependencyGraphAsync(rootValue, includePrerelease, cancellationToken: cancellationToken);
+            return await service.BuildDependencyGraphAsync(rootValue, includePrerelease, maxDepth, cancellationToken: cancellationToken);
         }
     }
 }

@@ -25,7 +25,7 @@ internal static class OutdatedServiceExtensions {
         this Dictionary<string, OutdatedService.PackageInfoContainer> allPackageReferences,
         IConsoleOutput console,
         bool includePrerelease = false,
-        int maxDepth = 5,
+        int maxDepth = 8,
         bool showAnalysis = true,
         bool showVulnerabilities = true,
         CancellationToken cancellationToken = default) {
@@ -90,7 +90,7 @@ internal static class OutdatedServiceExtensions {
         this Dictionary<string, OutdatedService.PackageInfoContainer> allPackageReferences,
         IConsoleOutput console,
         bool includePrerelease = false,
-        int maxDepth = 5,
+        int maxDepth = 8,
         bool excludeFrameworkPackages = false,
         CancellationToken cancellationToken = default) {
         

@@ -22,13 +22,13 @@ internal class DependencyGraphService {
     /// </summary>
     /// <param name="allPackageReferences">Package references from OutdatedService.CheckOutdatedPackagesAsync</param>
     /// <param name="includePrerelease">Whether to include prerelease packages</param>
-    /// <param name="maxDepth">Maximum depth to traverse (default: 5)</param>
+    /// <param name="maxDepth">Maximum depth to traverse (default: 8)</param>
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Complete dependency graph with both tree and flat representations</returns>
     public async Task<PackageDependencyGraph> BuildDependencyGraphAsync(
         Dictionary<string, OutdatedService.PackageInfoContainer> allPackageReferences,
         bool includePrerelease = false,
-        int maxDepth = 5,
+        int maxDepth = 8,
         CancellationToken cancellationToken = default) {
         
         ArgumentNullException.ThrowIfNull(allPackageReferences);

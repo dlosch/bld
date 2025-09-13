@@ -41,11 +41,9 @@ internal sealed class ReverseDependencyTreeVisualizer {
         // Detailed reverse dependency tree
         await DisplayDetailedReverseDependenciesAsync(analysis, cancellationToken);
         
-        // Leaf packages (packages with no dependents)
-        DisplayLeafPackages(analysis);
-        
-        // Package categorization
-        DisplayPackageCategorization(analysis);
+        // Leaf packages and categorization are disabled as requested
+        // DisplayLeafPackages(analysis);
+        // DisplayPackageCategorization(analysis);
     }
     
     /// <summary>
