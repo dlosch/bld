@@ -1,5 +1,6 @@
 using NuGet.Versioning;
 using bld.Services.NuGet;
+using NuGet.Frameworks;
 
 namespace bld.Models;
 
@@ -84,7 +85,7 @@ internal record PackageReference {
 internal record UnresolvedPackage {
     public required string PackageId { get; init; }
     public string? VersionRange { get; init; }
-    public required string TargetFramework { get; init; }
+    public required NuGetFramework TargetFramework { get; init; }
     public required string Reason { get; init; }
     public int Depth { get; init; }
 }
@@ -116,5 +117,5 @@ internal record DependencyResolutionOptions {
     /// <summary>
     /// Target frameworks to resolve dependencies for
     /// </summary>
-    public required IReadOnlyList<string> TargetFrameworks { get; init; }
+    public required IReadOnlyList<NuGetFramework> TargetFrameworks { get; init; }
 }

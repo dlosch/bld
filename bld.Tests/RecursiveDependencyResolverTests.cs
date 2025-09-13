@@ -18,7 +18,7 @@ public class RecursiveDependencyResolverTests {
         var resolutionOptions = new DependencyResolutionOptions {
             MaxDepth = 3,
             AllowPrerelease = false,
-            TargetFrameworks = new[] { "net8.0" }
+            TargetFrameworks = [] //new[] { "net8.0" }
         };
         
         // Act
@@ -49,7 +49,7 @@ public class RecursiveDependencyResolverTests {
         var resolutionOptions = new DependencyResolutionOptions {
             MaxDepth = 1, // Very shallow to test limit
             AllowPrerelease = false,
-            TargetFrameworks = new[] { "net8.0" }
+            TargetFrameworks =  [] //new[] { "net8.0" }
         };
         
         // Act
@@ -74,7 +74,7 @@ public class RecursiveDependencyResolverTests {
         var resolutionOptions = new DependencyResolutionOptions {
             MaxDepth = 2,
             AllowPrerelease = false,
-            TargetFrameworks = new[] { "net8.0" }
+            TargetFrameworks = [] //new[] { "net8.0" }
         };
         
         var rootPackages = new[] { "Newtonsoft.Json", "System.Text.Json" };

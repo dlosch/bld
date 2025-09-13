@@ -15,6 +15,7 @@ internal class RootCommand : System.CommandLine.RootCommand {
         //Add(new ContainerizeCommand(console));
         Add(new CpmCommand(console));
         Add(new OutdatedCommand(console));
+        Add(new DepsGraphCommand(console));
         Add(new TfmCommand(console));
     }
 }

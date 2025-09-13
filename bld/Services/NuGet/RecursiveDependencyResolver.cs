@@ -1,5 +1,6 @@
 using bld.Infrastructure;
 using bld.Models;
+using NuGet.Frameworks;
 using NuGet.Versioning;
 using System.Collections.Concurrent;
 
@@ -78,7 +79,7 @@ internal class RecursiveDependencyResolver {
                 } else {
                     unresolvedPackages.Add(new UnresolvedPackage {
                         PackageId = rootPackageId,
-                        TargetFramework = options.TargetFrameworks.FirstOrDefault() ?? "any",
+                        TargetFramework = options.TargetFrameworks.FirstOrDefault() ?? NuGetFramework.AnyFramework,
                         Reason = "Failed to resolve root package",
                         Depth = 0
                     });
@@ -88,7 +89,7 @@ internal class RecursiveDependencyResolver {
                 _logger?.WriteError($"Failed to resolve dependencies for {rootPackageId}: {ex.Message}");
                 unresolvedPackages.Add(new UnresolvedPackage {
                     PackageId = rootPackageId,
-                    TargetFramework = options.TargetFrameworks.FirstOrDefault() ?? "any",
+                    TargetFramework = options.TargetFrameworks.FirstOrDefault() ?? NuGetFramework.AnyFramework,
                     Reason = $"Exception: {ex.Message}",
                     Depth = 0
                 });
@@ -137,7 +138,7 @@ internal class RecursiveDependencyResolver {
                     var request = new PackageVersionRequest {
                         PackageId = packageId,
                         AllowPrerelease = options.AllowPrerelease,
-                        CompatibleTargetFrameworks = options.TargetFrameworks.ToList()
+                        CompatibleTargetFrameworks = options.TargetFrameworks.Select(tf => tf.GetShortFolderName()).ToList()
                     };
                     
                     var result = await NugetMetadataService.GetLatestVersionWithFrameworkCheckAsync(
@@ -188,7 +189,7 @@ internal class RecursiveDependencyResolver {
                 var request = new PackageVersionRequest {
                     PackageId = packageId,
                     AllowPrerelease = options.AllowPrerelease,
-                    CompatibleTargetFrameworks = options.TargetFrameworks.ToList()
+                    CompatibleTargetFrameworks = options.TargetFrameworks.Select(tf => tf.GetShortFolderName()).ToList()
                 };
                 
                 packageResult = await NugetMetadataService.GetLatestVersionWithFrameworkCheckAsync(
@@ -203,7 +204,7 @@ internal class RecursiveDependencyResolver {
             }
 
             // Get the best target framework and its version
-            var targetFramework = options.TargetFrameworks.FirstOrDefault() ?? "any";
+            var targetFramework = options.TargetFrameworks.FirstOrDefault() ?? NuGetFramework.AnyFramework;
             if (!packageResult.TargetFrameworkVersions.TryGetValue(targetFramework, out var version)) {
                 // Try with the first available framework
                 var firstFramework = packageResult.TargetFrameworkVersions.FirstOrDefault();
@@ -250,7 +251,7 @@ internal class RecursiveDependencyResolver {
             return new DependencyGraphNode {
                 PackageId = packageId,
                 Version = version,
-                TargetFramework = targetFramework,
+                TargetFramework = targetFramework.GetShortFolderName(),
                 IsPrerelease = packageResult.IsPrerelease,
                 Dependencies = childDependencies,
                 DependencyGroup = dependencyGroup,
@@ -290,8 +291,8 @@ internal class RecursiveDependencyResolver {
     /// <summary>
     /// Creates a cache key for package lookup
     /// </summary>
-    private static string CreateCacheKey(string packageId, IReadOnlyList<string> targetFrameworks) {
-        var frameworksKey = string.Join(",", targetFrameworks.OrderBy(f => f));
+    private static string CreateCacheKey(string packageId, IReadOnlyList<NuGetFramework> targetFrameworks) {
+        var frameworksKey = !targetFrameworks.Any() ? "any" : string.Join(",", targetFrameworks.Select(f => f.GetShortFolderName()).OrderBy(f => f));
         return $"{packageId}|{frameworksKey}";
     }
 }

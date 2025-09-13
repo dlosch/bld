@@ -1,5 +1,6 @@
 using bld.Infrastructure;
 using bld.Models;
+using NuGet.Frameworks;
 
 namespace bld.Services.NuGet;
 
@@ -39,16 +40,16 @@ internal class DependencyGraphService {
             .Distinct()
             .ToList();
         
-        if (!targetFrameworks.Any()) {
-            targetFrameworks.Add("net8.0"); // Default fallback
-        }
+        //if (!targetFrameworks.Any()) {
+        //    targetFrameworks.Add("net8.0"); // Default fallback
+        //}
         
         _console.WriteDebug($"Target frameworks: {string.Join(", ", targetFrameworks)}");
         
         var resolutionOptions = new DependencyResolutionOptions {
             MaxDepth = maxDepth,
             AllowPrerelease = includePrerelease,
-            TargetFrameworks = targetFrameworks
+            TargetFrameworks = targetFrameworks.Select(tf => new NuGetFramework(tf)).ToList()
         };
         
         using var httpClient = NugetMetadataService.CreateHttpClient(_options);
