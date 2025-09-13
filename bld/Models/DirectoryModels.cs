@@ -23,6 +23,7 @@ internal enum ProjectType {
     Vcxproj,
 }
 
+[Flags]
 /// <summary>
 /// Enumeration types for file scanning
 /// </summary>
@@ -30,12 +31,14 @@ internal enum EnumerationType {
     /// <summary>
     /// Scan for solution files (.sln, .slnx, .slnf)
     /// </summary>
-    Sln,
+    Sln = 0x1,
     
     /// <summary>
     /// Scan for project files (.csproj, .vbproj, .sqlproj, etc.)
     /// </summary>
-    Project
+    Project = 0x2,
+
+    Both = Sln | Project
 }
 
 /// <summary>

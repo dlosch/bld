@@ -186,19 +186,20 @@ internal class Enumerator(CleaningOptions Options, ErrorSink ErrorSink) {
     /// <param name="enumerationType">Type of files to enumerate (Sln or Project)</param>
     /// <param name="createDefaultDebugConfiguration">Whether to create a default Debug configuration when no configurations are found</param>
     /// <returns>Async enumerable of project configurations</returns>
-    public async IAsyncEnumerable<ProjCfg> EnumerateProjCfg(string path, EnumerationType enumerationType, bool createDefaultDebugConfiguration = true) {
+    public async IAsyncEnumerable<ProjCfg> Enumerate(string path, EnumerationType enumerationType, bool createDefaultDebugConfiguration = true) {
         if (string.IsNullOrWhiteSpace(path)) {
             yield break;
         }
 
+        path = DirExt.EnsureRooted(path, Environment.CurrentDirectory);
         // Handle single file case
         if (File.Exists(path)) {
-            if (enumerationType == EnumerationType.Sln && IsSolutionFile(path)) {
+            if (enumerationType.HasFlag(EnumerationType.Sln) && IsSolutionFile(path)) {
                 await foreach (var projCfg in EnumerateProjCfgFromSolution(path, createDefaultDebugConfiguration)) {
                     yield return projCfg;
                 }
             }
-            else if (enumerationType == EnumerationType.Project && IsProjectFile(path)) {
+            else if (enumerationType.HasFlag(EnumerationType.Project) && IsProjectFile(path)) {
                 await foreach (var projCfg in CreateDefaultProjCfgForProject(path, createDefaultDebugConfiguration)) {
                     yield return projCfg;
                 }
@@ -213,12 +214,13 @@ internal class Enumerator(CleaningOptions Options, ErrorSink ErrorSink) {
             yield break;
         }
 
-        if (enumerationType == EnumerationType.Sln) {
+        if (enumerationType.HasFlag(EnumerationType.Sln)) {
             await foreach (var projCfg in EnumerateProjCfgFromSolutions(pathRooted, createDefaultDebugConfiguration)) {
                 yield return projCfg;
             }
         }
-        else {
+
+        if (enumerationType.HasFlag(EnumerationType.Project)) {
             await foreach (var projCfg in EnumerateProjCfgFromProjects(pathRooted, createDefaultDebugConfiguration)) {
                 yield return projCfg;
             }

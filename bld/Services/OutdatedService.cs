@@ -28,7 +28,8 @@ internal class OutdatedService {
         _console.WriteInfo("Checking for outdated packages...");
 
         var errorSink = new ErrorSink(_console);
-        var slnScanner = new SlnScanner(_options, errorSink);
+        //var slnScanner = new SlnScanner(_options, errorSink);
+        var slnScanner = new Enumerator(_options, errorSink);
         var slnParser = new SlnParser(_console, errorSink);
         var fileSystem = new FileSystem(_console, errorSink);
         var cache = new ProjCfgCache(_console);
@@ -43,9 +44,11 @@ internal class OutdatedService {
         try {
             var projParser = new ProjParser(_console, errorSink, _options);
 
-            await foreach (var slnPath in slnScanner.Enumerate(rootPath)) {
-                await _console.StartStatusAsync($"Processing solution {slnPath}", async ctx => {
-                    await foreach (var projCfg in slnParser.ParseSolution(slnPath, fileSystem)) {
+            await foreach (var projCfg in slnScanner.Enumerate(rootPath, EnumerationType.Both)) {
+            //await foreach (var slnPath in slnScanner.Enumerate(rootPath)) {
+                //await _console.StartStatusAsync($"Processing solution {slnPath}", async ctx => {
+                    //await foreach (var projCfg in slnParser.ParseSolution(slnPath, fileSystem))
+                    {
                         var packageRefs = new PackageInfoContainer(); // new List<PackageInfo>();
                         // Only process "Release" configuration as per spec
                         // todo 20250830 aggregate
@@ -82,7 +85,7 @@ internal class OutdatedService {
                             list.Add(pkg);
                         }
                     }
-                });
+                //});
             }
         }
         catch (Exception ex) {

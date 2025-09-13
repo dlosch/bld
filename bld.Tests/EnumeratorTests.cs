@@ -185,7 +185,7 @@ public class EnumeratorTests(ITestOutputHelper output) {
 
             // Act
             var projCfgs = new List<ProjCfg>();
-            await foreach (var projCfg in enumerator.EnumerateProjCfg(slnPath, EnumerationType.Sln)) {
+            await foreach (var projCfg in enumerator.Enumerate(slnPath, EnumerationType.Sln)) {
                 projCfgs.Add(projCfg);
             }
 
@@ -228,7 +228,7 @@ public class EnumeratorTests(ITestOutputHelper output) {
 
             // Act
             var projCfgs = new List<ProjCfg>();
-            await foreach (var projCfg in enumerator.EnumerateProjCfg(projPath, EnumerationType.Project)) {
+            await foreach (var projCfg in enumerator.Enumerate(projPath, EnumerationType.Project)) {
                 projCfgs.Add(projCfg);
             }
 
@@ -259,7 +259,7 @@ public class EnumeratorTests(ITestOutputHelper output) {
 
             // Act - Disable default Debug configuration
             var projCfgs = new List<ProjCfg>();
-            await foreach (var projCfg in enumerator.EnumerateProjCfg(projPath, EnumerationType.Project, createDefaultDebugConfiguration: false)) {
+            await foreach (var projCfg in enumerator.Enumerate(projPath, EnumerationType.Project, createDefaultDebugConfiguration: false)) {
                 projCfgs.Add(projCfg);
             }
 
@@ -294,7 +294,7 @@ public class EnumeratorTests(ITestOutputHelper output) {
 
             // Act
             var projCfgs = new List<ProjCfg>();
-            await foreach (var projCfg in enumerator.EnumerateProjCfg(tempDir, EnumerationType.Project)) {
+            await foreach (var projCfg in enumerator.Enumerate(tempDir, EnumerationType.Project)) {
                 projCfgs.Add(projCfg);
             }
 
@@ -342,7 +342,7 @@ public class EnumeratorTests(ITestOutputHelper output) {
 
             // Act
             var projCfgs = new List<ProjCfg>();
-            await foreach (var projCfg in enumerator.EnumerateProjCfg(slnPath, EnumerationType.Sln)) {
+            await foreach (var projCfg in enumerator.Enumerate(slnPath, EnumerationType.Sln)) {
                 projCfgs.Add(projCfg);
             }
 
@@ -371,7 +371,7 @@ public class EnumeratorTests(ITestOutputHelper output) {
 
         // Act
         var projCfgs = new List<ProjCfg>();
-        await foreach (var projCfg in enumerator.EnumerateProjCfg(nonExistentPath, EnumerationType.Project)) {
+        await foreach (var projCfg in enumerator.Enumerate(nonExistentPath, EnumerationType.Project)) {
             projCfgs.Add(projCfg);
         }
 
