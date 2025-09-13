@@ -22,5 +22,6 @@ internal interface IConsoleOutput {
     Task StartProgressAsync(string description, Func<ProgressContext, Task> action);
     Task StartStatusAsync(string description, Func<StatusContext, Task> action);
     void WriteException(Exception exception);
-    void WriteOutput(string caption, string content);
+    void WriteOutput(string caption, string? content = default);
+    void WriteHeader(string caption, string? additionaltext = default);
 }
