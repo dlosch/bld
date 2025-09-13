@@ -46,7 +46,13 @@ internal class CleaningApplication(IConsoleOutput _console, Func<IConsoleOutput,
 
         try {
             foreach (var rootPath in rootPaths) {
-                // todo check for csproj
+                // Using the new Enumerator class would look like this:
+                // var enumerator = new Enumerator(options, errorSink);
+                // await foreach (var projectPath in enumerator.EnumerateProjectPaths(rootPath, EnumerationType.Sln)) {
+                //     // Process each project directly without needing to parse solutions first
+                // }
+                
+                // Current implementation using SlnScanner
                 await foreach (var sln in scanner.Enumerate(rootPath)) {
                     await _console.StartStatusAsync($"Processing solution {sln}", async ctx => {
                         var curProj = default(string);
