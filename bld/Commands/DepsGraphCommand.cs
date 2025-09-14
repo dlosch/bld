@@ -27,8 +27,8 @@ internal sealed class DepsGraphCommand : BaseCommand {
         DefaultValueFactory = _ => false
     };
 
-    private readonly Option<bool> _excludeFrameworkOption = new Option<bool>("--exclude-framework") {
-        Description = "Exclude framework packages (Microsoft.*/System.*/NETStandard.*) from reverse dependency analysis.",
+    private readonly Option<bool> _includeFrameworkOption = new Option<bool>("--include-framework") {
+        Description = "Include framework packages (Microsoft.*/System.*/NETStandard.*) in reverse dependency analysis (excluded by default).",
         DefaultValueFactory = _ => false
     };
 
@@ -45,7 +45,7 @@ internal sealed class DepsGraphCommand : BaseCommand {
         Add(_skipTfmCheckOption);
         Add(_prereleaseOption);
         Add(_reverseOption);
-        Add(_excludeFrameworkOption);
+        Add(_includeFrameworkOption);
         Add(_logLevelOption);
         Add(_vsToolsPath);
         Add(_noResolveVsToolsPath);
@@ -76,12 +76,14 @@ internal sealed class DepsGraphCommand : BaseCommand {
         var skipTfmCheck = parseResult.GetValue(_skipTfmCheckOption);
         var includePrerelease = parseResult.GetValue(_prereleaseOption);
         var showReverse = parseResult.GetValue(_reverseOption);
-        var excludeFramework = parseResult.GetValue(_excludeFrameworkOption);
+        var includeFramework = parseResult.GetValue(_includeFrameworkOption);
         var maxDepth = parseResult.GetValue(_maxDepthOption);
 
         var service = new OutdatedService(Console, options);
         
         if (showReverse) {
+            // For reverse dependencies, we exclude framework packages by default (unless --include-framework is specified)
+            var excludeFramework = !includeFramework;
             return await service.BuildReverseDependencyGraphAsync(rootValue, includePrerelease, excludeFramework, maxDepth, cancellationToken: cancellationToken);
         } else {
             return await service.BuildDependencyGraphAsync(rootValue, includePrerelease, maxDepth, cancellationToken: cancellationToken);

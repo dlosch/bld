@@ -35,8 +35,8 @@ internal sealed class ReverseDependencyTreeVisualizer {
         // Summary statistics
         DisplaySummaryStatistics(analysis);
         
-        // Most referenced packages
-        DisplayMostReferencedPackages(analysis);
+        // Most referenced packages section disabled as requested
+        // DisplayMostReferencedPackages(analysis);
         
         // Detailed reverse dependency tree
         await DisplayDetailedReverseDependenciesAsync(analysis, cancellationToken);
@@ -126,9 +126,8 @@ internal sealed class ReverseDependencyTreeVisualizer {
             return;
         }
         
-        // Limit display to prevent overwhelming output
-        var displayLimit = Math.Min(packagesWithDependents.Count, 20);
-        var packagesToShow = packagesWithDependents.Take(displayLimit).ToList();
+        // Display all packages with dependents (no limit per user request)
+        var packagesToShow = packagesWithDependents.ToList();
         
         foreach (var package in packagesToShow) {
             cancellationToken.ThrowIfCancellationRequested();
@@ -164,16 +163,12 @@ internal sealed class ReverseDependencyTreeVisualizer {
                 }
             }
             
-            // Add dependency paths (limited to avoid overwhelming output)
+            // Add all dependency paths (no limit per user request)
             if (package.DependencyPaths.Any()) {
-                var pathsNode = tree.AddNode($"🛤️  [bold]Dependency Paths[/] [dim](showing up to 5)[/]");
+                var pathsNode = tree.AddNode($"🛤️  [bold]Dependency Paths[/]");
                 
-                foreach (var path in package.DependencyPaths.Take(5)) {
+                foreach (var path in package.DependencyPaths) {
                     pathsNode.AddNode($"[dim]{Markup.Escape(path)}[/]");
-                }
-                
-                if (package.DependencyPaths.Count > 5) {
-                    pathsNode.AddNode($"[dim]... and {package.DependencyPaths.Count - 5} more path(s)[/]");
                 }
             }
             
@@ -184,9 +179,7 @@ internal sealed class ReverseDependencyTreeVisualizer {
             await Task.Delay(1, cancellationToken);
         }
         
-        if (packagesWithDependents.Count > displayLimit) {
-            _console?.WriteInfo($"[dim]... and {packagesWithDependents.Count - displayLimit} more package(s) with dependents[/]");
-        }
+        // No limit on display - show all packages per user request
     }
     
     /// <summary>
@@ -206,7 +199,7 @@ internal sealed class ReverseDependencyTreeVisualizer {
         leafTable.AddColumn("Type");
         leafTable.AddColumn("Framework");
         
-        var leafPackagesToShow = analysis.LeafPackages.Take(15).ToList();
+        var leafPackagesToShow = analysis.LeafPackages.ToList(); // Show all leaf packages
         
         foreach (var leafPackage in leafPackagesToShow) {
             var typeIcon = leafPackage.IsExplicit ? "🎯" : "📄";
@@ -225,9 +218,7 @@ internal sealed class ReverseDependencyTreeVisualizer {
         
         _console?.WriteTable(leafTable);
         
-        if (analysis.LeafPackages.Count > 15) {
-            _console?.WriteInfo($"[dim]... and {analysis.LeafPackages.Count - 15} more leaf package(s)[/]");
-        }
+        // All leaf packages are now displayed
     }
     
     /// <summary>

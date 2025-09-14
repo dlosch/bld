@@ -68,10 +68,10 @@ internal static class OutdatedServiceExtensions {
             showVulnerabilities, 
             cancellationToken);
         
-        // Show legacy summary if requested
-        if (showAnalysis) {
-            DisplayLegacySummary(enhancedAnalysis, console);
-        }
+        // Show legacy summary if requested - disabled per user feedback for cleaner output
+        // if (showAnalysis) {
+        //     DisplayLegacySummary(enhancedAnalysis, console);
+        // }
         
         return dependencyGraph;
     }
