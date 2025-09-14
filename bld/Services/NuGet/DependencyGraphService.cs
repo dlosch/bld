@@ -26,7 +26,7 @@ internal class DependencyGraphService {
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Complete dependency graph with both tree and flat representations</returns>
     public async Task<PackageDependencyGraph> BuildDependencyGraphAsync(
-        Dictionary<string, OutdatedService.PackageInfoContainer> allPackageReferences,
+        Dictionary<string, PackageInfoContainer> allPackageReferences,
         bool includePrerelease = false,
         int maxDepth = 8,
         CancellationToken cancellationToken = default) {

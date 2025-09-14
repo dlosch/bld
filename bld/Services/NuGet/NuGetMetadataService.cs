@@ -142,7 +142,7 @@ retry:
 
                                     var bestMatch = _frameworkReducer.GetNearest(reqNuGetFramework, allTfms);
                                     if (bestMatch != null) {
-                                        logger?.WriteDebug($"[{request.PackageId}@{reqFramework}] Best match for {reqFramework} is {bestMatch.GetNormalizedShortFolderName()}");
+                                        logger?.WriteDebug($"[{request.PackageId}@{reqFramework}] Best match for {reqFramework} is {bestMatch.GetShortFolderName()}");
                                         hasMatchingFramework = true;
 
                                         bestMatchDependencyGroup = versionItem.CatalogEntry.DependencyGroups.FirstOrDefault(dg => {
@@ -322,7 +322,7 @@ public record PackageVersionRequest {
     // todo CompatibleTargetFrameworks should be a typed list of NuGetFramework
     public IEnumerable<string> CompatibleTargetFrameworksOrdered => CompatibleTargetFrameworksTyped
         .OrderDescending()
-        .Select(tf => tf.GetNormalizedShortFolderName());
+        .Select(tf => tf.GetShortFolderName());
         
 }
 

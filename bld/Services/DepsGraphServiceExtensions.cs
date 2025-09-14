@@ -8,7 +8,7 @@ namespace bld.Services;
 /// <summary>
 /// Extensions for OutdatedService to provide dependency graph functionality
 /// </summary>
-internal static class OutdatedServiceExtensions {
+internal static class DepsGraphServiceExtensions {
     
     /// <summary>
     /// Builds and displays a comprehensive dependency graph from discovered packages
@@ -22,7 +22,7 @@ internal static class OutdatedServiceExtensions {
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>The built dependency graph</returns>
     public static async Task<PackageDependencyGraph> BuildAndShowDependencyGraphAsync(
-        this Dictionary<string, OutdatedService.PackageInfoContainer> allPackageReferences,
+        this Dictionary<string, PackageInfoContainer> allPackageReferences,
         IConsoleOutput console,
         bool includePrerelease = false,
         int maxDepth = 8,
@@ -87,7 +87,7 @@ internal static class OutdatedServiceExtensions {
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>The reverse dependency analysis</returns>
     public static async Task<ReverseDependencyAnalysis> BuildAndShowReverseDependencyGraphAsync(
-        this Dictionary<string, OutdatedService.PackageInfoContainer> allPackageReferences,
+        this Dictionary<string, PackageInfoContainer> allPackageReferences,
         IConsoleOutput console,
         bool includePrerelease = false,
         int maxDepth = 8,

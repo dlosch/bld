@@ -32,7 +32,7 @@ internal class RecursiveDependencyResolver {
     public async Task<PackageDependencyGraph> ResolveTransitiveDependenciesAsync(
         IEnumerable<string> rootPackageIds,
         DependencyResolutionOptions options,
-        Dictionary<string, OutdatedService.PackageInfoContainer>? existingPackageReferences = null,
+        Dictionary<string, PackageInfoContainer>? existingPackageReferences = null,
         CancellationToken cancellationToken = default) {
         
         ArgumentNullException.ThrowIfNull(rootPackageIds);
@@ -116,7 +116,7 @@ internal class RecursiveDependencyResolver {
     /// Pre-populate cache with existing package references from OutdatedService
     /// </summary>
     private async Task PrePopulateCacheAsync(
-        Dictionary<string, OutdatedService.PackageInfoContainer> existingPackageReferences,
+        Dictionary<string, PackageInfoContainer> existingPackageReferences,
         DependencyResolutionOptions options,
         CancellationToken cancellationToken) {
         
@@ -138,7 +138,7 @@ internal class RecursiveDependencyResolver {
                     var request = new PackageVersionRequest {
                         PackageId = packageId,
                         AllowPrerelease = options.AllowPrerelease,
-                        CompatibleTargetFrameworks = options.TargetFrameworks.Select(tf => tf.GetNormalizedShortFolderName()).ToList()
+                        CompatibleTargetFrameworks = options.TargetFrameworks.Select(tf => tf.GetShortFolderName()).ToList()
                     };
                     
                     var result = await NugetMetadataService.GetLatestVersionWithFrameworkCheckAsync(
@@ -189,7 +189,7 @@ internal class RecursiveDependencyResolver {
                 var request = new PackageVersionRequest {
                     PackageId = packageId,
                     AllowPrerelease = options.AllowPrerelease,
-                    CompatibleTargetFrameworks = options.TargetFrameworks.Select(tf => tf.GetNormalizedShortFolderName()).ToList()
+                    CompatibleTargetFrameworks = options.TargetFrameworks.Select(tf => tf.GetShortFolderName()).ToList()
                 };
                 
                 packageResult = await NugetMetadataService.GetLatestVersionWithFrameworkCheckAsync(
@@ -251,7 +251,7 @@ internal class RecursiveDependencyResolver {
             return new DependencyGraphNode {
                 PackageId = packageId,
                 Version = version,
-                TargetFramework = targetFramework.GetNormalizedShortFolderName(),
+                TargetFramework = targetFramework.GetShortFolderName(),
                 IsPrerelease = packageResult.IsPrerelease,
                 Dependencies = childDependencies,
                 DependencyGroup = dependencyGroup,
@@ -292,7 +292,7 @@ internal class RecursiveDependencyResolver {
     /// Creates a cache key for package lookup
     /// </summary>
     private static string CreateCacheKey(string packageId, IReadOnlyList<NuGetFramework> targetFrameworks) {
-        var frameworksKey = !targetFrameworks.Any() ? "any" : string.Join(",", targetFrameworks.Select(f => f.GetNormalizedShortFolderName()).OrderBy(f => f));
+        var frameworksKey = !targetFrameworks.Any() ? "any" : string.Join(",", targetFrameworks.Select(f => f.GetShortFolderName()).OrderBy(f => f));
         return $"{packageId}|{frameworksKey}";
     }
 }

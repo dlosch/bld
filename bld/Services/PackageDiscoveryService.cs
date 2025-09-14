@@ -24,7 +24,7 @@ internal class PackageDiscoveryService {
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Dictionary of discovered package references</returns>
     [MethodImpl(MethodImplOptions.NoInlining)]
-    public async Task<(Dictionary<string, OutdatedService.PackageInfoContainer> PackageReferences, int ProjectCount, ErrorSink ErrorSink)> DiscoverPackageReferencesAsync(
+    public async Task<(Dictionary<string, PackageInfoContainer> PackageReferences, int ProjectCount, ErrorSink ErrorSink)> DiscoverPackageReferencesAsync(
         string rootPath,
         CancellationToken cancellationToken = default) {
         
@@ -36,7 +36,7 @@ internal class PackageDiscoveryService {
         var fileSystem = new FileSystem(_console, errorSink);
         var cache = new ProjCfgCache(_console);
 
-        var allPackageReferences = new Dictionary<string, OutdatedService.PackageInfoContainer>(StringComparer.OrdinalIgnoreCase);
+        var allPackageReferences = new Dictionary<string, PackageInfoContainer>(StringComparer.OrdinalIgnoreCase);
 
         try {
             var projParser = new ProjParser(_console, errorSink, _options);
@@ -44,7 +44,7 @@ internal class PackageDiscoveryService {
             await foreach (var slnPath in slnScanner.Enumerate(rootPath)) {
                 await _console.StartStatusAsync($"Processing solution {slnPath}", async ctx => {
                     await foreach (var projCfg in slnParser.ParseSolution(slnPath, fileSystem)) {
-                        var packageRefs = new OutdatedService.PackageInfoContainer();
+                        var packageRefs = new PackageInfoContainer();
                         
                         if (!string.Equals(projCfg.Configuration, "Release", StringComparison.OrdinalIgnoreCase)) continue;
                         if (!cache.Add(projCfg)) continue;
@@ -55,7 +55,7 @@ internal class PackageDiscoveryService {
                             continue;
                         }
 
-                        var exnm = refs.PackageReferences.Select(re => new OutdatedService.PackageInfo {
+                        var exnm = refs.PackageReferences.Select(re => new PackageInfo {
                             Id = re.Key,
                             FromProps = refs.UseCpm ?? false,
                             TargetFramework = refs.TargetFramework,
@@ -71,7 +71,7 @@ internal class PackageDiscoveryService {
 
                         foreach (var pkg in packageRefs) {
                             if (!allPackageReferences.TryGetValue(pkg.Id, out var list)) {
-                                list = new OutdatedService.PackageInfoContainer();
+                                list = new PackageInfoContainer();
                                 allPackageReferences[pkg.Id] = list;
                             }
                             list.Add(pkg);

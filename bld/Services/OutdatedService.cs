@@ -166,7 +166,7 @@ internal class OutdatedService {
 
 
                 if (targetVer is null) {
-                    _console.WriteInfo($"No compatible version found for {packageReference.Key} {packageReference.Value.Tfm} {result?.ToString()} {string.Join(',', result?.TargetFrameworkVersions?.Select(x => x.Key.GetNormalizedShortFolderName()) ?? Array.Empty<string>())}");
+                    _console.WriteInfo($"No compatible version found for {packageReference.Key} {packageReference.Value.Tfm} {result?.ToString()} {string.Join(',', result?.TargetFrameworkVersions?.Select(x => x.Key.GetShortFolderName()) ?? Array.Empty<string>())}");
                     return;
                 }
                 if (!NuGetVersion.TryParse(targetVer, out var latestVer)) {
@@ -184,7 +184,7 @@ internal class OutdatedService {
                 );
             }
             catch (Exception xcptn) {
-                _console.WriteWarning($"Failed to parse version for {packageReference.Key}: {packageReference.Value.Tfm} {string.Join(',', result?.TargetFrameworkVersions?.Select(x => x.Key.GetNormalizedShortFolderName()) ?? Array.Empty<string>())} {xcptn.Message}");
+                _console.WriteWarning($"Failed to parse version for {packageReference.Key}: {packageReference.Value.Tfm} {string.Join(',', result?.TargetFrameworkVersions?.Select(x => x.Key.GetShortFolderName()) ?? Array.Empty<string>())} {xcptn.Message}");
             }
         });
 
@@ -216,7 +216,7 @@ internal class OutdatedService {
 
         // Prepare batch updates: props file -> (package -> version) and project -> (package -> version)
         var propsUpdates = new Dictionary<string, Dictionary<string, (string target, string? current)>>(StringComparer.OrdinalIgnoreCase);
-        var projectUpdates = new Dictionary<string, Dictionary<string, (string target,string? current,VersionReason reason)>>(StringComparer.OrdinalIgnoreCase);
+        var projectUpdates = new Dictionary<string, Dictionary<string, (string target, string? current, VersionReason reason)>>(StringComparer.OrdinalIgnoreCase);
 
         static bool HasVersionUpdate(string latest, string current) {
             if (string.IsNullOrWhiteSpace(current)) return true;
@@ -246,7 +246,7 @@ internal class OutdatedService {
                 //else if (!usage.FromProps) {
                 else {
                     if (!projectUpdates.TryGetValue(usage.ProjectPath, out var pmap)) {
-                        pmap = new Dictionary<string, (string,string?,VersionReason)>(StringComparer.OrdinalIgnoreCase);
+                        pmap = new Dictionary<string, (string, string?, VersionReason)>(StringComparer.OrdinalIgnoreCase);
                         projectUpdates[usage.ProjectPath] = pmap;
                     }
                     static VersionReason Reason(Pkg item) {
@@ -262,7 +262,7 @@ internal class OutdatedService {
         //////////
         ///
         {
-           
+
             foreach (var kvp in propsUpdates.OrderBy(kvp => kvp.Key)) {
                 if (!kvp.Value.Any()) continue;
 
@@ -286,7 +286,7 @@ internal class OutdatedService {
         {
             foreach (var kvp in projectUpdates.OrderBy(kvp => kvp.Key)) {
                 if (!kvp.Value.Any()) continue;
-                
+
                 _console.WriteHeader($"{kvp.Key}", "Version upgrades to project file.");
                 var table = new Table().Border(TableBorder.Rounded);
                 table.AddColumn(new TableColumn("Package").LeftAligned());
@@ -341,174 +341,6 @@ internal class OutdatedService {
         errorSink.WriteTo();
 
         return 0;
-    }
-
-    /// <summary>
-    /// Builds and analyzes a comprehensive dependency graph from discovered package references
-    /// </summary>
-    /// <param name="rootPath">Root path to scan for solutions/projects</param>
-    /// <param name="includePrerelease">Whether to include prerelease packages</param>
-    /// <param name="maxDepth">Maximum depth to traverse dependencies</param>
-    /// <param name="showAnalysis">Whether to show detailed analysis</param>
-    /// <param name="exportPath">Optional path to export dependency graph data</param>
-    /// <param name="cancellationToken">Cancellation token</param>
-    /// <returns>Exit code</returns>
-    [MethodImpl(MethodImplOptions.NoInlining)]
-    public async Task<int> BuildDependencyGraphAsync(
-        string rootPath, 
-        bool includePrerelease = false, 
-        int maxDepth = 8, 
-        bool showAnalysis = true,
-        string? exportPath = null,
-        CancellationToken cancellationToken = default) {
-        
-        _console.WriteRule("[bold blue]bld dependency-graph (BETA)[/]");
-        _console.WriteInfo("Discovering packages and building dependency graph...");
-
-        var stopwatch = Stopwatch.StartNew();
-
-        var discoveryService = new PackageDiscoveryService(_console, _options);
-        var (allPackageReferences, projectCount, errorSink) = await discoveryService.DiscoverPackageReferencesAsync(rootPath, cancellationToken);
-
-        if (allPackageReferences.Count == 0) {
-            _console.WriteInfo("No package references found.");
-            return 0;
-        }
-
-        _console.WriteInfo($"Found {allPackageReferences.Count} unique packages across {projectCount} projects");
-
-        // Now build the dependency graph using the new functionality
-        try {
-            var dependencyGraph = await allPackageReferences.BuildAndShowDependencyGraphAsync(
-                _console, 
-                includePrerelease, 
-                maxDepth, 
-                showAnalysis,
-                true, // showVulnerabilities
-                cancellationToken);
-
-            // Export if requested
-            if (!string.IsNullOrEmpty(exportPath)) {
-                var format = Path.GetExtension(exportPath).TrimStart('.').ToLowerInvariant();
-                if (string.IsNullOrEmpty(format)) format = "json";
-                
-                await dependencyGraph.ExportDependencyGraphAsync(exportPath, format, _console);
-            }
-
-            stopwatch.Stop();
-            _console.WriteInfo($"Total elapsed time: {stopwatch.Elapsed}");
-            errorSink.WriteTo();
-
-            return 0;
-        }
-        catch (Exception ex) {
-            _console.WriteException(ex);
-            return 1;
-        }
-    }
-
-    /// <summary>
-    /// Builds and displays a reverse dependency graph from discovered package references
-    /// </summary>
-    /// <param name="rootPath">Root path to scan for solutions/projects</param>
-    /// <param name="includePrerelease">Whether to include prerelease packages</param>
-    /// <param name="excludeFrameworkPackages">Whether to exclude Microsoft/System/NETStandard packages</param>
-    /// <param name="maxDepth">Maximum depth to traverse dependencies</param>
-    /// <param name="exportPath">Optional path to export reverse dependency graph data</param>
-    /// <param name="cancellationToken">Cancellation token</param>
-    /// <returns>Exit code</returns>
-    [MethodImpl(MethodImplOptions.NoInlining)]
-    public async Task<int> BuildReverseDependencyGraphAsync(
-        string rootPath,
-        bool includePrerelease = false,
-        bool excludeFrameworkPackages = false,
-        int maxDepth = 8,
-        string? exportPath = null,
-        CancellationToken cancellationToken = default) {
-        
-        _console.WriteRule("[bold blue]bld reverse-dependency-graph (BETA)[/]");
-        _console.WriteInfo("Discovering packages and building reverse dependency graph...");
-
-        var stopwatch = Stopwatch.StartNew();
-
-        var discoveryService = new PackageDiscoveryService(_console, _options);
-        var (allPackageReferences, projectCount, errorSink) = await discoveryService.DiscoverPackageReferencesAsync(rootPath, cancellationToken);
-
-        if (allPackageReferences.Count == 0) {
-            _console.WriteInfo("No package references found.");
-            return 0;
-        }
-
-        _console.WriteInfo($"Found {allPackageReferences.Count} unique packages across {projectCount} projects");
-
-        // Now build the reverse dependency graph using the new functionality
-        try {
-            var reverseAnalysis = await allPackageReferences.BuildAndShowReverseDependencyGraphAsync(
-                _console, 
-                includePrerelease, 
-                maxDepth, 
-                excludeFrameworkPackages,
-                cancellationToken);
-
-            // Export if requested (would need to implement export for reverse analysis)
-            if (!string.IsNullOrEmpty(exportPath)) {
-                await ExportReverseAnalysisAsync(reverseAnalysis, exportPath, _console, cancellationToken);
-            }
-
-            stopwatch.Stop();
-            _console.WriteInfo($"Total elapsed time: {stopwatch.Elapsed}");
-            errorSink.WriteTo();
-
-            return 0;
-        }
-        catch (Exception ex) {
-            _console.WriteException(ex);
-            return 1;
-        }
-    }
-
-    /// <summary>
-    /// Exports reverse dependency analysis to various formats
-    /// </summary>
-    private static async Task ExportReverseAnalysisAsync(
-        ReverseDependencyAnalysis analysis,
-        string outputPath,
-        IConsoleOutput console,
-        CancellationToken cancellationToken = default) {
-        
-        var directory = Path.GetDirectoryName(outputPath);
-        if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory)) {
-            Directory.CreateDirectory(directory);
-        }
-
-        var format = Path.GetExtension(outputPath).TrimStart('.').ToLowerInvariant();
-        if (string.IsNullOrEmpty(format)) format = "json";
-
-        switch (format) {
-            case "json":
-                var json = System.Text.Json.JsonSerializer.Serialize(analysis, new System.Text.Json.JsonSerializerOptions {
-                    WriteIndented = true
-                });
-                await File.WriteAllTextAsync(outputPath, json, cancellationToken);
-                break;
-            
-            case "csv":
-                var csv = new System.Text.StringBuilder();
-                csv.AppendLine("PackageId,Version,TargetFramework,IsExplicit,IsFrameworkPackage,ReferenceCount,DependentPackages");
-                
-                foreach (var node in analysis.ReverseNodes.OrderBy(n => n.PackageId)) {
-                    var dependentPackageIds = string.Join("|", node.DependentPackages.Select(d => d.PackageId));
-                    csv.AppendLine($"{node.PackageId},{node.Version},{node.TargetFramework},{node.IsExplicit},{node.IsFrameworkPackage},{node.ReferenceCount},\"{dependentPackageIds}\"");
-                }
-                
-                await File.WriteAllTextAsync(outputPath, csv.ToString(), cancellationToken);
-                break;
-            
-            default:
-                throw new ArgumentException($"Unsupported export format: {format}");
-        }
-
-        console.WriteInfo($"Reverse dependency analysis exported to: {outputPath}");
     }
 
     private async Task UpdatePropsFileAsync(string propsPath, IReadOnlyDictionary<string, (string target, string? current)> updates, CancellationToken cancellationToken) {
@@ -591,89 +423,89 @@ internal class OutdatedService {
         }
     }
 
-    internal class PackageInfoContainer : IEnumerable<OutdatedService.PackageInfo> {
-        private readonly HashSet<PackageInfo> _items = new(new PackageInfoComparer());
-        internal void Add(PackageInfo item) {
-            if (item.TargetFrameworks is { } && item.TargetFrameworks.Length > 0) {
-                for (int odx = 0; odx < item.TargetFrameworks.Length; odx++) {
-                    var nuTfm = NuGetFramework.Parse(item.TargetFrameworks[odx]);
-                    _tfms.Add(nuTfm);
-                }
-            }
-            else if (item.TargetFramework is { }) {
-                var nuTfm = NuGetFramework.Parse(item.TargetFramework);
-                _tfms.Add(nuTfm);
-
-            }
-            var added = _items.Add(item);
-            if (!added) {
-            }
-        }
-
-        internal void AddRange(IEnumerable<PackageInfo> exnm) {
-            foreach (var item in exnm) Add(item);
-        }
-
-        public IEnumerable<string> Tfms => _tfms.Select(nuTfm => nuTfm.GetNormalizedShortFolderName());
-        public string? Tfm => _tfms.Count() == 1 ? _tfms.First().GetNormalizedShortFolderName() : default;
-        private readonly HashSet<NuGetFramework> _tfms = new();
-
-        public IEnumerator<PackageInfo> GetEnumerator() => _items.GetEnumerator();
-        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => _items.GetEnumerator();
-    }
-
-    internal sealed class PackageInfoComparer : IEqualityComparer<PackageInfo> {
-        public bool Equals(PackageInfo? x, PackageInfo? y) {
-            if (ReferenceEquals(x, y)) return true;
-            if (x is null || y is null) return false;
-            return string.Equals(x.Id, y.Id, StringComparison.OrdinalIgnoreCase)
-                && string.Equals(x.Version, y.Version, StringComparison.OrdinalIgnoreCase)
-                && string.Equals(x.ProjectPath, y.ProjectPath, StringComparison.OrdinalIgnoreCase)
-                &&
-                    //string.Equals(x.TargetFramework, y.TargetFramework, StringComparison.OrdinalIgnoreCase)
-                    //&& ((x.TargetFrameworks == null && y.TargetFrameworks == null) ||
-                    (x.TargetFrameworks != null && y.TargetFrameworks != null &&
-                     x.TargetFrameworks.SequenceEqual(y.TargetFrameworks, StringComparer.OrdinalIgnoreCase))
-                //)
-                && string.Equals(x.PropsPath, y.PropsPath, StringComparison.OrdinalIgnoreCase)
-                && x.FromProps == y.FromProps;
-        }
-
-        public int GetHashCode(PackageInfo obj) {
-            if (obj is null) return 0;
-            int hash = 17;
-            hash = hash * 23 + (obj.Id?.ToLowerInvariant().GetHashCode() ?? 0);
-            hash = hash * 23 + (obj.Version?.ToLowerInvariant().GetHashCode() ?? 0);
-            hash = hash * 23 + (obj.ProjectPath?.ToLowerInvariant().GetHashCode() ?? 0);
-            //hash = hash * 23 + (obj.TargetFramework?.ToLowerInvariant().GetHashCode() ?? 0);
-            if (obj.TargetFrameworks != null) {
-                foreach (var tfm in obj.TargetFrameworks) {
-                    hash = hash * 23 + (tfm?.ToLowerInvariant().GetHashCode() ?? 0);
-                }
-            }
-            hash = hash * 23 + (obj.PropsPath?.ToLowerInvariant().GetHashCode() ?? 0);
-            hash = hash * 23 + obj.FromProps.GetHashCode();
-            return hash;
-        }
-    }
-
-    internal record class PackageInfo {
-        public string Id { get; set; } = string.Empty;
-        public Pkg Item { get; set; } = default!;
-
-        public string Version => Item.EffectiveVersion; // { get; set; } = string.Empty;
-
-        public string ProjectPath { get; set; } = string.Empty;
-        public string TargetFramework { get; set; } = default!;
-        public string[] TargetFrameworks { get; set; } = default!;
-        public string? PropsPath { get; set; }
-        public bool FromProps { get; set; }
-
-        public bool CustomVersion => !string.IsNullOrWhiteSpace(Item.Version) || !string.IsNullOrWhiteSpace(Item.VersionOverride);
-    }
-
-
 }
+
+internal class PackageInfoContainer : IEnumerable<PackageInfo> {
+    private readonly HashSet<PackageInfo> _items = new(new PackageInfoComparer());
+    internal void Add(PackageInfo item) {
+        if (item.TargetFrameworks is { } && item.TargetFrameworks.Length > 0) {
+            for (int odx = 0; odx < item.TargetFrameworks.Length; odx++) {
+                var nuTfm = NuGetFramework.Parse(item.TargetFrameworks[odx]);
+                _tfms.Add(nuTfm);
+            }
+        }
+        else if (item.TargetFramework is { }) {
+            var nuTfm = NuGetFramework.Parse(item.TargetFramework);
+            _tfms.Add(nuTfm);
+
+        }
+        var added = _items.Add(item);
+        if (!added) {
+        }
+    }
+
+    internal void AddRange(IEnumerable<PackageInfo> exnm) {
+        foreach (var item in exnm) Add(item);
+    }
+
+    public IEnumerable<string> Tfms => _tfms.Select(nuTfm => nuTfm.GetShortFolderName());
+    public string? Tfm => _tfms.Count() == 1 ? _tfms.First().GetShortFolderName() : default;
+    private readonly HashSet<NuGetFramework> _tfms = new();
+
+    public IEnumerator<PackageInfo> GetEnumerator() => _items.GetEnumerator();
+    System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => _items.GetEnumerator();
+}
+
+internal sealed class PackageInfoComparer : IEqualityComparer<PackageInfo> {
+    public bool Equals(PackageInfo? x, PackageInfo? y) {
+        if (ReferenceEquals(x, y)) return true;
+        if (x is null || y is null) return false;
+        return string.Equals(x.Id, y.Id, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(x.Version, y.Version, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(x.ProjectPath, y.ProjectPath, StringComparison.OrdinalIgnoreCase)
+            &&
+                //string.Equals(x.TargetFramework, y.TargetFramework, StringComparison.OrdinalIgnoreCase)
+                //&& ((x.TargetFrameworks == null && y.TargetFrameworks == null) ||
+                (x.TargetFrameworks != null && y.TargetFrameworks != null &&
+                 x.TargetFrameworks.SequenceEqual(y.TargetFrameworks, StringComparer.OrdinalIgnoreCase))
+            //)
+            && string.Equals(x.PropsPath, y.PropsPath, StringComparison.OrdinalIgnoreCase)
+            && x.FromProps == y.FromProps;
+    }
+
+    public int GetHashCode(PackageInfo obj) {
+        if (obj is null) return 0;
+        int hash = 17;
+        hash = hash * 23 + (obj.Id?.ToLowerInvariant().GetHashCode() ?? 0);
+        hash = hash * 23 + (obj.Version?.ToLowerInvariant().GetHashCode() ?? 0);
+        hash = hash * 23 + (obj.ProjectPath?.ToLowerInvariant().GetHashCode() ?? 0);
+        //hash = hash * 23 + (obj.TargetFramework?.ToLowerInvariant().GetHashCode() ?? 0);
+        if (obj.TargetFrameworks != null) {
+            foreach (var tfm in obj.TargetFrameworks) {
+                hash = hash * 23 + (tfm?.ToLowerInvariant().GetHashCode() ?? 0);
+            }
+        }
+        hash = hash * 23 + (obj.PropsPath?.ToLowerInvariant().GetHashCode() ?? 0);
+        hash = hash * 23 + obj.FromProps.GetHashCode();
+        return hash;
+    }
+}
+
+internal record class PackageInfo {
+    public string Id { get; set; } = string.Empty;
+    public Pkg Item { get; set; } = default!;
+
+    public string Version => Item.EffectiveVersion; // { get; set; } = string.Empty;
+
+    public string ProjectPath { get; set; } = string.Empty;
+    public string TargetFramework { get; set; } = default!;
+    public string[] TargetFrameworks { get; set; } = default!;
+    public string? PropsPath { get; set; }
+    public bool FromProps { get; set; }
+
+    public bool CustomVersion => !string.IsNullOrWhiteSpace(Item.Version) || !string.IsNullOrWhiteSpace(Item.VersionOverride);
+}
+
 
 internal enum VersionReason {
     PackageReferenceProj,

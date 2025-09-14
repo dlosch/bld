@@ -18,9 +18,8 @@ public class DotNetTests(ITestOutputHelper Console) {
     }
 }
 public class NuGetFrameworkTests(ITestOutputHelper Console) {
-    [Fact]
-    public void Test1() {
-        string[] tfms = new[]
+
+    string[] tfms = new[]
         {
             ".NETStandard,Version=v2.0",
             ".NETFramework,Version=v4.7.2",
@@ -32,25 +31,28 @@ public class NuGetFrameworkTests(ITestOutputHelper Console) {
             ".NETFramework4.6.2",
             "net8.0",
             "net9.0",
+            "net10.0",
+            "net10",
+            "net100",
             "net9",
             "net9000",
             "net472x",
         };
 
+    [Fact]
+    public void Test1() {
+
+
         foreach (var tfm in tfms) {
             var framework = NuGetFramework.Parse(tfm);
+            string fx = framework.Framework;
             string normalizedTfm = framework.GetShortFolderName();
-            string customNormalizedTfm = framework.GetNormalizedShortFolderName();
-            
-            Console.WriteLine($"Original: {tfm}, Standard: {normalizedTfm}, Normalized: {customNormalizedTfm}");
-            
+
+            Console.WriteLine($"Original: {tfm}, Fx '{fx}' Standard: '{normalizedTfm}'");
+
             // Test that our normalization handles the net100 -> net10.0 case
-            if (normalizedTfm == "net100") {
-                Assert.Equal("net10.0", customNormalizedTfm);
-            } else {
-                // For other cases, they should be the same unless there's another issue we need to handle
-                Assert.Equal(normalizedTfm, customNormalizedTfm);
-            }
+            Assert.NotEqual("net100", normalizedTfm);
+
         }
     }
 }

@@ -79,7 +79,7 @@ internal sealed class DepsGraphCommand : BaseCommand {
         var includeFramework = parseResult.GetValue(_includeFrameworkOption);
         var maxDepth = parseResult.GetValue(_maxDepthOption);
 
-        var service = new OutdatedService(Console, options);
+        var service = new DepsGraphService(Console, options);
         
         if (showReverse) {
             // For reverse dependencies, we exclude framework packages by default (unless --include-framework is specified)
