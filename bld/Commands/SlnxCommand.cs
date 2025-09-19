@@ -40,12 +40,19 @@ internal sealed class SlnxCommand : BaseCommand
         }
     };
 
+    private readonly Option<int> _obsoleteThresholdOption = new Option<int>("--obsolete-threshold", "-t")
+    {
+        Description = "Threshold in months for considering projects obsolete based on last git commit. Default is 6 months.",
+        DefaultValueFactory = _ => 6
+    };
+
     public SlnxCommand(IConsoleOutput console) : base("slnx", "Create or update a .slnx file with all projects organized by type.", console)
     {
         Add(_rootOption);
         Add(_depthOption);
         Add(_outputOption);
         Add(_updateOption);
+        Add(_obsoleteThresholdOption);
         Add(_logLevelOption);
         Add(_vsToolsPath);
         Add(_noResolveVsToolsPath);
@@ -96,11 +103,12 @@ internal sealed class SlnxCommand : BaseCommand
 
         var outputFile = parseResult.GetValue(_outputOption);
         var updateExisting = parseResult.GetValue(_updateOption);
+        var obsoleteThresholdMonths = parseResult.GetValue(_obsoleteThresholdOption);
 
-        return await CreateSlnxFileAsync(allRootPaths, outputFile, updateExisting, options);
+        return await CreateSlnxFileAsync(allRootPaths, outputFile, updateExisting, obsoleteThresholdMonths, options);
     }
 
-    private async Task<int> CreateSlnxFileAsync(List<string> rootPaths, string? outputFile, bool updateExisting, CleaningOptions options)
+    private async Task<int> CreateSlnxFileAsync(List<string> rootPaths, string? outputFile, bool updateExisting, int obsoleteThresholdMonths, CleaningOptions options)
     {
         try
         {
@@ -136,7 +144,7 @@ internal sealed class SlnxCommand : BaseCommand
 
             // Parse projects and categorize them
             var projectInfos = await ParseProjectsAsync(projectFiles, options);
-            var categorizedProjects = CategorizeProjects(projectInfos);
+            var categorizedProjects = CategorizeProjects(projectInfos, obsoleteThresholdMonths);
 
             // Generate slnx content
             var slnxContent = GenerateSlnxContent(categorizedProjects);
@@ -196,6 +204,108 @@ internal sealed class SlnxCommand : BaseCommand
 
         // Remove duplicates that might occur if root paths overlap
         return projectFiles.Distinct().ToList();
+    }
+
+    private DateTime? GetLastCommitDate(string projectPath)
+    {
+        try
+        {
+            var projectDir = Path.GetDirectoryName(projectPath);
+            if (string.IsNullOrEmpty(projectDir))
+                return null;
+
+            // Find the git repository root by walking up the directory tree
+            var gitRepoPath = FindGitRepository(projectDir);
+            if (string.IsNullOrEmpty(gitRepoPath))
+                return null;
+
+            // Get the last commit date for files in the project directory and its subdirectories
+            var relativePath = Path.GetRelativePath(gitRepoPath, projectDir).Replace('\\', '/');
+            
+            var processStartInfo = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "git",
+                Arguments = $"log -1 --format=%ct -- \"{relativePath}\"",
+                WorkingDirectory = gitRepoPath,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+
+            using var process = System.Diagnostics.Process.Start(processStartInfo);
+            if (process == null)
+                return null;
+
+            var output = process.StandardOutput.ReadToEnd().Trim();
+            var error = process.StandardError.ReadToEnd().Trim();
+            process.WaitForExit();
+
+            if (process.ExitCode != 0 || string.IsNullOrEmpty(output))
+            {
+                // If no commits found for the specific path, get the last commit for the entire repo
+                processStartInfo.Arguments = "log -1 --format=%ct";
+                using var fallbackProcess = System.Diagnostics.Process.Start(processStartInfo);
+                if (fallbackProcess == null)
+                    return null;
+
+                output = fallbackProcess.StandardOutput.ReadToEnd().Trim();
+                fallbackProcess.WaitForExit();
+
+                if (fallbackProcess.ExitCode != 0 || string.IsNullOrEmpty(output))
+                    return null;
+            }
+
+            if (long.TryParse(output, out var unixTimestamp))
+            {
+                return DateTimeOffset.FromUnixTimeSeconds(unixTimestamp).DateTime;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteVerbose($"Failed to get git commit date for {projectPath}: {ex.Message}");
+        }
+
+        return null;
+    }
+
+    private string? FindGitRepository(string startPath)
+    {
+        var currentPath = Path.GetFullPath(startPath);
+        
+        while (!string.IsNullOrEmpty(currentPath))
+        {
+            var gitPath = Path.Combine(currentPath, ".git");
+            if (Directory.Exists(gitPath) || File.Exists(gitPath))
+            {
+                return currentPath;
+            }
+
+            var parentPath = Path.GetDirectoryName(currentPath);
+            if (parentPath == currentPath) // Reached root
+                break;
+            
+            currentPath = parentPath;
+        }
+
+        return null;
+    }
+
+    private string GetObsoleteSubFolder(DateTime? lastCommitDate)
+    {
+        if (!lastCommitDate.HasValue)
+            return "Unknown";
+
+        var monthsOld = (int)((DateTime.Now - lastCommitDate.Value).TotalDays / 30.44); // Average days per month
+
+        return monthsOld switch
+        {
+            < 6 => "Recent", // This shouldn't happen in obsolete group, but safety net
+            >= 6 and < 12 => "6-12 Months",
+            >= 12 and < 24 => "1-2 Years", 
+            >= 24 and < 36 => "2-3 Years",
+            >= 36 => "3+ Years"
+        };
     }
 
     private async Task<List<ProjectInfo>> ParseProjectsAsync(List<string> projectFiles, CleaningOptions options)
@@ -308,24 +418,40 @@ internal sealed class SlnxCommand : BaseCommand
         };
     }
 
-    private Dictionary<SlnxProjectType, List<ProjectInfo>> CategorizeProjects(List<ProjectInfo> projects)
+    private Dictionary<string, List<ProjectInfo>> CategorizeProjects(List<ProjectInfo> projects, int obsoleteThresholdMonths)
     {
-        var categorized = new Dictionary<SlnxProjectType, List<ProjectInfo>>();
+        var categorized = new Dictionary<string, List<ProjectInfo>>();
+        var obsoleteThreshold = DateTime.Now.AddMonths(-obsoleteThresholdMonths);
 
         foreach (var project in projects)
         {
-            var type = project.SlnxProjectType;
-            if (!categorized.ContainsKey(type))
+            var lastCommitDate = GetLastCommitDate(project.ProjectPath);
+            var isObsolete = lastCommitDate.HasValue && lastCommitDate.Value < obsoleteThreshold;
+
+            string categoryKey;
+            if (isObsolete)
             {
-                categorized[type] = new List<ProjectInfo>();
+                var subFolder = GetObsoleteSubFolder(lastCommitDate);
+                categoryKey = $"Obsolete/{subFolder}";
+                Console.WriteVerbose($"Project {project.ProjectName} marked as obsolete (last commit: {lastCommitDate?.ToString("yyyy-MM-dd") ?? "unknown"})");
             }
-            categorized[type].Add(project);
+            else
+            {
+                var type = project.SlnxProjectType;
+                categoryKey = GetFolderName(type);
+            }
+
+            if (!categorized.ContainsKey(categoryKey))
+            {
+                categorized[categoryKey] = new List<ProjectInfo>();
+            }
+            categorized[categoryKey].Add(project);
         }
 
         return categorized;
     }
 
-    private string GenerateSlnxContent(Dictionary<SlnxProjectType, List<ProjectInfo>> categorizedProjects)
+    private string GenerateSlnxContent(Dictionary<string, List<ProjectInfo>> categorizedProjects)
     {
         var doc = new XDocument(
             new XDeclaration("1.0", "utf-8", null),
@@ -340,12 +466,17 @@ internal sealed class SlnxCommand : BaseCommand
 
         var solutionElement = doc.Root!;
 
+        // Sort categories: non-obsolete first, then obsolete
+        var sortedCategories = categorizedProjects
+            .OrderBy(kvp => kvp.Key.StartsWith("Obsolete/") ? 1 : 0)
+            .ThenBy(kvp => kvp.Key);
+
         // Add projects organized by folders
-        foreach (var category in categorizedProjects.OrderBy(kvp => kvp.Key.ToString()))
+        foreach (var category in sortedCategories)
         {
-            var folderName = GetFolderName(category.Key);
+            var folderName = category.Key;
             
-            if (category.Value.Count == 1 && category.Key == SlnxProjectType.Unknown)
+            if (category.Value.Count == 1 && folderName == "Other")
             {
                 // Don't create a folder for single unknown projects
                 var project = category.Value.First();
@@ -393,12 +524,18 @@ internal sealed class SlnxCommand : BaseCommand
         return relativePath.Replace('\\', '/'); // Use forward slashes for consistency
     }
 
-    private void DisplaySummary(Dictionary<SlnxProjectType, List<ProjectInfo>> categorizedProjects)
+    private void DisplaySummary(Dictionary<string, List<ProjectInfo>> categorizedProjects)
     {
         Console.WriteInfo("\nProject Summary:");
-        foreach (var category in categorizedProjects.OrderBy(kvp => kvp.Key.ToString()))
+        
+        // Sort categories: non-obsolete first, then obsolete
+        var sortedCategories = categorizedProjects
+            .OrderBy(kvp => kvp.Key.StartsWith("Obsolete/") ? 1 : 0)
+            .ThenBy(kvp => kvp.Key);
+            
+        foreach (var category in sortedCategories)
         {
-            var folderName = GetFolderName(category.Key);
+            var folderName = category.Key;
             var count = category.Value.Count;
             Console.WriteInfo($"  {folderName}: {count} project{(count == 1 ? "" : "s")}");
             

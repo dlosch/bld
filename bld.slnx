@@ -4,7 +4,7 @@
     <Platform Name="x64" />
     <Platform Name="x86" />
   </Configurations>
-  <Folder Name="/Console/">
+  <Folder Name="/Obsolete/Recent/">
     <Project Path="bld/bld.csproj" />
   </Folder>
 </Solution>
