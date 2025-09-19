@@ -22,6 +22,24 @@ internal sealed class SlnxCommand : BaseCommand
         DefaultValueFactory = _ => true
     };
 
+    private readonly Argument<string[]> _rootsArgument = new Argument<string[]>("roots")
+    {
+        Arity = ArgumentArity.ZeroOrMore,
+        Description = "Root directories to scan for projects. Defaults to current directory if none specified.",
+        Validators = {
+            result => {
+                var paths = result.GetValueOrDefault<string[]>() ?? Array.Empty<string>();
+                foreach (var path in paths)
+                {
+                    if (!string.IsNullOrEmpty(path) && !Directory.Exists(path) && !File.Exists(path))
+                    {
+                        result.AddError($"{path} does not exist.");
+                    }
+                }
+            }
+        }
+    };
+
     public SlnxCommand(IConsoleOutput console) : base("slnx", "Create or update a .slnx file with all projects organized by type.", console)
     {
         Add(_rootOption);
@@ -31,7 +49,7 @@ internal sealed class SlnxCommand : BaseCommand
         Add(_logLevelOption);
         Add(_vsToolsPath);
         Add(_noResolveVsToolsPath);
-        Add(_rootArgument);
+        Add(_rootsArgument);
     }
 
     protected override async Task<int> ExecuteAsync(ParseResult parseResult, CancellationToken cancellationToken)
@@ -56,39 +74,57 @@ internal sealed class SlnxCommand : BaseCommand
 
         base.Console = new SpectreConsoleOutput(options.LogLevel);
 
-        var rootPath = parseResult.GetValue(_rootArgument) ?? parseResult.GetValue(_rootOption);
-        if (string.IsNullOrWhiteSpace(rootPath))
+        var rootPaths = parseResult.GetValue(_rootsArgument) ?? Array.Empty<string>();
+        var singleRootFromOption = parseResult.GetValue(_rootArgument) ?? parseResult.GetValue(_rootOption);
+        
+        // Combine argument roots with option root if specified
+        var allRootPaths = new List<string>();
+        if (rootPaths.Any())
         {
-            rootPath = Environment.CurrentDirectory;
+            allRootPaths.AddRange(rootPaths);
+        }
+        if (!string.IsNullOrWhiteSpace(singleRootFromOption))
+        {
+            allRootPaths.Add(singleRootFromOption);
+        }
+        
+        // Default to current directory if no roots specified
+        if (!allRootPaths.Any())
+        {
+            allRootPaths.Add(Environment.CurrentDirectory);
         }
 
         var outputFile = parseResult.GetValue(_outputOption);
         var updateExisting = parseResult.GetValue(_updateOption);
 
-        return await CreateSlnxFileAsync(rootPath, outputFile, updateExisting, options);
+        return await CreateSlnxFileAsync(allRootPaths, outputFile, updateExisting, options);
     }
 
-    private async Task<int> CreateSlnxFileAsync(string rootPath, string? outputFile, bool updateExisting, CleaningOptions options)
+    private async Task<int> CreateSlnxFileAsync(List<string> rootPaths, string? outputFile, bool updateExisting, CleaningOptions options)
     {
         try
         {
-            // Determine output file path
-            var rootDir = Path.GetFullPath(rootPath);
+            // Determine output file path - use first root path for location if not specified
+            var primaryRootDir = Path.GetFullPath(rootPaths.First());
             if (string.IsNullOrEmpty(outputFile))
             {
-                var dirName = Path.GetFileName(rootDir);
-                outputFile = Path.Combine(rootDir, $"{dirName}.slnx");
+                // When multiple roots, use current directory name for the solution name
+                var currentDirName = Path.GetFileName(Environment.CurrentDirectory);
+                outputFile = Path.Combine(Environment.CurrentDirectory, $"{currentDirName}.slnx");
             }
             else if (!Path.IsPathFullyQualified(outputFile))
             {
-                outputFile = Path.Combine(rootDir, outputFile);
+                outputFile = Path.Combine(Environment.CurrentDirectory, outputFile);
             }
 
             Console.WriteInfo($"Creating/updating slnx file: {outputFile}");
-            Console.WriteInfo($"Scanning for projects in: {rootDir}");
+            foreach (var rootPath in rootPaths)
+            {
+                Console.WriteInfo($"Scanning for projects in: {Path.GetFullPath(rootPath)}");
+            }
 
-            // Discover all project files
-            var projectFiles = await DiscoverProjectFilesAsync(rootDir, options);
+            // Discover all project files from all root paths
+            var projectFiles = await DiscoverProjectFilesAsync(rootPaths, options);
             
             if (!projectFiles.Any())
             {
@@ -128,27 +164,38 @@ internal sealed class SlnxCommand : BaseCommand
         }
     }
 
-    private async Task<List<string>> DiscoverProjectFilesAsync(string rootPath, CleaningOptions options)
+    private async Task<List<string>> DiscoverProjectFilesAsync(List<string> rootPaths, CleaningOptions options)
     {
         var projectFiles = new List<string>();
         var extensions = new[] { "*.csproj", "*.fsproj", "*.vbproj" };
 
-        foreach (var extension in extensions)
+        foreach (var rootPath in rootPaths)
         {
-            var files = Directory.EnumerateFiles(rootPath, extension, new EnumerationOptions
+            var fullRootPath = Path.GetFullPath(rootPath);
+            if (!Directory.Exists(fullRootPath))
             {
-                IgnoreInaccessible = true,
-                MatchCasing = MatchCasing.CaseInsensitive,
-                MatchType = MatchType.Win32,
-                MaxRecursionDepth = options.Depth,
-                RecurseSubdirectories = true,
-                ReturnSpecialDirectories = false
-            });
+                Console.WriteWarning($"Root path does not exist: {fullRootPath}");
+                continue;
+            }
 
-            projectFiles.AddRange(files);
+            foreach (var extension in extensions)
+            {
+                var files = Directory.EnumerateFiles(fullRootPath, extension, new EnumerationOptions
+                {
+                    IgnoreInaccessible = true,
+                    MatchCasing = MatchCasing.CaseInsensitive,
+                    MatchType = MatchType.Win32,
+                    MaxRecursionDepth = options.Depth,
+                    RecurseSubdirectories = true,
+                    ReturnSpecialDirectories = false
+                });
+
+                projectFiles.AddRange(files);
+            }
         }
 
-        return projectFiles;
+        // Remove duplicates that might occur if root paths overlap
+        return projectFiles.Distinct().ToList();
     }
 
     private async Task<List<ProjectInfo>> ParseProjectsAsync(List<string> projectFiles, CleaningOptions options)
