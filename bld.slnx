@@ -4,5 +4,7 @@
     <Platform Name="x64" />
     <Platform Name="x86" />
   </Configurations>
-  <Project Path="bld/bld.csproj" />
+  <Folder Name="Console">
+    <Project Path="bld/bld.csproj" />
+  </Folder>
 </Solution>

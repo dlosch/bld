@@ -21,6 +21,12 @@ static class ProjConstants {
         "PackageOutputPath",
         "PackageId",
         "AssemblyName",
+        
+        // Additional properties for slnx project type detection
+        "OutputType",
+        "Sdk",
+        "UseWPF",
+        "UseWindowsForms",
 
         // ContainerBaseImage
         // ContainerFamily
