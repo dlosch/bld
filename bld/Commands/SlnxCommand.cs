@@ -306,7 +306,8 @@ internal sealed class SlnxCommand : BaseCommand
             }
             else
             {
-                var folderElement = new XElement("Folder", new XAttribute("Name", folderName));
+                var folderPath = $"/{folderName}/";
+                var folderElement = new XElement("Folder", new XAttribute("Name", folderPath));
                 
                 foreach (var project in category.Value.OrderBy(p => p.ProjectName ?? Path.GetFileNameWithoutExtension(p.ProjectPath)))
                 {
