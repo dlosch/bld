@@ -20,11 +20,6 @@ internal abstract class BaseCommand : Command {
         return Task.FromResult(0);
     }
 
-    //protected readonly Option<string> _logFileOption = new Option<string>("--log-file", "-lf") {
-    //    Description = "Path to the log file (not implemented).",
-    //    DefaultValueFactory = _ => "clean.log"
-    //};
-
     protected readonly Option<string?> _vsToolsPath = new Option<string?>("--vstoolspath", "-vs") {
         Description = "Explicit value for VSToolsPath. If not specified, the tool tries to resolve VSToolsPath either from environment variable or via vswhere.exe. VSToolsPath contains additional msbuild target files which may be required for evaluation of project files.",
         DefaultValueFactory = _ => null,

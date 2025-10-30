@@ -5,7 +5,9 @@ using Microsoft.Build.Construction;
 namespace bld.Infrastructure;
 
 internal sealed class SlnParser(IConsoleOutput Console, ErrorSink ErrorSink) {
+#pragma warning disable CS1998 // Async method lacks 'await' operators - this is an async iterator
     public async IAsyncEnumerable<ProjCfg> ParseSolution(string slnPath, IFileSystem? fileSystem = default) {
+#pragma warning restore CS1998
         var solution = default(SolutionFile);
         var sln = new Sln(slnPath);
         try {

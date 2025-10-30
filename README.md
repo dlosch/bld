@@ -29,8 +29,7 @@ Yes, you can just use git/source control to nuke anything not under source contr
 - basic support for linux
 
 Note:
-- global.json ... doe to the consistent /s way msbuild, dotnet msbuild, and dotnet build handle global.json ... 
-
+- Due to the inconsistent way MSBuild, dotnet msbuild, and dotnet build handle global.json, this may cause evaluation issues in some scenarios.
 
 ## bld (dotnet tool) Commands
 

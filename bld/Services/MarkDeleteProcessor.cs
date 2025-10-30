@@ -146,12 +146,7 @@ internal sealed class MarkDeleteProcessor : IProjectProcessor {
                         var dirInfo = new DirectoryInfo(absPath);
                         var exists = dirInfo.Exists;
 
-                        //if (!Directory.Exists(absPath)) return default;
-                        //if (!dirInfo.Exists) return default;
-
                         if (exists && dirInfo.IsEmpty()) {
-                            // todo we dont delete empty dirs.
-                            // delete dir - this would be handled by the deletion phase
                         }
 
                         var deleteCandidates = default(IEnumerable<DirectoryInfo>);
@@ -183,8 +178,6 @@ internal sealed class MarkDeleteProcessor : IProjectProcessor {
                                     if (cfgDir.Parent is { } binDir) {
                                         if (0 == string.Compare(binDir.Name, "bin", DefaultComparison)
                                             || dir.AbsProjPath.Any(kvp => kvp.Value is { } projectName && (0 == string.Compare(binDir.Name, projectName, DefaultComparison)))) {
-
-                                            //_console.WriteVerbose($"{absPath} #2");
 
                                             if (binDir.EnumerateFiles().Any()
                                             || binDir.EnumerateDirectories().Any(cfgDir => !dir.Configs.Contains(cfgDir.Name))) {

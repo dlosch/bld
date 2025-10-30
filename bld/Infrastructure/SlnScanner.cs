@@ -22,7 +22,9 @@ internal class SlnScanner(CleaningOptions Options, ErrorSink ErrorSink) {
         }
     }
 
+#pragma warning disable CS1998 // Async method lacks 'await' operators - this is an async iterator
     public async IAsyncEnumerable<string> EnumerateSlnFiles(string path) {
+#pragma warning restore CS1998
         if (string.IsNullOrWhiteSpace(path)) throw new ArgumentException("Directory cannot be null or empty.", nameof(path));
 
         var pathRooted = DirExt.EnsureRooted(path, Environment.CurrentDirectory);
