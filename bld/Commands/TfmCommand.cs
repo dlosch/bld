@@ -189,7 +189,8 @@ internal sealed class TfmCommand : BaseCommand {
                 // Check if all .NET (Core) projects use the same target framework
                 if (dotnetCoreFrameworks.Count == 1) {
                     var detectedFramework = dotnetCoreFrameworks[0];
-                    if (targetFrameworks.Distinct().Count() > 1) {
+                    var distinctAllFrameworks = targetFrameworks.Distinct().ToList();
+                    if (distinctAllFrameworks.Count > 1) {
                         Console.WriteVerbose($"Auto-detected source framework: {detectedFramework} (ignoring non-.NET frameworks like netstandard)");
                     }
                     return detectedFramework;
@@ -280,10 +281,18 @@ internal sealed class TfmCommand : BaseCommand {
         var versionPart = tfm.Substring(3);
 
         // Match net\d(\.\d)? pattern (e.g., net5.0, net6.0, net7.0, net8.0, net9.0)
-        // Version should be in format X.Y where X >= 5
+        // Also handle single-digit versions like net5, net6
+        // Version should be in format X.Y or X where X >= 5
         if (Version.TryParse(versionPart, out var version)) {
             // .NET (Core) 5.0 and above
             return version.Major >= 5;
+        }
+        
+        // Handle single-digit versions (e.g., "net5", "net6")
+        // BUT: "net48", "net472" are .NET Framework versions (2-3 digits), not .NET (Core)
+        // .NET (Core) single-digit would be just "net5", "net6", etc. (exactly 1 digit)
+        if (versionPart.Length == 1 && int.TryParse(versionPart, out var majorVersion)) {
+            return majorVersion >= 5;
         }
 
         return false;
