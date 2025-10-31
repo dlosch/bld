@@ -30,6 +30,19 @@ Note: Commands marked (BETA) are experimental. Only `clean` and `stats` are cons
 
 Commands marked as BETA are experimental and may change or be removed in future releases.
 
+Note:
+- global.json ... doe to the consistent /s way msbuild, dotnet msbuild, and dotnet build handle global.json ... 
+
+
+## bld (dotnet tool) Commands
+
+| Command | Description |
+|---|---|
+| clean | Evaluate solutions/projects and produce a summary and an OS-specific deletion script (dry-run by default). Use `--delete` to actually remove files. |
+| stats | Compute and print cleaning statistics only (no deletion and no deletion script). Useful to preview impact. |
+| containerize | Analyze and display information about Dockerfiles in the project. Searches for and parses Dockerfiles, showing base images, build stages, exposed ports, and other configuration details. |
+>>>>>>> 37b0f63 (Update README with containerize command documentation)
+
 ## Examples
 
 Generate a deletion script (dry-run):
@@ -51,15 +64,21 @@ bld clean --root <rootDir> --delete [--force]
 ```
 
 Analyze NuGet packages (BETA):
-
+## Options (current defaults & meanings)
 ```text
 bld nuget --root <rootDir> --depth 2 --whitelist-blacklist-file rules.txt
 ```
 
-Convert projects for container builds (dry-run):
+Analyze Dockerfiles in a project:
 
 ```text
-bld containerize --root <rootDir> --depth 2
+bld containerize --root <rootDir> --depth 3
+```
+
+List Dockerfiles only (without parsing details):
+
+```text
+bld containerize --root <rootDir> --list
 ```
 
 Convert projects to Central Package Management (dry-run):
