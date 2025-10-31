@@ -87,16 +87,16 @@ internal class DockerfileParser {
         return info;
     }
 
-    public static async Task<List<string>> FindDockerfilesAsync(string rootPath, int maxDepth = 3) {
+    public static Task<List<string>> FindDockerfilesAsync(string rootPath, int maxDepth = 3) {
         var dockerfiles = new List<string>();
         
         if (!Directory.Exists(rootPath)) {
-            return dockerfiles;
+            return Task.FromResult(dockerfiles);
         }
 
         FindDockerfilesRecursive(rootPath, 0, maxDepth, dockerfiles);
         
-        return await Task.FromResult(dockerfiles);
+        return Task.FromResult(dockerfiles);
     }
 
     private static void FindDockerfilesRecursive(string currentPath, int currentDepth, int maxDepth, List<string> dockerfiles) {
