@@ -38,6 +38,7 @@ Note:
 |---|---|
 | clean | Evaluate solutions/projects and produce a summary and an OS-specific deletion script (dry-run by default). Use `--delete` to actually remove files. |
 | stats | Compute and print cleaning statistics only (no deletion and no deletion script). Useful to preview impact. |
+| containerize | Analyze and display information about Dockerfiles in the project. Searches for and parses Dockerfiles, showing base images, build stages, exposed ports, and other configuration details. |
 
 ## Examples
 
@@ -58,6 +59,19 @@ Run and actually delete (use with care):
 ```text
 bld clean --root <rootDir> --delete [--force]
 ```
+
+Analyze Dockerfiles in a project:
+
+```text
+bld containerize --root <rootDir> --depth 3
+```
+
+List Dockerfiles only (without parsing details):
+
+```text
+bld containerize --root <rootDir> --list
+```
+
 
 ## Options (current defaults & meanings)
 
