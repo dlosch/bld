@@ -2,6 +2,11 @@ using System.Text.RegularExpressions;
 
 namespace bld.Infrastructure;
 
+/// <summary>
+/// Parses Dockerfiles to extract configuration information.
+/// Note: This parser has limited support for multi-line directives (those ending with backslash).
+/// Multi-line directives are currently skipped for simplicity.
+/// </summary>
 internal class DockerfileParser {
     public record DockerfileInfo {
         public string FilePath { get; init; } = string.Empty;
@@ -30,9 +35,9 @@ internal class DockerfileParser {
                 continue;
             }
 
-            // Handle line continuations
+            // Handle line continuations - skip for now as they require multi-line processing
+            // This is a known limitation: multi-line directives are not fully parsed
             if (line.EndsWith('\\')) {
-                // For simplicity, we'll just process single-line directives
                 continue;
             }
 
@@ -89,12 +94,12 @@ internal class DockerfileParser {
             return dockerfiles;
         }
 
-        await FindDockerfilesRecursiveAsync(rootPath, 0, maxDepth, dockerfiles);
+        FindDockerfilesRecursive(rootPath, 0, maxDepth, dockerfiles);
         
-        return dockerfiles;
+        return await Task.FromResult(dockerfiles);
     }
 
-    private static async Task FindDockerfilesRecursiveAsync(string currentPath, int currentDepth, int maxDepth, List<string> dockerfiles) {
+    private static void FindDockerfilesRecursive(string currentPath, int currentDepth, int maxDepth, List<string> dockerfiles) {
         if (currentDepth > maxDepth) {
             return;
         }
@@ -113,7 +118,7 @@ internal class DockerfileParser {
                     continue;
                 }
                 
-                await FindDockerfilesRecursiveAsync(dir, currentDepth + 1, maxDepth, dockerfiles);
+                FindDockerfilesRecursive(dir, currentDepth + 1, maxDepth, dockerfiles);
             }
         }
         catch (UnauthorizedAccessException) {
@@ -122,7 +127,5 @@ internal class DockerfileParser {
         catch (Exception) {
             // Skip directories that cause other errors
         }
-
-        await Task.CompletedTask;
     }
 }
