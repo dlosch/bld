@@ -178,14 +178,25 @@ internal sealed class TfmCommand : BaseCommand {
                     return null;
                 }
 
-                // Check if all projects use the same target framework
-                var distinctFrameworks = targetFrameworks.Distinct().ToList();
-                if (distinctFrameworks.Count == 1) {
-                    return distinctFrameworks[0];
+                // Filter to only include .NET (Core) frameworks (net5.0, net6.0, etc.) - exclude netstandard, netcoreapp, and .NET Framework
+                var dotnetCoreFrameworks = targetFrameworks.Where(IsDotNetCoreFramework).Distinct().ToList();
+                
+                if (dotnetCoreFrameworks.Count == 0) {
+                    Console.WriteVerbose($"No .NET (Core) frameworks found. Found: {string.Join(", ", targetFrameworks.Distinct())}");
+                    return null;
                 }
 
-                Console.WriteVerbose($"Found multiple target frameworks: {string.Join(", ", distinctFrameworks)}");
-                return null; // Multiple different frameworks found
+                // Check if all .NET (Core) projects use the same target framework
+                if (dotnetCoreFrameworks.Count == 1) {
+                    var detectedFramework = dotnetCoreFrameworks[0];
+                    if (targetFrameworks.Distinct().Count() > 1) {
+                        Console.WriteVerbose($"Auto-detected source framework: {detectedFramework} (ignoring non-.NET frameworks like netstandard)");
+                    }
+                    return detectedFramework;
+                }
+
+                Console.WriteVerbose($"Found multiple .NET (Core) target frameworks: {string.Join(", ", dotnetCoreFrameworks)}");
+                return null; // Multiple different .NET (Core) frameworks found
             }
 
             return null;
@@ -243,5 +254,38 @@ internal sealed class TfmCommand : BaseCommand {
             Console.WriteVerbose($"Error detecting SDK versions: {ex.Message}");
             return null;
         }
+    }
+
+    /// <summary>
+    /// Checks if a TFM is a .NET (Core) framework (net5.0, net6.0, net7.0, etc.)
+    /// Excludes netstandard, netcoreapp, and .NET Framework versions like net48, net472.
+    /// </summary>
+    private static bool IsDotNetCoreFramework(string tfm) {
+        if (string.IsNullOrEmpty(tfm)) {
+            return false;
+        }
+
+        tfm = tfm.ToLowerInvariant().Trim();
+
+        // Must start with "net" and have more characters
+        if (!tfm.StartsWith("net") || tfm.Length <= 3) {
+            return false;
+        }
+
+        // Exclude netstandard and netcoreapp
+        if (tfm.StartsWith("netstandard") || tfm.StartsWith("netcoreapp")) {
+            return false;
+        }
+
+        var versionPart = tfm.Substring(3);
+
+        // Match net\d(\.\d)? pattern (e.g., net5.0, net6.0, net7.0, net8.0, net9.0)
+        // Version should be in format X.Y where X >= 5
+        if (Version.TryParse(versionPart, out var version)) {
+            // .NET (Core) 5.0 and above
+            return version.Major >= 5;
+        }
+
+        return false;
     }
 }

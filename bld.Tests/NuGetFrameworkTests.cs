@@ -2,6 +2,7 @@
 
 using NuGet.Frameworks;
 using Xunit.Abstractions;
+using System.Reflection;
 
 namespace bld.Tests;
 
@@ -16,6 +17,38 @@ public class DotNetTests(ITestOutputHelper Console) {
         Assert.Throws<ArgumentNullException>(() => Path.Combine("d:\\tests", null, "child"));
     }
 }
+
+public class TfmCommandTests {
+    [Theory]
+    [InlineData("net5.0", true)]
+    [InlineData("net6.0", true)]
+    [InlineData("net7.0", true)]
+    [InlineData("net8.0", true)]
+    [InlineData("net9.0", true)]
+    [InlineData("net10.0", true)]
+    [InlineData("netstandard2.0", false)]
+    [InlineData("netstandard2.1", false)]
+    [InlineData("netcoreapp3.1", false)]
+    [InlineData("net48", false)]
+    [InlineData("net472", false)]
+    [InlineData("net461", false)]
+    [InlineData("NET8.0", true)]  // Test case insensitivity
+    [InlineData("  net7.0  ", true)]  // Test trimming
+    [InlineData("", false)]
+    [InlineData(null, false)]
+    public void IsDotNetCoreFramework_ShouldFilterCorrectly(string tfm, bool expected) {
+        // Use reflection to call the private static method
+        var tfmCommandType = typeof(bld.Commands.TfmCommand);
+        var method = tfmCommandType.GetMethod("IsDotNetCoreFramework", 
+            BindingFlags.NonPublic | BindingFlags.Static);
+        
+        Assert.NotNull(method);
+        
+        var result = (bool)method.Invoke(null, new object[] { tfm })!;
+        Assert.Equal(expected, result);
+    }
+}
+
 public class NuGetFrameworkTests(ITestOutputHelper Console) {
     [Fact]
     public void Test1() {
