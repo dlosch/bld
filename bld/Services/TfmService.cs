@@ -26,18 +26,19 @@ internal class TfmService {
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    public async Task<int> MigrateTargetFrameworkAsync(string rootPath, string fromTfm, string toTfm, bool applyChanges, CancellationToken cancellationToken) {
+    public async Task<int> MigrateTargetFrameworkAsync(string rootPath, List<string> fromTfms, string toTfm, bool applyChanges, CancellationToken cancellationToken) {
         // Initialize MSBuild before any Microsoft.Build.* types are loaded
         MSBuildInitializer.Initialize(_console, _options);
 
-        _console.WriteInfo($"Migrating projects from {fromTfm} to {toTfm}...");
+        var fromTfmsDisplay = string.Join(", ", fromTfms);
+        _console.WriteInfo($"Migrating projects from {fromTfmsDisplay} to {toTfm}...");
 
         var projectsToMigrate = new List<ProjectMigrationInfo>();
 
         // Check if the root path is a direct .csproj file
         if (File.Exists(rootPath) && Path.GetExtension(rootPath).Equals(".csproj", StringComparison.OrdinalIgnoreCase)) {
             _console.WriteVerbose($"Processing direct project file: {rootPath}");
-            var migrationInfo = await AnalyzeProjectForMigrationAsync(rootPath, fromTfm, toTfm, cancellationToken);
+            var migrationInfo = await AnalyzeProjectForMigrationAsync(rootPath, fromTfms, toTfm, cancellationToken);
 
             if (migrationInfo != null) {
                 projectsToMigrate.Add(migrationInfo);
@@ -63,7 +64,7 @@ internal class TfmService {
 
                     processedProjects.Add(projectPath);
 
-                    var migrationInfo = await AnalyzeProjectForMigrationAsync(projectPath, fromTfm, toTfm, cancellationToken);
+                    var migrationInfo = await AnalyzeProjectForMigrationAsync(projectPath, fromTfms, toTfm, cancellationToken);
 
                     if (migrationInfo != null) {
                         projectsToMigrate.Add(migrationInfo);
@@ -73,11 +74,11 @@ internal class TfmService {
         }
 
         if (projectsToMigrate.Count == 0) {
-            _console.WriteInfo($"No projects found using {fromTfm}.");
+            _console.WriteInfo($"No projects found using {fromTfmsDisplay}.");
             return 0;
         }
 
-        _console.WriteInfo($"Found {projectsToMigrate.Count} projects to migrate from {fromTfm} to {toTfm}");
+        _console.WriteInfo($"Found {projectsToMigrate.Count} projects to migrate from {fromTfmsDisplay} to {toTfm}");
 
         if (applyChanges) {
             // Step 1: Update target frameworks
@@ -161,7 +162,7 @@ internal class TfmService {
         return 0;
     }
 
-    private async Task<ProjectMigrationInfo?> AnalyzeProjectForMigrationAsync(string projectPath, string fromTfm, string toTfm, CancellationToken cancellationToken) {
+    private async Task<ProjectMigrationInfo?> AnalyzeProjectForMigrationAsync(string projectPath, List<string> fromTfms, string toTfm, CancellationToken cancellationToken) {
         try {
             // Use ProjParser to load project properties (this handles variable evaluation)
             var errorSink = new ErrorSink(_console);
@@ -194,10 +195,10 @@ internal class TfmService {
                     return null;
                 }
 
-                // Check if it matches the from TFM (either exact match or if from wasn't specified, check if it's a predecessor)
-                bool matches = string.IsNullOrEmpty(fromTfm) ?
+                // Check if it matches any of the from TFMs
+                bool matches = fromTfms.Count == 0 ?
                     IsDirectPredecessor(tfmValue, toTfm) :
-                    tfmValue.Equals(fromTfm, StringComparison.OrdinalIgnoreCase);
+                    fromTfms.Any(f => tfmValue.Equals(f, StringComparison.OrdinalIgnoreCase));
 
                 if (!matches) {
                     return null;
@@ -225,14 +226,12 @@ internal class TfmService {
                     return null;
                 }
 
-                // Treat TargetFramework as the "from" value and apply TargetFrameworks logic
-                var effectiveFromTfm = string.IsNullOrEmpty(fromTfm) ? tfmValue : fromTfm;
                 var tfms = projectInfo.TargetFrameworks.ToList();
 
                 // For TargetFrameworks, determine which ones should be updated
                 var tfmsToUpdate = new List<string>();
 
-                if (string.IsNullOrEmpty(fromTfm)) {
+                if (fromTfms.Count == 0) {
                     // No explicit from specified - find TFMs that are direct predecessors of toTfm
                     foreach (var tfm in tfms) {
                         if (IsDirectPredecessor(tfm, toTfm)) {
@@ -241,9 +240,9 @@ internal class TfmService {
                     }
                 }
                 else {
-                    // Explicit from specified - only update exact matches that are also valid for updating
+                    // Explicit from specified - update matching TFMs or add toTfm if not present
                     foreach (var tfm in tfms) {
-                        if (tfm.Equals(fromTfm, StringComparison.OrdinalIgnoreCase) && ShouldUpdateTfm(tfm, toTfm)) {
+                        if (fromTfms.Any(f => tfm.Equals(f, StringComparison.OrdinalIgnoreCase)) && ShouldUpdateTfm(tfm, toTfm)) {
                             tfmsToUpdate.Add(tfm);
                         }
                     }
@@ -273,7 +272,7 @@ internal class TfmService {
                 // For TargetFrameworks, determine which ones should be updated
                 var tfmsToUpdate = new List<string>();
 
-                if (string.IsNullOrEmpty(fromTfm)) {
+                if (fromTfms.Count == 0) {
                     // No explicit from specified - find TFMs that are direct predecessors of toTfm
                     foreach (var tfm in tfms) {
                         if (IsDirectPredecessor(tfm, toTfm)) {
@@ -282,9 +281,9 @@ internal class TfmService {
                     }
                 }
                 else {
-                    // Explicit from specified - only update exact matches that are also valid for updating
+                    // Explicit from specified - update matching TFMs
                     foreach (var tfm in tfms) {
-                        if (tfm.Equals(fromTfm, StringComparison.OrdinalIgnoreCase) && ShouldUpdateTfm(tfm, toTfm)) {
+                        if (fromTfms.Any(f => tfm.Equals(f, StringComparison.OrdinalIgnoreCase)) && ShouldUpdateTfm(tfm, toTfm)) {
                             tfmsToUpdate.Add(tfm);
                         }
                     }
@@ -356,10 +355,28 @@ internal class TfmService {
 
             var currentTfms = targetFrameworksElement.Value.Split(';').Select(t => t.Trim()).Where(t => !string.IsNullOrEmpty(t)).ToList();
 
-            // Update only the TFMs that should be updated
-            var newTfms = currentTfms.Select(tfm =>
-                project.TargetFrameworksToUpdate.Contains(tfm, StringComparer.OrdinalIgnoreCase) ? toTfm : tfm
-            ).ToList();
+            // Check if toTfm is already in the list
+            bool alreadyHasToTfm = currentTfms.Any(tfm => tfm.Equals(toTfm, StringComparison.OrdinalIgnoreCase));
+
+            List<string> newTfms;
+            if (alreadyHasToTfm) {
+                // If toTfm already exists, just update matching TFMs
+                newTfms = currentTfms.Select(tfm =>
+                    project.TargetFrameworksToUpdate.Contains(tfm, StringComparer.OrdinalIgnoreCase) ? toTfm : tfm
+                ).ToList();
+            }
+            else {
+                // If toTfm doesn't exist, upgrade the highest matching framework or add toTfm
+                // Replace matching TFMs with toTfm
+                newTfms = currentTfms.Select(tfm =>
+                    project.TargetFrameworksToUpdate.Contains(tfm, StringComparer.OrdinalIgnoreCase) ? toTfm : tfm
+                ).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+                
+                // Defensive: ensure toTfm is in the list (should already be added by Select above)
+                if (!newTfms.Contains(toTfm, StringComparer.OrdinalIgnoreCase)) {
+                    newTfms.Add(toTfm);
+                }
+            }
 
             var newTargetFrameworksValue = string.Join(";", newTfms);
 
