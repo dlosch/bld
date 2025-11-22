@@ -7,6 +7,8 @@ internal class ProjCfgCache(IConsoleOutput Console) {
     private HashSet<ProjCfg> _cache = new HashSet<ProjCfg>(new ProjCfgEqualityComparer());
     private HashSet<string> _cacheTxt = new HashSet<string>();
 
+    public int Count => _cache.Count;
+
     public bool Add(ProjCfg projCfg) {
         lock (_cache) {
             var key = $"{projCfg.Path}|#|{projCfg.Configuration?.ToLowerInvariant()}";

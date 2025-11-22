@@ -55,7 +55,7 @@ internal abstract class BaseCommand : Command {
             v.AddError($"{path} does not exist.");
         }
     }
-    
+
     protected static void RootPathValidator(OptionResult v) {
         var path = v.GetValueOrDefault<string?>();
         if (!ValidatePathExists(path)) {
