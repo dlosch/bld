@@ -200,20 +200,23 @@ internal class NugetAnalysisApplication {
         _console.WriteInfo("");
 
         // Group packages by name across all projects
-        var allPackages = analyses.SelectMany(a => a.Packages).ToList();
+        var allPackages = analyses
+            .SelectMany(a => a.Packages.Select(p => new { Package = p, Analysis = a }))
+            .ToList();
+        
         var packageGroups = allPackages
-            .GroupBy(p => p.Name)
+            .GroupBy(pa => pa.Package.Name)
             .Select(g => new AggregatedPackage {
                 Name = g.Key,
-                Category = g.First().Category,
-                Occurrences = g.Select(p => new PackageOccurrence {
-                    ProjectName = analyses.First(a => a.Packages.Contains(p)).ProjectName ?? "Unknown",
-                    ProjectPath = analyses.First(a => a.Packages.Contains(p)).ProjectPath,
-                    Version = p.Version,
-                    WhitelistMatch = p.WhitelistMatch,
-                    BlacklistMatch = p.BlacklistMatch,
-                    MicrosoftMatch = p.MicrosoftMatch,
-                    TrustedMatch = p.TrustedMatch
+                Category = g.First().Package.Category,
+                Occurrences = g.Select(pa => new PackageOccurrence {
+                    ProjectName = pa.Analysis.ProjectName ?? "Unknown",
+                    ProjectPath = pa.Analysis.ProjectPath,
+                    Version = pa.Package.Version,
+                    WhitelistMatch = pa.Package.WhitelistMatch,
+                    BlacklistMatch = pa.Package.BlacklistMatch,
+                    MicrosoftMatch = pa.Package.MicrosoftMatch,
+                    TrustedMatch = pa.Package.TrustedMatch
                 }).ToList()
             })
             .ToList();
@@ -263,7 +266,7 @@ internal class NugetAnalysisApplication {
             var packageInfo = $"• {pkg.Name} {versionInfo}";
 
             // Add coloring based on match type (use first occurrence)
-            var firstOccurrence = pkg.Occurrences[0];
+            var firstOccurrence = pkg.Occurrences.First();
             if (!string.IsNullOrWhiteSpace(firstOccurrence.BlacklistMatch)) {
                 packageInfo = $"[red]{packageInfo} ({firstOccurrence.BlacklistMatch})[/]";
             }
