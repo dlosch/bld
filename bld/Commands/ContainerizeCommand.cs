@@ -36,7 +36,7 @@ internal sealed class ContainerizeCommand : BaseCommand {
     };
 
     public ContainerizeCommand(IConsoleOutput console) 
-        : base("containerize", "Analyze and display information about Dockerfiles and container projects.", console) {
+        : base("containerize", "Analyze Dockerfiles and .NET projects with SDK container build properties (PublishProfile=DefaultContainer, ContainerBaseImage, or ContainerImage).", console) {
         Add(_rootOption);
         Add(_depthOption);
         Add(_logLevelOption);

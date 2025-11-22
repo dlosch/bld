@@ -105,9 +105,14 @@ internal class DockerfileParser {
         }
 
         try {
-            // Look for files named Dockerfile or matching Dockerfile.*
-            var files = Directory.GetFiles(currentPath, "Dockerfile*", SearchOption.TopDirectoryOnly);
-            dockerfiles.AddRange(files);
+            // Look for files named exactly "Dockerfile" (case-insensitive)
+            var files = Directory.GetFiles(currentPath, "*", SearchOption.TopDirectoryOnly);
+            foreach (var file in files) {
+                var fileName = Path.GetFileName(file);
+                if (fileName.Equals("Dockerfile", StringComparison.OrdinalIgnoreCase)) {
+                    dockerfiles.Add(file);
+                }
+            }
 
             // Recurse into subdirectories
             var directories = Directory.GetDirectories(currentPath);
