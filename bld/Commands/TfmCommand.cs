@@ -9,7 +9,7 @@ namespace bld.Commands;
 internal sealed class TfmCommand : BaseCommand {
 
     private readonly Option<string> _fromOption = new Option<string>("--from") {
-        Description = "Source target framework (e.g., net8.0). If not specified, will be auto-detected from project files."
+        Description = "Source target framework(s) (e.g., net8.0 or net8.0,net9.0 for multiple). If not specified, will be auto-detected from project files."
     };
 
     private readonly Option<string> _toOption = new Option<string>("--to") {
@@ -68,21 +68,26 @@ internal sealed class TfmCommand : BaseCommand {
         }
 
         // Auto-detect --from if not specified
+        List<string> fromTfms;
         if (string.IsNullOrEmpty(from)) {
-            from = await DetectSourceFrameworkAsync(rootPath);
+            from = await DetectSourceFrameworksAsync(rootPath);
             if (string.IsNullOrEmpty(from)) {
                 Console.WriteError("Could not auto-detect source framework. Projects have multiple TargetFrameworks or no consistent TargetFramework. Please specify --from parameter.");
                 return 1;
             }
-            Console.WriteInfo($"Auto-detected source framework: {from}");
+            fromTfms = from.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+            Console.WriteInfo($"Auto-detected source framework(s): {from}");
+        }
+        else {
+            fromTfms = from.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
         }
 
-        Console.WriteInfo($"Migrating projects from {from} to {to} in: {rootPath}");
+        Console.WriteInfo($"Migrating projects from {string.Join(", ", fromTfms)} to {to} in: {rootPath}");
         Console.WriteInfo($"Mode: {(apply ? "Apply changes" : "Dry run")}");
 
         try {
             var tfmService = new TfmService(Console, options);
-            return await tfmService.MigrateTargetFrameworkAsync(rootPath, from, to, apply, cancellationToken);
+            return await tfmService.MigrateTargetFrameworkAsync(rootPath, fromTfms, to, apply, cancellationToken);
         }
         catch (Exception ex) {
             Console.WriteError($"Error migrating target frameworks: {ex.Message}");
@@ -90,7 +95,7 @@ internal sealed class TfmCommand : BaseCommand {
         }
     }
 
-    private async Task<string?> DetectSourceFrameworkAsync(string rootPath) {
+    private async Task<string?> DetectSourceFrameworksAsync(string rootPath) {
         try {
             // Initialize MSBuild first for SlnScanner/SlnParser
             var tempOptions = new CleaningOptions();
@@ -120,13 +125,25 @@ internal sealed class TfmCommand : BaseCommand {
                             Console.WriteVerbose($"Skipping {Path.GetFileName(rootPath)} - TargetFramework contains unresolved variable: {projectInfo.TargetFramework}");
                             return null;
                         }
-                        return projectInfo.TargetFramework.Trim();
+                        // Filter to only .NET (Core) frameworks
+                        if (IsDotNetCoreFramework(projectInfo.TargetFramework.Trim())) {
+                            return projectInfo.TargetFramework.Trim();
+                        }
+                        return null;
                     }
                     else if (projectInfo.TargetFrameworks.Count > 0) {
-                        // If TargetFrameworks exists (multiple), we can't auto-detect
+                        // Collect all .NET (Core) frameworks from TargetFrameworks
                         var tfmsValue = string.Join(";", projectInfo.TargetFrameworks);
                         Console.WriteVerbose($"Project {Path.GetFileName(rootPath)} has multiple TargetFrameworks: {tfmsValue}");
-                        return null; // Require explicit --from when TargetFrameworks is used
+                        var dotnetCoreFrameworks = projectInfo.TargetFrameworks
+                            .Select(f => f.Trim())
+                            .Where(IsDotNetCoreFramework)
+                            .Distinct()
+                            .ToList();
+                        if (dotnetCoreFrameworks.Count > 0) {
+                            return string.Join(",", dotnetCoreFrameworks);
+                        }
+                        return null;
                     }
                 }
                 catch (Exception ex) {
@@ -162,10 +179,10 @@ internal sealed class TfmCommand : BaseCommand {
                                 targetFrameworks.Add(projectInfo.TargetFramework.Trim());
                             }
                             else if (projectInfo.TargetFrameworks.Count > 0) {
-                                // If TargetFrameworks exists (multiple), we can't auto-detect
+                                // Collect all frameworks from TargetFrameworks for auto-detection
                                 var tfmsValue = string.Join(";", projectInfo.TargetFrameworks);
                                 Console.WriteVerbose($"Project {Path.GetFileName(projCfg.Path)} has multiple TargetFrameworks: {tfmsValue}");
-                                return null; // Require explicit --from when TargetFrameworks is used
+                                targetFrameworks.AddRange(projectInfo.TargetFrameworks.Select(f => f.Trim()));
                             }
                         }
                         catch (Exception ex) {
@@ -186,18 +203,14 @@ internal sealed class TfmCommand : BaseCommand {
                     return null;
                 }
 
-                // Check if all .NET (Core) projects use the same target framework
-                if (dotnetCoreFrameworks.Count == 1) {
-                    var detectedFramework = dotnetCoreFrameworks[0];
-                    var distinctAllFrameworks = targetFrameworks.Distinct().ToList();
-                    if (distinctAllFrameworks.Count > 1) {
-                        Console.WriteVerbose($"Auto-detected source framework: {detectedFramework} (ignoring non-.NET frameworks like netstandard)");
-                    }
-                    return detectedFramework;
+                // Return all .NET (Core) frameworks found (can be multiple)
+                var distinctAllFrameworks = targetFrameworks.Distinct().ToList();
+                if (distinctAllFrameworks.Count > dotnetCoreFrameworks.Count) {
+                    Console.WriteVerbose($"Auto-detected source framework(s): {string.Join(", ", dotnetCoreFrameworks)} (ignoring non-.NET frameworks like netstandard)");
                 }
-
-                Console.WriteVerbose($"Found multiple .NET (Core) target frameworks: {string.Join(", ", dotnetCoreFrameworks)}");
-                return null; // Multiple different .NET (Core) frameworks found
+                
+                // Return comma-separated list of frameworks
+                return string.Join(",", dotnetCoreFrameworks);
             }
 
             return null;
