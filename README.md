@@ -1,186 +1,163 @@
-﻿# bld (BETA)
+﻿# bld
 
-This repository is in BETA. Features, commands, and behavior are experimental and may change or be removed without notice.
+`bld` utility for working with .NET/msbuild project files and solutions. 
+- clean build output
+- list nuget packages
+- list and update tfm
+- enable central package management
+- scan and update outdated nuget package versions
+- scan for docker base image references
 
-bld is a command-line tool to clean build output folders for (especially .NET) MSBuild projects.
+Some of this can be handy when working with agentic coding tools which at this stage may have an unconventional approach to tfms, central package management, nuget package references and versions.
 
-## What it does
+## Quick Start
 
-- Traverse directories looking for .sln, .slnx, .slnf
-- Process all configurations from solution files
-- Evaluate MSBuild properties in-process for each project/configuration
-- Resolve a default MSBuild installation and optionally VSToolsPath (from Visual Studio)
-- Optionally delete only non-current build outputs (TFMs no longer referenced)
-- Validate TFMs for .NET projects to avoid incorrect deletions
-- Dry-run by default: produces stats and an OS-specific deletion script. Nothing is deleted unless `--delete` is specified
-- Basic Linux support
-
-## Commands
-
-Note: Commands marked (BETA) are experimental. Only `clean` and `stats` are considered stable for now.
-
-- clean — Evaluate solutions/projects and produce a summary and an OS-specific deletion script (dry-run by default). Use `--delete` to actually remove files. (stable)
-- stats — Compute and print cleaning statistics only (no deletion, no deletion script). Useful to preview impact. (stable)
-- nuget (BETA) — Analyze NuGet packages and dependencies
-- containerize (BETA) — Prepare project for containerization
-- cpm (BETA) — Central Package Management helpers
-- outdated (BETA) — Find outdated packages and optionally update them
-- cleanup (BETA) — Additional cleanup helpers
-- tfm (BETA) — Target framework management
-
-Commands marked as BETA are experimental and may change or be removed in future releases.
-
-Note:
-- global.json ... doe to the consistent /s way msbuild, dotnet msbuild, and dotnet build handle global.json ... 
-
-
-## bld (dotnet tool) Commands
-
-| Command | Description |
-|---|---|
-| clean | Evaluate solutions/projects and produce a summary and an OS-specific deletion script (dry-run by default). Use `--delete` to actually remove files. |
-| stats | Compute and print cleaning statistics only (no deletion and no deletion script). Useful to preview impact. |
-| containerize | Analyze and display information about Dockerfiles and .NET container projects. Searches for Dockerfiles and projects with SDK container build properties (PublishProfile=DefaultContainer, EnableSdkContainerSupport), showing base images, container families, registries, and configuration details. |
-
-## Examples
-
-Generate a deletion script (dry-run):
-
-```text
-bld clean --root <rootDir> --depth 3 -o clean.cmd
+```powershell
+dotnet build bld.sln
+dotnet run --project bld -- clean --root <root-or-sln>
 ```
 
-Show only statistics (no script):
+Use `--delete` only after you have reviewed the generated script or statistics.
 
-```text
-bld stats --root <rootDir> --depth 2 --non-current --obj
-```
+## Command Overview
 
-Run and actually delete (use with care):
+| Command | Stability | Purpose |
+| --- | --- | --- |
+| `clean` | Stable | Evaluate projects, report disk usage, and emit an OS-specific deletion script (dry-run by default). |
+| `stats` | Stable | Print cleaning statistics only; never writes scripts or deletes files. |
+| `nuget` | Beta | Inspect NuGet dependencies and optionally aggregate package usage. |
+| `tfm` | Beta | Migrate project target frameworks. |
+| `cpm` | Beta | Convert a solution to Central Package Management. |
+| `outdated` | Beta | Check (and optionally update) NuGet packages to newer versions. |
+| `containerize` | Beta | Discover Dockerfiles and projects using SDK container build properties. |
 
-```text
-bld clean --root <rootDir> --delete [--force]
-```
+Commands marked **Beta** may change behavior, arguments, or output formatting.
 
-Analyze NuGet packages (BETA):
-## Options (current defaults & meanings)
-```text
-bld nuget --root <rootDir> --depth 2 --whitelist-blacklist-file rules.txt
-```
+## Global Options
 
-Analyze Dockerfiles in a project:
+All commands accept the following shared options unless stated otherwise:
 
-```text
-bld containerize --root <rootDir> --depth 3
-```
+- `--root`, `-r`, or trailing argument — Directory or `.sln` to scan. Defaults to the current working directory.
+- `--depth`, `-d` — Directory recursion depth when `--root` is a folder. Default: `3`.
+- `--log`, `-v`, `--verbosity` — `Debug`, `Verbose`, `Info`, `Warning`, or `Error`. Default: `Info`.
+- `--vstoolspath`, `-vs` — Explicit `VSToolsPath` for MSBuild evaluation.
+- `--novstoolspath`, `-novs` — Skip automatic `VSToolsPath` resolution.
 
-Scan for .NET projects with container build properties:
+## Stable Commands
 
-```text
-bld containerize --projects --root <rootDir>
-```
+### clean
 
-Scan for both Dockerfiles and container projects:
-
-```text
-bld containerize --all --root <rootDir>
-```
-
-List files only (without parsing details):
-
-```text
-bld containerize --list --root <rootDir>
-```
-
-Convert projects to Central Package Management (dry-run):
-
-```text
-bld cpm --root <rootDir> --dry-run
-```
-
-Check outdated packages (no changes):
-
-```text
-bld outdated --root <rootDir> --prerelease
-```
-
-Cleanup helpers (BETA) — usage varies by subcommand:
-
-```text
-bld cleanup --help
-```
-
-TFM management (BETA):
-
-```text
-bld tfm --help
-```
-
-## Options (global and per-command)
-
-Global options (available to most commands):
-
-- `--root`, `-r` (string) — Root directory or a `.sln` path. Default: current working directory (or trailing argument)
-- `--depth`, `-d` (int) — Recursion depth to search for solution files when `--root` is a directory. Default: 3
-- `--log`, `-v`, `--verbosity` (LogLevel) — Log verbosity: Debug, Verbose, Info, Warning, Error. Default: Warning
-- `--vstoolspath`, `-vs` (string) — Explicit VSToolsPath for MSBuild evaluation; if omitted the tool may try to resolve it from Visual Studio instances
-- `--novstoolspath`, `-novs` (bool) — Do not try to auto-resolve VSToolsPath from environment or vswhere. Default: false
-
-clean (stable) options:
-
-- `--non-current`, `--noncurrent`, `-nc` (bool) — Only consider output for TFMs no longer referenced in the project. Default: false
-- `--obj`, `-obj` (bool) — Also consider BaseIntermediateOutputPath (obj folder) for cleaning. Default: true
-- `--output-file`, `-o` (string) — Path to write the deletion script (batch file or shell commands depending on OS). Default: `clean.cmd` on Windows or `clean.sh` on Unix
-- `--delete` (bool) — Perform deletions instead of a dry-run. Default: false
-- `--force` (bool) — Do not ask for confirmation (requires explicit root). Default: false
-
-stats (stable) options:
-
-- `--non-current`, `--noncurrent`, `-nc` (bool) — Report only non-current TFMs. Default: false
-- `--obj`, `-obj` (bool) — Include obj folders in statistics. Default: true
-
-nuget (BETA) options:
-
-- `--whitelist-blacklist-file`, `--wbf` (string) — Path to a whitelist/blacklist file for categorization rules
-- Global options apply as well (root, depth, vstoolspath, etc.)
-
-containerize (BETA) options:
-
-- `--update`, `-u` (bool) — Apply changes to project files. Default: false (dry-run)
-- Global options apply as well
-
-cpm (BETA) options:
-
-- `--dry-run` (bool) — Show what would be changed without modifying files. Default: true
-- `--force` (bool) — Apply changes to create/modify Directory.Packages.props and update project files. Default: false
-- `--overwrite` (bool) — Overwrite existing Directory.Packages.props if it exists. Default: false
-
-outdated (BETA) options:
-
-- `--update`, `-u` (bool) — Update packages to their latest versions instead of just checking. Default: false
-- `--skip-tfm-check` (bool) — Skip target framework compatibility checks when suggesting updates. Default: false
-- `--prerelease` (bool) — Include prerelease versions of NuGet packages. Default: false
-
-cleanup (BETA) and tfm (BETA):
-
-- These commands include subcommands and options. Run `bld cleanup --help` or `bld tfm --help` for details.
-
-## Notes / Caveats
-
-- MSBuild evaluation can be slow for large repos because the tool evaluates per project/configuration to compute accurate paths. This is deliberate to be correct rather than fast.
-- MSBuild property evaluation may fail for misconfigured projects — such projects are reported and skipped.
-
-## Installing as a dotnet tool
+- `--non-current`, `--noncurrent`, `-nc` — Only target frameworks no longer referenced. Default: `false`.
+- `--obj`, `-obj` — Include `obj` directories. Default: `false`.
+- `--output-file`, `-o` — Where to write the deletion script (`clean.cmd` or `clean.sh` by default).
+- `--delete` — Execute deletions instead of just generating scripts. Default: `false`.
+- `--force` — Skip confirmation prompts (requires explicit `--root`).
 
 Example:
 
 ```powershell
-dotnet tool install -g <package>
-bld clean --help
+bld clean --root C:\src\MyRepo --depth 4 --obj
 ```
 
-For a local install use `dotnet tool install --local <package>` in a folder with a tool manifest.
+### stats
+
+- `--non-current`, `--noncurrent`, `-nc` — Only report non-current TFMs. Default: `false`.
+- `--obj`, `-obj` — Include `obj` directories in the statistics. Default: `false`.
+
+Example:
+
+```powershell
+bld stats --root MySolution.sln --non-current
+```
+
+## Beta Commands
+
+### nuget (BETA)
+
+- `--whitelist-blacklist-file`, `--wbf` — Path to categorization rules.
+- `--aggregate`, `--agg` — Collapse results across projects. Default: `false`.
+- `--show-projects`, `--sp` — When aggregating, list referencing projects. Default: `true`.
+
+Example:
+
+```powershell
+bld nuget --root C:\src\MyRepo --aggregate
+```
+
+### tfm (BETA)
+
+- `--from` — Comma-separated source TFMs (auto-detected when possible).
+- `--to` — Target TFM (auto-detected from installed SDKs when omitted).
+- `--apply` — Persist changes instead of a dry-run.
+
+Example:
+
+```powershell
+bld tfm --root MySolution.sln --to net9.0 --apply
+```
+
+The command will scan for consistent TFMs, infer .NET SDK versions, and report conflicts before applying changes.
+
+### cpm (BETA)
+
+- `--apply` — Modify projects and create `Directory.Packages.props`. Default: dry-run.
+- `--overwrite` — Replace an existing `Directory.Packages.props`.
+
+Example:
+
+```powershell
+bld cpm --root MySolution.sln --apply --overwrite
+```
+
+### outdated (BETA)
+
+- `--apply` — Update packages in-place. Default: dry-run/report only.
+- `--skip-tfm-check` — Ignore target framework compatibility checks.
+- `--prerelease`, `--pre` — Consider prerelease package versions.
+
+Example:
+
+```powershell
+bld outdated --root C:\src\MyRepo --prerelease
+```
+
+### containerize (BETA)
+
+- `--list`, `-l` — Show file paths only. Default: `false`.
+- `--projects`, `-p` — Scan for SDK-style container projects. Default: `false`.
+- `--all`, `-a` — Scan Dockerfiles and container projects together.
+
+Example:
+
+```powershell
+bld containerize --root C:\src\MyRepo --all --depth 5
+```
+
+## Typical Workflows
+
+- Generate a deletion script for inspection:
+	```powershell
+	bld clean --root C:\src\MyRepo --depth 3 -o clean.cmd
+	```
+- Preview disk impact only:
+	```powershell
+	bld stats --root MySolution.sln --obj --non-current
+	```
+- Audit NuGet usage across solutions:
+	```powershell
+	bld nuget --root C:\src\MyRepo --aggregate --show-projects
+	```
+- List Dockerfiles without parsing:
+	```powershell
+	bld containerize --root . --list
+	```
+
+## Notes & Caveats
+
+- MSBuild evaluation happens in-process; evaluation failures are reported but do not abort the run.
+- Auto-resolving MSBuild toolsets may require Visual Studio or the .NET SDK to be installed.
+- Beta commands surface rich diagnostics but are still evolving; file issues with exact command lines and logs when something looks off.
 
 ---
 
-This tool performs in-process MSBuild evaluation (no external -getproperty calls). Use with care when running deletion operations.
+`bld` is developed for repositories that accumulate large volumes of build output. Review scripts before executing deletions, especially when using `--delete`.
