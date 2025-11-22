@@ -12,6 +12,16 @@ internal sealed class NugetCommand : BaseCommand {
         DefaultValueFactory = _ => null
     };
 
+    private readonly Option<bool> _aggregateOption = new Option<bool>("--aggregate", "--agg") {
+        Description = "Display packages aggregated across all projects instead of per-project view.",
+        DefaultValueFactory = _ => false
+    };
+
+    private readonly Option<bool> _showProjectsOption = new Option<bool>("--show-projects", "--sp") {
+        Description = "In aggregate mode, show which projects reference each package (default: true).",
+        DefaultValueFactory = _ => true
+    };
+
     public NugetCommand(IConsoleOutput console) : base("nuget", "Analyze and categorize NuGet package references in projects.", console) {
         Add(_rootOption);
         Add(_depthOption);
@@ -19,6 +29,8 @@ internal sealed class NugetCommand : BaseCommand {
         Add(_vsToolsPath);
         Add(_noResolveVsToolsPath);
         Add(_whitelistBlacklistFileOption);
+        Add(_aggregateOption);
+        Add(_showProjectsOption);
         Add(_rootArgument);
     }
 
@@ -37,6 +49,8 @@ internal sealed class NugetCommand : BaseCommand {
 
         base.Console = new SpectreConsoleOutput(options.LogLevel);
         var whitelistBlacklistFile = parseResult.GetValue(_whitelistBlacklistFileOption);
+        var aggregate = parseResult.GetValue(_aggregateOption);
+        var showProjects = parseResult.GetValue(_showProjectsOption);
 
         var rootPath = parseResult.GetValue(_rootArgument) ?? parseResult.GetValue(_rootOption);
         if (string.IsNullOrWhiteSpace(rootPath)) {
@@ -45,7 +59,7 @@ internal sealed class NugetCommand : BaseCommand {
 
         var app = new NugetAnalysisApplication(base.Console);
         await app.InitAsync(options);
-        await app.RunAsync(new[] { rootPath }, options, whitelistBlacklistFile);
+        await app.RunAsync(new[] { rootPath }, options, whitelistBlacklistFile, aggregate, showProjects);
 
         return 0;
     }
