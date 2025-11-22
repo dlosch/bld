@@ -362,3 +362,7 @@ MigrationBackup/
 FodyWeavers.xsd
 
 .idea/
+
+# Generated clean scripts (personal artifacts)
+clean.cmd
+clean.sh

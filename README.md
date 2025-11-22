@@ -10,6 +10,8 @@
 
 Some of this can be handy when working with agentic coding tools which at this stage may have an unconventional approach to tfms, central package management, nuget package references and versions.
 
+> 💡 **Fun fact**: `bld` was born from the frustration of watching gigabytes of build artifacts pile up faster than dependencies in a JavaScript project. Because sometimes you need a tool that speaks fluent MSBuild and knows when to take out the trash. 🗑️
+
 ## Quick Start
 
 ```powershell
