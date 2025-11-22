@@ -30,6 +30,8 @@ internal sealed class ContainerizeCommand : BaseCommand {
         Add(_listOnlyOption);
         Add(_projectsOption);
         Add(_allOption);
+        Add(_vsToolsPath);
+        Add(_noResolveVsToolsPath);
         Add(_rootArgument);
     }
 

@@ -20,16 +20,16 @@ internal class ProjectContainerScanner {
         public bool EnableSdkContainerSupport { get; init; }
     }
 
-    public static async Task<List<string>> FindProjectFilesAsync(string rootPath, int maxDepth = 3) {
+    public static Task<List<string>> FindProjectFilesAsync(string rootPath, int maxDepth = 3) {
         var projects = new List<string>();
         
         if (!Directory.Exists(rootPath)) {
-            return projects;
+            return Task.FromResult(projects);
         }
 
         FindProjectFilesRecursive(rootPath, 0, maxDepth, projects);
         
-        return await Task.FromResult(projects);
+        return Task.FromResult(projects);
     }
 
     private static void FindProjectFilesRecursive(string currentPath, int currentDepth, int maxDepth, List<string> projects) {
@@ -62,7 +62,7 @@ internal class ProjectContainerScanner {
         }
     }
 
-    public static async Task<ContainerProjectInfo?> ParseProjectAsync(string projectPath, Dictionary<string, string>? globalProperties = null) {
+    public static Task<ContainerProjectInfo?> ParseProjectAsync(string projectPath, Dictionary<string, string>? globalProperties = null) {
         if (!File.Exists(projectPath)) {
             return null;
         }
@@ -96,7 +96,7 @@ internal class ProjectContainerScanner {
                 projectName = Path.GetFileNameWithoutExtension(projectPath);
             }
 
-            return await Task.FromResult(new ContainerProjectInfo {
+            return Task.FromResult(new ContainerProjectInfo {
                 ProjectPath = projectPath,
                 ProjectName = projectName,
                 HasContainerSupport = hasContainerSupport,
