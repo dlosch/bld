@@ -64,7 +64,7 @@ internal class ProjectContainerScanner {
 
     public static Task<ContainerProjectInfo?> ParseProjectAsync(string projectPath, Dictionary<string, string>? globalProperties = null) {
         if (!File.Exists(projectPath)) {
-            return null;
+            return Task.FromResult<ContainerProjectInfo?>(null);
         }
 
         try {
@@ -88,7 +88,7 @@ internal class ProjectContainerScanner {
                 !string.IsNullOrEmpty(containerImage);
 
             if (!hasContainerSupport) {
-                return null;
+                return Task.FromResult<ContainerProjectInfo?>(null);
             }
 
             var projectName = project.GetPropertyValue("ProjectName");
@@ -96,7 +96,7 @@ internal class ProjectContainerScanner {
                 projectName = Path.GetFileNameWithoutExtension(projectPath);
             }
 
-            return Task.FromResult(new ContainerProjectInfo {
+            return Task.FromResult<ContainerProjectInfo?>(new ContainerProjectInfo {
                 ProjectPath = projectPath,
                 ProjectName = projectName,
                 HasContainerSupport = hasContainerSupport,
@@ -110,7 +110,7 @@ internal class ProjectContainerScanner {
         }
         catch (Exception) {
             // Failed to parse project - return null
-            return null;
+            return Task.FromResult<ContainerProjectInfo?>(null);
         }
     }
 }
