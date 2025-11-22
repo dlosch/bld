@@ -80,10 +80,11 @@ internal class ProjectContainerScanner {
             var containerFamily = project.GetPropertyValue("ContainerFamily");
             var containerRegistry = project.GetPropertyValue("ContainerRegistry");
 
-            // Check if this project has container support
+            // Only include projects that will actually create containers
+            // Check for PublishProfile=DefaultContainer OR ContainerBaseImage OR ContainerImage
+            // Don't include projects with just EnableSdkContainerSupport as library projects may have this
             bool hasContainerSupport = 
                 publishProfile?.Equals("DefaultContainer", StringComparison.OrdinalIgnoreCase) == true ||
-                enableSdkContainer?.Equals("true", StringComparison.OrdinalIgnoreCase) == true ||
                 !string.IsNullOrEmpty(containerBaseImage) ||
                 !string.IsNullOrEmpty(containerImage);
 
