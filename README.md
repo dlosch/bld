@@ -38,7 +38,7 @@ Note:
 |---|---|
 | clean | Evaluate solutions/projects and produce a summary and an OS-specific deletion script (dry-run by default). Use `--delete` to actually remove files. |
 | stats | Compute and print cleaning statistics only (no deletion and no deletion script). Useful to preview impact. |
-| containerize | Analyze and display information about Dockerfiles in the project. Searches for and parses Dockerfiles, showing base images, build stages, exposed ports, and other configuration details. |
+| containerize | Analyze and display information about Dockerfiles and .NET container projects. Searches for Dockerfiles and projects with SDK container build properties (PublishProfile=DefaultContainer, EnableSdkContainerSupport), showing base images, container families, registries, and configuration details. |
 
 ## Examples
 
@@ -66,10 +66,22 @@ Analyze Dockerfiles in a project:
 bld containerize --root <rootDir> --depth 3
 ```
 
-List Dockerfiles only (without parsing details):
+Scan for .NET projects with container build properties:
 
 ```text
-bld containerize --root <rootDir> --list
+bld containerize --projects --root <rootDir>
+```
+
+Scan for both Dockerfiles and container projects:
+
+```text
+bld containerize --all --root <rootDir>
+```
+
+List files only (without parsing details):
+
+```text
+bld containerize --list --root <rootDir>
 ```
 
 
