@@ -87,3 +87,25 @@ internal record ProjectNugetAnalysis {
     public IEnumerable<NugetPackageInfo> OtherPackages =>
         Packages.Where(p => p.Category == NugetPackageCategory.Other);
 }
+
+/// <summary>
+/// Represents an aggregated package occurrence across multiple projects
+/// </summary>
+internal record PackageOccurrence {
+    public string ProjectName { get; init; } = string.Empty;
+    public string ProjectPath { get; init; } = string.Empty;
+    public string Version { get; init; } = string.Empty;
+    public string? WhitelistMatch { get; init; }
+    public string? BlacklistMatch { get; init; }
+    public string? MicrosoftMatch { get; init; }
+    public string? TrustedMatch { get; init; }
+}
+
+/// <summary>
+/// Represents an aggregated package across multiple projects
+/// </summary>
+internal record AggregatedPackage {
+    public string Name { get; init; } = string.Empty;
+    public NugetPackageCategory Category { get; init; }
+    public IReadOnlyList<PackageOccurrence> Occurrences { get; init; } = Array.Empty<PackageOccurrence>();
+}

@@ -27,7 +27,7 @@ internal class NugetAnalysisApplication {
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    public async Task RunAsync(string[] rootPaths, CleaningOptions options, string? whitelistBlacklistFile) {
+    public async Task RunAsync(string[] rootPaths, CleaningOptions options, string? whitelistBlacklistFile, bool aggregate = false, bool showProjects = true) {
         if (!_isInitialized) {
             throw new InvalidOperationException("Application not initialized. Call InitAsync first.");
         }
@@ -91,7 +91,12 @@ internal class NugetAnalysisApplication {
                 .Select(g => g.First())
                 .ToList();
 
-            DisplayResults(uniqueAnalyses, categorizer);
+            if (aggregate) {
+                DisplayAggregateResults(uniqueAnalyses, categorizer, showProjects);
+            }
+            else {
+                DisplayResults(uniqueAnalyses, categorizer);
+            }
 
         }
         finally {
@@ -181,6 +186,113 @@ internal class NugetAnalysisApplication {
             }
 
             content.Add(packageInfo);
+        }
+        content.Add("");
+    }
+
+    private void DisplayAggregateResults(List<ProjectNugetAnalysis> analyses, NugetPackageCategorizer categorizer, bool showProjects) {
+        if (!analyses.Any()) {
+            _console.WriteWarning("No projects with NuGet package references found.");
+            return;
+        }
+
+        _console.WriteInfo($"Found {analyses.Count} project(s) with NuGet packages (aggregate view):");
+        _console.WriteInfo("");
+
+        // Group packages by name across all projects
+        var allPackages = analyses
+            .SelectMany(a => a.Packages.Select(p => new { Package = p, Analysis = a }))
+            .ToList();
+        
+        var packageGroups = allPackages
+            .GroupBy(pa => pa.Package.Name)
+            .Select(g => new AggregatedPackage {
+                Name = g.Key,
+                Category = g.First().Package.Category,
+                Occurrences = g.Select(pa => new PackageOccurrence {
+                    ProjectName = pa.Analysis.ProjectName ?? "Unknown",
+                    ProjectPath = pa.Analysis.ProjectPath,
+                    Version = pa.Package.Version,
+                    WhitelistMatch = pa.Package.WhitelistMatch,
+                    BlacklistMatch = pa.Package.BlacklistMatch,
+                    MicrosoftMatch = pa.Package.MicrosoftMatch,
+                    TrustedMatch = pa.Package.TrustedMatch
+                }).ToList()
+            })
+            .ToList();
+
+        // Separate by category
+        var microsoftOfficialPackages = packageGroups.Where(p => p.Category == NugetPackageCategory.MicrosoftOfficial).ToList();
+        var microsoftNonOfficialPackages = packageGroups.Where(p => p.Category == NugetPackageCategory.MicrosoftNonOfficial).ToList();
+        var trustedPackages = packageGroups.Where(p => p.Category == NugetPackageCategory.TrustedThirdParty).ToList();
+        var otherPackages = packageGroups.Where(p => p.Category == NugetPackageCategory.Other).ToList();
+
+        var content = new List<string>();
+
+        // Display each category
+        AddAggregateCategorySection(content, "Microsoft Official .NET Packages", microsoftOfficialPackages, showProjects);
+        AddAggregateCategorySection(content, "Microsoft Non-Official Packages", microsoftNonOfficialPackages, showProjects);
+        AddAggregateCategorySection(content, "Known Trusted Packages", trustedPackages, showProjects);
+        AddAggregateCategorySection(content, "Other Packages", otherPackages, showProjects);
+
+        var panel = new Panel(string.Join("\n", content))
+            .Header("[bold blue]Aggregated Package View[/]")
+            .Border(BoxBorder.Rounded);
+
+        AnsiConsole.Write(panel);
+
+        // Summary
+        var totalPackages = allPackages.Count;
+        var uniquePackages = packageGroups.Count;
+
+        _console.WriteRule("[bold green]Summary[/]");
+        _console.WriteInfo($"Total package references across all projects: {totalPackages}");
+        _console.WriteInfo($"Unique packages: {uniquePackages}");
+    }
+
+    private void AddAggregateCategorySection(List<string> content, string categoryName, List<AggregatedPackage> packages, bool showProjects) {
+        if (!packages.Any()) {
+            return;
+        }
+
+        content.Add($"[bold yellow]{categoryName}:[/]");
+
+        foreach (var pkg in packages.OrderBy(p => p.Name)) {
+            var versions = pkg.Occurrences.Select(o => o.Version).Distinct().ToList();
+            var versionInfo = versions.Count == 1 
+                ? $"({versions[0]})" 
+                : $"(multiple versions: {string.Join(", ", versions)})";
+
+            var packageInfo = $"• {pkg.Name} {versionInfo}";
+
+            // Add coloring based on match type (use first occurrence)
+            var firstOccurrence = pkg.Occurrences.First();
+            if (!string.IsNullOrWhiteSpace(firstOccurrence.BlacklistMatch)) {
+                packageInfo = $"[red]{packageInfo} ({firstOccurrence.BlacklistMatch})[/]";
+            }
+            else if (!string.IsNullOrWhiteSpace(firstOccurrence.WhitelistMatch)) {
+                packageInfo = $"[green]{packageInfo} ({firstOccurrence.WhitelistMatch})[/]";
+            }
+            else if (!string.IsNullOrWhiteSpace(firstOccurrence.MicrosoftMatch)) {
+                packageInfo = $"{packageInfo} ({firstOccurrence.MicrosoftMatch})";
+            }
+            else if (!string.IsNullOrWhiteSpace(firstOccurrence.TrustedMatch)) {
+                packageInfo = $"{packageInfo} ({firstOccurrence.TrustedMatch})";
+            }
+
+            content.Add(packageInfo);
+
+            // Show which projects reference this package if enabled
+            if (showProjects) {
+                foreach (var occurrence in pkg.Occurrences.OrderBy(o => o.ProjectName)) {
+                    var projectInfo = $"    [dim]→ {occurrence.ProjectName}";
+                    if (versions.Count > 1) {
+                        projectInfo += $" (v{occurrence.Version})";
+                    }
+                    projectInfo += "[/]";
+                    content.Add(projectInfo);
+                }
+            }
         }
         content.Add("");
     }
