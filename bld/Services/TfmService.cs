@@ -246,13 +246,6 @@ internal class TfmService {
                             tfmsToUpdate.Add(tfm);
                         }
                     }
-                    
-                    // If toTfm is not in the list and we have matches, we might want to add it
-                    // This happens when upgrading the highest matching framework
-                    if (tfmsToUpdate.Count > 0 && !tfms.Contains(toTfm, StringComparer.OrdinalIgnoreCase)) {
-                        // Check if we should add toTfm (if current doesn't contain toTfm)
-                        // This will be handled in the update logic
-                    }
                 }
 
                 if (tfmsToUpdate.Count == 0) {
@@ -379,7 +372,7 @@ internal class TfmService {
                     project.TargetFrameworksToUpdate.Contains(tfm, StringComparer.OrdinalIgnoreCase) ? toTfm : tfm
                 ).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
                 
-                // If no TFMs were updated (shouldn't happen), add toTfm
+                // Defensive: ensure toTfm is in the list (should already be added by Select above)
                 if (!newTfms.Contains(toTfm, StringComparer.OrdinalIgnoreCase)) {
                     newTfms.Add(toTfm);
                 }
