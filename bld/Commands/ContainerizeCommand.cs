@@ -25,12 +25,24 @@ internal sealed class ContainerizeCommand : BaseCommand {
         DefaultValueFactory = _ => false
     };
 
+    private readonly Option<bool> _projectsOption = new Option<bool>("--projects", "-p") {
+        Description = "Scan for .NET projects with container build properties.",
+        DefaultValueFactory = _ => false
+    };
+
+    private readonly Option<bool> _allOption = new Option<bool>("--all", "-a") {
+        Description = "Scan for both Dockerfiles and .NET container projects.",
+        DefaultValueFactory = _ => false
+    };
+
     public ContainerizeCommand(IConsoleOutput console) 
-        : base("containerize", "Analyze and display information about Dockerfiles in the project.", console) {
+        : base("containerize", "Analyze and display information about Dockerfiles and container projects.", console) {
         Add(_rootOption);
         Add(_depthOption);
         Add(_logLevelOption);
         Add(_listOnlyOption);
+        Add(_projectsOption);
+        Add(_allOption);
         Add(_rootArgument);
     }
 
@@ -76,54 +88,142 @@ internal sealed class ContainerizeCommand : BaseCommand {
 
         var depth = parseResult.GetValue(_depthOption);
         var listOnly = parseResult.GetValue(_listOnlyOption);
+        var scanProjects = parseResult.GetValue(_projectsOption);
+        var scanAll = parseResult.GetValue(_allOption);
 
-        Console.WriteInfo($"Searching for Dockerfiles in: {rootPath}");
+        // If --all is specified, scan both; otherwise respect individual flags
+        var shouldScanDockerfiles = scanAll || !scanProjects;
+        var shouldScanProjects = scanAll || scanProjects;
+
+        // Initialize MSBuild if we need to scan projects
+        if (shouldScanProjects) {
+            var options = new CleaningOptions {
+                LogLevel = logLevel,
+                VSToolsPath = parseResult.GetValue(_vsToolsPath),
+                NoResolveVSToolsPath = parseResult.GetValue(_noResolveVsToolsPath)
+            };
+
+            if (!options.NoResolveVSToolsPath && string.IsNullOrEmpty(options.VSToolsPath)) {
+                options.VSToolsPath = TryResolveVSToolsPath(out var vsRoot);
+                options.VSRootPath = vsRoot;
+            }
+
+            Services.MSBuildService.RegisterMSBuildDefaults(Console, options);
+        }
+
+        Console.WriteInfo($"Scanning: {rootPath}");
         Console.WriteInfo($"Search depth: {depth}");
         Console.WriteInfo("");
 
-        var dockerfiles = await DockerfileParser.FindDockerfilesAsync(rootPath, depth);
+        bool foundAny = false;
 
-        if (dockerfiles.Count == 0) {
-            Console.WriteWarning("No Dockerfiles found.");
-            return 0;
+        // Scan for .NET container projects
+        if (shouldScanProjects) {
+            var projectFiles = await ProjectContainerScanner.FindProjectFilesAsync(rootPath, depth);
+            var containerProjects = new List<ProjectContainerScanner.ContainerProjectInfo>();
+
+            // Prepare global properties for project evaluation
+            var globalProps = new Dictionary<string, string>();
+            var vsToolsPath = parseResult.GetValue(_vsToolsPath);
+            if (!string.IsNullOrEmpty(vsToolsPath)) {
+                globalProps["VSToolsPath"] = vsToolsPath;
+            }
+
+            foreach (var projectFile in projectFiles) {
+                var projectInfo = await ProjectContainerScanner.ParseProjectAsync(projectFile, globalProps);
+                if (projectInfo != null) {
+                    containerProjects.Add(projectInfo);
+                }
+            }
+
+            if (containerProjects.Count > 0) {
+                foundAny = true;
+                Console.WriteInfo($"Found {containerProjects.Count} .NET Container Project(s):");
+                Console.WriteInfo("");
+
+                foreach (var project in containerProjects) {
+                    var relativePath = Path.GetRelativePath(rootPath, project.ProjectPath);
+                    Console.WriteInfo($"  • {project.ProjectName} ({relativePath})");
+
+                    if (!listOnly) {
+                        if (project.PublishProfile != null) {
+                            Console.WriteInfo($"    Publish Profile: {project.PublishProfile}");
+                        }
+                        
+                        if (project.EnableSdkContainerSupport) {
+                            Console.WriteInfo($"    SDK Container Support: Enabled");
+                        }
+
+                        if (project.ContainerBaseImage != null) {
+                            Console.WriteInfo($"    Container Base Image: {project.ContainerBaseImage}");
+                        }
+                        
+                        if (project.ContainerImage != null) {
+                            Console.WriteInfo($"    Container Image: {project.ContainerImage}");
+                        }
+                        
+                        if (project.ContainerFamily != null) {
+                            Console.WriteInfo($"    Container Family: {project.ContainerFamily}");
+                        }
+
+                        if (project.ContainerRegistry != null) {
+                            Console.WriteInfo($"    Container Registry: {project.ContainerRegistry}");
+                        }
+
+                        Console.WriteInfo("");
+                    }
+                }
+            }
         }
 
-        Console.WriteInfo($"Found {dockerfiles.Count} Dockerfile(s):");
-        Console.WriteInfo("");
+        // Scan for Dockerfiles
+        if (shouldScanDockerfiles) {
+            var dockerfiles = await DockerfileParser.FindDockerfilesAsync(rootPath, depth);
 
-        foreach (var dockerfile in dockerfiles) {
-            var relativePath = Path.GetRelativePath(rootPath, dockerfile);
-            Console.WriteInfo($"  • {relativePath}");
-            
-            if (!listOnly) {
-                var info = await DockerfileParser.ParseAsync(dockerfile);
-                
-                if (info.BaseImages.Any()) {
-                    Console.WriteInfo($"    Base Images: {string.Join(", ", info.BaseImages)}");
-                }
-                
-                if (info.Stages.Any()) {
-                    Console.WriteInfo($"    Build Stages: {string.Join(", ", info.Stages)}");
-                }
-                
-                if (info.ExposedPorts.Any()) {
-                    Console.WriteInfo($"    Exposed Ports: {string.Join(", ", info.ExposedPorts)}");
-                }
-                
-                if (!string.IsNullOrEmpty(info.WorkDir)) {
-                    Console.WriteInfo($"    Working Directory: {info.WorkDir}");
-                }
-                
-                if (!string.IsNullOrEmpty(info.EntryPoint)) {
-                    Console.WriteInfo($"    Entry Point: {info.EntryPoint}");
-                }
-                
-                if (!string.IsNullOrEmpty(info.Cmd)) {
-                    Console.WriteInfo($"    CMD: {info.Cmd}");
-                }
-                
+            if (dockerfiles.Count > 0) {
+                foundAny = true;
+                Console.WriteInfo($"Found {dockerfiles.Count} Dockerfile(s):");
                 Console.WriteInfo("");
+
+                foreach (var dockerfile in dockerfiles) {
+                    var relativePath = Path.GetRelativePath(rootPath, dockerfile);
+                    Console.WriteInfo($"  • {relativePath}");
+                    
+                    if (!listOnly) {
+                        var info = await DockerfileParser.ParseAsync(dockerfile);
+                        
+                        if (info.BaseImages.Any()) {
+                            Console.WriteInfo($"    Base Images: {string.Join(", ", info.BaseImages)}");
+                        }
+                        
+                        if (info.Stages.Any()) {
+                            Console.WriteInfo($"    Build Stages: {string.Join(", ", info.Stages)}");
+                        }
+                        
+                        if (info.ExposedPorts.Any()) {
+                            Console.WriteInfo($"    Exposed Ports: {string.Join(", ", info.ExposedPorts)}");
+                        }
+                        
+                        if (!string.IsNullOrEmpty(info.WorkDir)) {
+                            Console.WriteInfo($"    Working Directory: {info.WorkDir}");
+                        }
+                        
+                        if (!string.IsNullOrEmpty(info.EntryPoint)) {
+                            Console.WriteInfo($"    Entry Point: {info.EntryPoint}");
+                        }
+                        
+                        if (!string.IsNullOrEmpty(info.Cmd)) {
+                            Console.WriteInfo($"    CMD: {info.Cmd}");
+                        }
+                        
+                        Console.WriteInfo("");
+                    }
+                }
             }
+        }
+
+        if (!foundAny) {
+            Console.WriteWarning("No Dockerfiles or container projects found.");
         }
 
         return 0;
