@@ -12,5 +12,10 @@ internal class RootCommand : System.CommandLine.RootCommand {
         Add(new CleanCommand(console));
         Add(new StatsCommand(console));
         Add(new SlnxCommand(console));
+        Add(new NugetCommand(console));
+        Add(new ContainerizeCommand(console));
+        Add(new CpmCommand(console));
+        Add(new OutdatedCommand(console));
+        Add(new TfmCommand(console));
     }
 }

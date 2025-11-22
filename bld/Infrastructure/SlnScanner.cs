@@ -28,7 +28,6 @@ internal class SlnScanner(CleaningOptions Options, ErrorSink ErrorSink) {
         var pathRooted = DirExt.EnsureRooted(path, Environment.CurrentDirectory);
         if (!Directory.Exists(pathRooted)) {
             ErrorSink.AddError($"Input path {path} (translated to {pathRooted}) not found.");
-            //throw new ArgumentException($"{path} from {Environment.CurrentDirectory} -> {pathRooted}");
             yield break;
         }
 

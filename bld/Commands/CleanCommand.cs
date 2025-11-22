@@ -27,16 +27,6 @@ internal sealed class CleanCommand : BaseCommand {
         DefaultValueFactory = _ => ConfirmLevel.Directory
     };
 
-    //private readonly Option<bool> _deleteEmptyDirs = new Option<bool>("--delete-empty-directories") {
-    //    Description = "Also delete empty directories (in addition to regular logic).",
-    //    DefaultValueFactory = _ => false
-    //};
-
-    //private readonly Option<ConfirmLevel> _confirmOption = new Option<ConfirmLevel>("--confirm") {
-    //    Description = "Confirmation scope (Force|Sln|Proj|Dir). --force implies Force.",
-    //    DefaultValueFactory = _ => ConfirmLevel.Directory
-    //};
-
     public CleanCommand(IConsoleOutput console) : base("clean", "Cleans solution / project build output (bin/obj etc.)", console) {
         Add(_rootOption);
         Add(_depthOption);
@@ -47,18 +37,12 @@ internal sealed class CleanCommand : BaseCommand {
         Add(_logLevelOption);
 
         Add(_outputFileOption);
-        //Add(_logFileOption);
-
+    
         Add(_forceOption);
         Add(_vsToolsPath);
         Add(_noResolveVsToolsPath);
 
         Add(_deleteOption);
-        //Add(_deleteEmptyDirs);
-        //Add(_confirmOption);
-        //Add(_nupkgOption);
-
-        //Add(_confirmLevelOption);
 
         Add(_rootArgument);
     }
@@ -67,12 +51,8 @@ internal sealed class CleanCommand : BaseCommand {
         var errors = new List<string>();
 
         var options = new CleaningOptions {
-            //DryRun = parseResult.GetValue(_dryRunOption), // If --delete is specified, disable dry run
             OutputFile = parseResult.GetValue(_outputFileOption),
-            //LogFile = parseResult.GetValue(_logFileOption),
             Delete = parseResult.GetValue(_deleteOption),
-            //DeleteEmptyDirectories = parseResult.GetValue(_deleteEmptyDirs),
-            //DeleteFiles = parseResult.GetValue(_deleteFilesOnly),
             CleanOnlyNonCurrentTfms = parseResult.GetValue(_nonCurrentOption),
             CleanObjDirectory = parseResult.GetValue(_objOption),
             CleanNupkgFiles = parseResult.GetValue(_nupkgOption),

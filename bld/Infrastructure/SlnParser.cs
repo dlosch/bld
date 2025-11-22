@@ -4,8 +4,14 @@ using Microsoft.Build.Construction;
 
 namespace bld.Infrastructure;
 
+internal enum ProcessingType {
+    Solution,
+    Project,
+    Directory
+}
+
 internal sealed class SlnParser(IConsoleOutput Console, ErrorSink ErrorSink) {
-    public async IAsyncEnumerable<ProjCfg> ParseSolution(string slnPath, IFileSystem? fileSystem = default) {
+    public async IAsyncEnumerable<ProjCfg> ParseSolution(string slnPath, IFileSystem? fileSystem = default, bool createDefaultDebugConfiguration = true) {
         var solution = default(SolutionFile);
         var sln = new Sln(slnPath);
         try {
@@ -47,9 +53,11 @@ internal sealed class SlnParser(IConsoleOutput Console, ErrorSink ErrorSink) {
                 }
             }
             else {
-                var projCfg = new ProjCfg(proj, "Debug", null);
+                if (createDefaultDebugConfiguration) {
+                    var projCfg = new ProjCfg(proj, "Debug", null);
+                    yield return projCfg;
+                }
                 var projCfgRelease = new ProjCfg(proj, "Release", null);
-                yield return projCfg;
                 yield return projCfgRelease;
             }
         }

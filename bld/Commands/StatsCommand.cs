@@ -16,12 +16,8 @@ internal sealed class StatsCommand : BaseCommand {
 
         Add(_logLevelOption);
 
-        //Add(_logFileOption);
-
         Add(_vsToolsPath);
         Add(_noResolveVsToolsPath);
-
-        //Add(_nupkgOption);
 
         Add(_rootArgument);
     }
@@ -30,21 +26,14 @@ internal sealed class StatsCommand : BaseCommand {
         var errors = new List<string>();
 
         var options = new CleaningOptions {
-            //DryRun = parseResult.GetValue(_dryRunOption), // If --delete is specified, disable dry run
-            //OutputFile = parseResult.GetValue(_outputFileOption),
-            //LogFile = parseResult.GetValue(_logFileOption),
             Delete = false, //TODO parseResult.GetValue(_deleteOption),
-            //DeleteEmptyDirectories = parseResult.GetValue(_deleteEmptyDirs),
-            //DeleteFiles = parseResult.GetValue(_deleteFilesOnly),
             CleanOnlyNonCurrentTfms = parseResult.GetValue(_nonCurrentOption),
             CleanObjDirectory = parseResult.GetValue(_objOption),
             CleanNupkgFiles = parseResult.GetValue(_nupkgOption),
-            //Force = parseResult.GetValue(_forceOption),
             LogLevel = parseResult.GetValue(_logLevelOption),
             Depth = parseResult.GetValue(_depthOption),
             VSToolsPath = parseResult.GetValue(_vsToolsPath),
             NoResolveVSToolsPath = parseResult.GetValue(_noResolveVsToolsPath),
-            //ConfirmLevel = parseResult.GetValue(_confirmLevelOption),
         };
 
         if (!options.NoResolveVSToolsPath && string.IsNullOrEmpty(options.VSToolsPath)) {

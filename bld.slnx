@@ -4,7 +4,6 @@
     <Platform Name="x64" />
     <Platform Name="x86" />
   </Configurations>
-  <Folder Name="/Obsolete/Recent/">
-    <Project Path="bld/bld.csproj" />
-  </Folder>
+  <Project Path="bld.Tests/bld.Tests.csproj" Id="85adeccc-511d-43d8-a5c0-6d41bdcc5173" />
+  <Project Path="bld/bld.csproj" />
 </Solution>

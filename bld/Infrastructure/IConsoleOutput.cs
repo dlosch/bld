@@ -16,10 +16,12 @@ internal interface IConsoleOutput {
     void WriteRule(string title);
 
     bool Confirm(string message, bool defaultValue = false);
+    T Prompt<T>(SelectionPrompt<T> prompt) where T : notnull;
 
     void StartProgress(string description, Action<ProgressContext> action);
     Task StartProgressAsync(string description, Func<ProgressContext, Task> action);
     Task StartStatusAsync(string description, Func<StatusContext, Task> action);
     void WriteException(Exception exception);
-    void WriteOutput(string caption, string content);
+    void WriteOutput(string caption, string? content = default);
+    void WriteHeader(string caption, string? additionaltext = default);
 }

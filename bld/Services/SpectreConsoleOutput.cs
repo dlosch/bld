@@ -21,8 +21,9 @@ internal class SpectreConsoleOutput : IConsoleOutput {
     }
 
 
-    public void WriteOutput(string caption, string message) {
-        AnsiConsole.MarkupLine($"{caption}:\r\n{Markup.Escape(message)}\r\n");
+    public void WriteOutput(string caption, string? message) {
+        if (message is { }) AnsiConsole.MarkupLine($"{caption}:\r\n{Markup.Escape(message)}\r\n");
+        else AnsiConsole.MarkupLine($"{caption}\r\n");
     }
 
     public void WriteWarning(string message) {
@@ -54,11 +55,21 @@ internal class SpectreConsoleOutput : IConsoleOutput {
     }
 
     public void WriteRule(string title) {
-        AnsiConsole.Write(new Rule(title));
+        AnsiConsole.Write(new Rule(title) { Justification = Justify.Left });
+    }
+    public void WriteHeader(string title, string? additionalText = default) {
+        AnsiConsole.Write(new Rule(title) { Justification = Justify.Left });
+        if (!string.IsNullOrWhiteSpace(additionalText)) {
+            AnsiConsole.MarkupLine($"[dim]{Markup.Escape(additionalText)}[/]");
+        }
     }
 
     public bool Confirm(string message, bool defaultValue = false) {
         return AnsiConsole.Confirm(message, defaultValue);
+    }
+
+    public T Prompt<T>(SelectionPrompt<T> prompt) where T : notnull {
+        return AnsiConsole.Prompt(prompt);
     }
 
     public void StartProgress(string description, Action<ProgressContext> action) {
