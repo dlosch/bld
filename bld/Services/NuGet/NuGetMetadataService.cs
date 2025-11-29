@@ -315,9 +315,18 @@ public record PackageVersionRequest {
     public bool IsPrivateAssets { get; init; } = false;
     // todo CompatibleTargetFrameworks should be a typed list of NuGetFramework
     public required IReadOnlyList<string> CompatibleTargetFrameworks { get; init; }
-    public IEnumerable<NuGetFramework> CompatibleTargetFrameworksTyped => CompatibleTargetFrameworks
-        .Where(x => !string.IsNullOrWhiteSpace(x))
-        .Select(tf => NuGetFramework.Parse(tf));
+    
+    private IReadOnlyList<NuGetFramework>? _compatibleTargetFrameworksTyped;
+    
+    /// <summary>
+    /// Returns the parsed NuGetFramework instances for CompatibleTargetFrameworks.
+    /// Cached to avoid repeated parsing overhead from NuGetFramework.Parse() calls.
+    /// </summary>
+    public IReadOnlyList<NuGetFramework> CompatibleTargetFrameworksTyped => 
+        _compatibleTargetFrameworksTyped ??= CompatibleTargetFrameworks
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Select(tf => NuGetFramework.Parse(tf))
+            .ToList();
 
     // todo CompatibleTargetFrameworks should be a typed list of NuGetFramework
     public IEnumerable<string> CompatibleTargetFrameworksOrdered => CompatibleTargetFrameworksTyped
