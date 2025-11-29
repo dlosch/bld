@@ -1,20 +1,18 @@
-﻿//using XUnit.Framework;
-
-using NuGet.Frameworks;
+﻿using NuGet.Frameworks;
 using Xunit.Abstractions;
 using System.Reflection;
 
 namespace bld.Tests;
 
-public class DotNetTests(ITestOutputHelper Console) {
+public class DotNetTests {
     [Fact]
     public void PathCombineLinux() {
-        Assert.Throws<ArgumentNullException>(() => Path.Combine("/mnt/d/tests", null, "child"));
+        Assert.Throws<ArgumentNullException>(() => Path.Combine("/mnt/d/tests", null!, "child"));
     }
 
     [Fact]
     public void PathCombineWin() {
-        Assert.Throws<ArgumentNullException>(() => Path.Combine("d:\\tests", null, "child"));
+        Assert.Throws<ArgumentNullException>(() => Path.Combine("d:\\tests", null!, "child"));
     }
 }
 
@@ -37,7 +35,6 @@ public class TfmCommandTests {
     [InlineData("NET8.0", true)]  // Test case insensitivity
     [InlineData("  net7.0  ", true)]  // Test trimming
     [InlineData("", false)]
-    [InlineData(null, false)]
     public void IsDotNetCoreFramework_ShouldFilterCorrectly(string tfm, bool expected) {
         // Use reflection to call the private static method
         var tfmCommandType = typeof(bld.Commands.TfmCommand);
@@ -49,9 +46,24 @@ public class TfmCommandTests {
         var result = (bool)method.Invoke(null, new object[] { tfm })!;
         Assert.Equal(expected, result);
     }
+
+    [Fact]
+    public void IsDotNetCoreFramework_WithNull_ReturnsFalse() {
+        // Test null separately to avoid xUnit1012 warning
+        var tfmCommandType = typeof(bld.Commands.TfmCommand);
+        var method = tfmCommandType.GetMethod("IsDotNetCoreFramework", 
+            BindingFlags.NonPublic | BindingFlags.Static);
+        
+        Assert.NotNull(method);
+        
+        var result = (bool)method.Invoke(null, new object?[] { null })!;
+        Assert.False(result);
+    }
 }
 
-public class NuGetFrameworkTests(ITestOutputHelper Console) {
+public class NuGetFrameworkTests(ITestOutputHelper console) {
+    private readonly ITestOutputHelper _console = console;
+
     [Fact]
     public void Test1() {
         string[] tfms = new[]
@@ -74,7 +86,7 @@ public class NuGetFrameworkTests(ITestOutputHelper Console) {
         foreach (var tfm in tfms) {
             var framework = NuGetFramework.Parse(tfm);
             string normalizedTfm = framework.GetShortFolderName();
-            Console.WriteLine($"Original: {tfm}, Normalized: {normalizedTfm}");
+            _console.WriteLine($"Original: {tfm}, Normalized: {normalizedTfm}");
         }
     }
 }
