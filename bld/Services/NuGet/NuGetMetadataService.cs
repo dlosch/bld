@@ -316,17 +316,19 @@ public record PackageVersionRequest {
     // todo CompatibleTargetFrameworks should be a typed list of NuGetFramework
     public required IReadOnlyList<string> CompatibleTargetFrameworks { get; init; }
     
-    private IReadOnlyList<NuGetFramework>? _compatibleTargetFrameworksTyped;
+    private Lazy<IReadOnlyList<NuGetFramework>>? _compatibleTargetFrameworksTyped;
     
     /// <summary>
     /// Returns the parsed NuGetFramework instances for CompatibleTargetFrameworks.
     /// Cached to avoid repeated parsing overhead from NuGetFramework.Parse() calls.
+    /// Uses Lazy&lt;T&gt; for thread-safe lazy initialization.
     /// </summary>
     public IReadOnlyList<NuGetFramework> CompatibleTargetFrameworksTyped => 
-        _compatibleTargetFrameworksTyped ??= CompatibleTargetFrameworks
-            .Where(x => !string.IsNullOrWhiteSpace(x))
-            .Select(tf => NuGetFramework.Parse(tf))
-            .ToList();
+        (_compatibleTargetFrameworksTyped ??= new Lazy<IReadOnlyList<NuGetFramework>>(() => 
+            CompatibleTargetFrameworks
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Select(tf => NuGetFramework.Parse(tf))
+                .ToList())).Value;
 
     // todo CompatibleTargetFrameworks should be a typed list of NuGetFramework
     public IEnumerable<string> CompatibleTargetFrameworksOrdered => CompatibleTargetFrameworksTyped
