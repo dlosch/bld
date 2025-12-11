@@ -1,14 +1,34 @@
-﻿# bld
+# bld
 
-`bld` utility for working with .NET/msbuild project files and solutions. 
-- clean build output
-- list nuget packages
-- list and update tfm
-- enable central package management
-- scan and update outdated nuget package versions
-- scan for docker base image references
+`bld` is a pragmatic .NET/msbuild Swiss Army knife that keeps solutions tidy and consistent without the yak-shaving.
 
-Some of this can be handy when working with agentic coding tools which at this stage may have an unconventional approach to tfms, central package management, nuget package references and versions.
+## What it does
+- Clean build output and emit deletion scripts (or execute when you are ready).
+- List NuGet packages and aggregate usage.
+- List/update target frameworks (TFMs).
+- Enable central package management.
+- Scan and update outdated NuGet package versions.
+- Scan for Docker base image references and SDK-style container projects.
+
+## Why that matters
+- Reclaim gigabytes of disk and speed up CI caches.
+- Keep TFMs, SDKs, and NuGet packages aligned so team members (and agentic coding tools) stop tripping over mismatched configs.
+- Gain fast, searchable inventories of dependencies and container entry points for audits or upgrades.
+
+## How it works (at a glance)
+- Evaluates projects and solutions in-process with MSBuild to understand what you actually have.
+- Defaults to dry-runs and generates OS-specific scripts so you can review before deleting or mutating files.
+- Surfaces conflicts and heuristics (e.g., inferred TFMs, SDK versions, package consistency) before applying changes.
+
+## Sample scenarios (pick your adventure)
+- **Nuke build bloat, safely:** `bld clean --root C:\src\MyRepo --depth 4 --obj`  
+  Review the generated script, then add `--delete` when confident.
+- **Get a bird’s-eye view of dependencies:** `bld nuget --root . --aggregate --show-projects`  
+  Handy for audits or deciding what to centralize.
+- **Align TFMs for modern SDKs:** `bld tfm --root MySolution.sln --to net9.0 --apply`  
+  Runs checks first and tells you where conflicts live.
+
+Some of this is especially useful when working with agentic coding tools, which may have unconventional approaches to TFMs, central package management, and NuGet/package versions. bld keeps the house in order so they can focus on the code.
 
 ## Quick Start
 
