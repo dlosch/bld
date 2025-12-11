@@ -1,6 +1,6 @@
 # bld
 
-`bld` is a pragmatic .NET/msbuild Swiss Army knife that keeps solutions tidy and consistent without the yak-shaving.
+`bld` is a pragmatic .NET/msbuild Swiss Army knife that keeps solutions tidy and consistent without the yak shaving.
 
 ## What it does
 - Clean build output and emit deletion scripts (or execute when you are ready).
@@ -28,7 +28,7 @@
 - **Align TFMs for modern SDKs:** `bld tfm --root MySolution.sln --to net9.0 --apply`  
   Runs checks first and tells you where conflicts live.
 
-Some of this is especially useful when working with agentic coding tools, which may have unconventional approaches to TFMs, central package management, and NuGet/package versions. bld keeps the house in order so they can focus on the code.
+Some of this is especially useful when working with agentic coding tools, which may have unconventional approaches to TFMs, central package management, and NuGet package versions. bld keeps the house in order so they can focus on the code.
 
 ## Quick Start
 
