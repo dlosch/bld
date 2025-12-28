@@ -46,12 +46,19 @@
     <PackageId>Cloudsiders.bld</PackageId>
     <PackageVersion>0.1.1</PackageVersion>
     <Authors>dlosch</Authors>
-    <Description>Tool to clean build output folders for msbuild</Description>
-    <PackageTags>msbuild</PackageTags>
+    <Description>A .NET tool for working with MSBuild project files and solutions. Clean build output, analyze NuGet packages, manage target frameworks, enable Central Package Management, check for outdated packages, and discover container configurations.</Description>
+    <PackageTags>msbuild;nuget;dotnet-tool;clean;build;cpm;tfm;containers</PackageTags>
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
     <!--<PackageLicenseFile>LICENSE</PackageLicenseFile>-->
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <RepositoryUrl>https://github.com/dlosch/bld</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
   </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="../README.md" Pack="true" PackagePath="/"/>
+  </ItemGroup>
 
 </Project>

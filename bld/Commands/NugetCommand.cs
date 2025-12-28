@@ -13,7 +13,12 @@ internal sealed class NugetCommand : BaseCommand {
     };
 
     private readonly Option<bool> _aggregateOption = new Option<bool>("--aggregate", "--agg") {
-        Description = "Display packages aggregated across all projects instead of per-project view.",
+        Description = "Display packages aggregated across all projects instead of per-project view (default: true).",
+        DefaultValueFactory = _ => true
+    };
+
+    private readonly Option<bool> _noAggregateOption = new Option<bool>("--no-aggregate", "--no-agg") {
+        Description = "Display packages per-project instead of aggregated view.",
         DefaultValueFactory = _ => false
     };
 
@@ -30,6 +35,7 @@ internal sealed class NugetCommand : BaseCommand {
         Add(_noResolveVsToolsPath);
         Add(_whitelistBlacklistFileOption);
         Add(_aggregateOption);
+        Add(_noAggregateOption);
         Add(_showProjectsOption);
         Add(_rootArgument);
     }
@@ -50,7 +56,13 @@ internal sealed class NugetCommand : BaseCommand {
         base.Console = new SpectreConsoleOutput(options.LogLevel);
         var whitelistBlacklistFile = parseResult.GetValue(_whitelistBlacklistFileOption);
         var aggregate = parseResult.GetValue(_aggregateOption);
+        var noAggregate = parseResult.GetValue(_noAggregateOption);
         var showProjects = parseResult.GetValue(_showProjectsOption);
+
+        // If --no-aggregate is specified, disable aggregation
+        if (noAggregate) {
+            aggregate = false;
+        }
 
         var rootPath = parseResult.GetValue(_rootArgument) ?? parseResult.GetValue(_rootOption);
         if (string.IsNullOrWhiteSpace(rootPath)) {
