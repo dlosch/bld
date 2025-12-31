@@ -3,7 +3,7 @@ namespace bld.Models;
 /// <summary>
 /// Directory types for cleaning operations
 /// </summary>
-internal enum DirType {
+public enum DirType {
     OutDir,
     BaseOutputPath,
     BaseIntermediateOutputPath,
@@ -12,7 +12,7 @@ internal enum DirType {
 /// <summary>
 /// Project types supported by the cleaner
 /// </summary>
-internal enum ProjectType {
+public enum ProjectType {
     Unknown,
     Csproj,
     CsprojWeb,
@@ -26,7 +26,7 @@ internal enum ProjectType {
 /// <summary>
 /// Represents a directory with associated project information for cleaning
 /// </summary>
-internal record class Dir(
+public record class Dir(
     List<(string Path, DirType Type)> AbsPath,
     Dictionary<string, string?> AbsProjPath,
     HashSet<string> Configs,
@@ -58,10 +58,10 @@ internal record class Dir(
 /// <summary>
 /// Stats structure for tracking deletion operations
 /// </summary>
-internal record struct Stats(string Sln, string[]? Configurations = default, int TotalDirectories = 0, long TotalSize = 0L, int TotalFsiEntryCount = 0) {
-    internal long TotalSizeMiB => TotalSize / (1024 * 1024);
+public record struct Stats(string Sln, string[]? Configurations = default, int TotalDirectories = 0, long TotalSize = 0L, int TotalFsiEntryCount = 0) {
+    public long TotalSizeMiB => TotalSize / (1024 * 1024);
 
-    internal void Add(Stats stats) {
+    public void Add(Stats stats) {
         TotalDirectories += stats.TotalDirectories;
         TotalSize += stats.TotalSize;
         TotalFsiEntryCount += stats.TotalFsiEntryCount;

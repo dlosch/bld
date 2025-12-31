@@ -10,6 +10,7 @@ internal record CleaningOptions {
     public bool CleanObjDirectory { get; init; } = true;
     public bool CleanNupkgFiles { get; init; } = false;
     public bool Force { get; init; } = false;
+    public bool JsonOutput { get; init; } = false;
     public LogLevel LogLevel { get; init; } = LogLevel.Warning;
     public int Depth { get; init; } = 4;
     public bool Delete { get; internal set; }

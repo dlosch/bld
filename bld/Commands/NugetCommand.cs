@@ -33,6 +33,7 @@ internal sealed class NugetCommand : BaseCommand {
         Add(_logLevelOption);
         Add(_vsToolsPath);
         Add(_noResolveVsToolsPath);
+        Add(_jsonOption);
         Add(_whitelistBlacklistFileOption);
         Add(_aggregateOption);
         Add(_noAggregateOption);
@@ -46,6 +47,7 @@ internal sealed class NugetCommand : BaseCommand {
             Depth = parseResult.GetValue(_depthOption),
             VSToolsPath = parseResult.GetValue(_vsToolsPath),
             NoResolveVSToolsPath = parseResult.GetValue(_noResolveVsToolsPath),
+            JsonOutput = parseResult.GetValue(_jsonOption),
         };
 
         if (!options.NoResolveVSToolsPath && string.IsNullOrEmpty(options.VSToolsPath)) {
@@ -53,7 +55,7 @@ internal sealed class NugetCommand : BaseCommand {
             options.VSRootPath = vsRoot;
         }
 
-        base.Console = new SpectreConsoleOutput(options.LogLevel);
+        base.Console = new SpectreConsoleOutput(options.LogLevel, options.JsonOutput);
         var whitelistBlacklistFile = parseResult.GetValue(_whitelistBlacklistFileOption);
         var aggregate = parseResult.GetValue(_aggregateOption);
         var noAggregate = parseResult.GetValue(_noAggregateOption);
@@ -71,7 +73,11 @@ internal sealed class NugetCommand : BaseCommand {
 
         var app = new NugetAnalysisApplication(base.Console);
         await app.InitAsync(options);
-        await app.RunAsync(new[] { rootPath }, options, whitelistBlacklistFile, aggregate, showProjects);
+        var result = await app.RunAsync(new[] { rootPath }, options, whitelistBlacklistFile, aggregate, showProjects);
+
+        if (options.JsonOutput) {
+            Console.WriteJson(result);
+        }
 
         return 0;
     }

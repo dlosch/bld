@@ -21,6 +21,7 @@ internal sealed class CpmCommand : BaseCommand {
         Add(_rootOption);
         Add(_depthOption);
         Add(_applyOption);
+        Add(_jsonOption);
         Add(_overwriteOption);
         Add(_logLevelOption);
         Add(_vsToolsPath);
@@ -34,13 +35,14 @@ internal sealed class CpmCommand : BaseCommand {
             Depth = parseResult.GetValue(_depthOption),
             VSToolsPath = parseResult.GetValue(_vsToolsPath),
             NoResolveVSToolsPath = parseResult.GetValue(_noResolveVsToolsPath),
+            JsonOutput = parseResult.GetValue(_jsonOption),
         };
 
         if (!options.NoResolveVSToolsPath && string.IsNullOrEmpty(options.VSToolsPath)) {
             options.VSToolsPath = TryResolveVSToolsPath(out var vsRoot);
             options.VSRootPath = vsRoot;
         }
-        base.Console = new SpectreConsoleOutput(options.LogLevel);
+        base.Console = new SpectreConsoleOutput(options.LogLevel, options.JsonOutput);
 
         var rootPath = parseResult.GetValue(_rootArgument) ?? parseResult.GetValue(_rootOption);
         if (string.IsNullOrWhiteSpace(rootPath)) {
@@ -56,7 +58,11 @@ internal sealed class CpmCommand : BaseCommand {
 
         try {
             var cpmService = new CpmService(Console, options);
-            await cpmService.ConvertToCentralPackageManagementAsync(rootPath, apply, overwrite, cancellationToken);
+            var result = await cpmService.ConvertToCentralPackageManagementAsync(rootPath, apply, overwrite, cancellationToken);
+
+            if (options.JsonOutput) {
+                Console.WriteJson(result);
+            }
 
             Console.WriteInfo("Central Package Management conversion completed successfully.");
             return 0;

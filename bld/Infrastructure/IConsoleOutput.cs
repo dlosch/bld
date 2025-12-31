@@ -24,4 +24,5 @@ internal interface IConsoleOutput {
     void WriteException(Exception exception);
     void WriteOutput(string caption, string? content = default);
     void WriteHeader(string caption, string? additionaltext = default);
+    void WriteJson<T>(T data);
 }

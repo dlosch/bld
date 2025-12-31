@@ -23,11 +23,13 @@ internal class CleaningApplication(IConsoleOutput _console, Func<IConsoleOutput,
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    public async Task RunAsync(string[] rootPaths, CleaningOptions options) {
+    public async Task<MarkDeleteResult> RunAsync(string[] rootPaths, CleaningOptions options) {
         if (!_isInitialized) {
             //await InitAsync(options);
             throw new InvalidOperationException("Application not initialized. Call InitAsync first.");
         }
+
+        var result = new MarkDeleteResult();
 
         using var msbuildService = new MSBuildService(_console);
         var errorSink = new ErrorSink(_console);
@@ -79,11 +81,13 @@ internal class CleaningApplication(IConsoleOutput _console, Func<IConsoleOutput,
             errorSink.WriteTo();
 
             //await markDeleteProcessor.DumpDirs();
-            var res = markDeleteProcessor.GetResult();
-            await markDeleteStatsProcessor.ProcessAsync(res);
+            result = markDeleteProcessor.GetResult();
+            await markDeleteStatsProcessor.ProcessAsync(result);
         }
         catch (Exception ex) {
             _console.WriteException(ex);
         }
+
+        return result;
     }
 }

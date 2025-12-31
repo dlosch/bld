@@ -26,7 +26,7 @@ internal class TfmService {
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    public async Task<int> MigrateTargetFrameworkAsync(string rootPath, List<string> fromTfms, string toTfm, bool applyChanges, CancellationToken cancellationToken) {
+    public async Task<TfmMigrationResult> MigrateTargetFrameworkAsync(string rootPath, List<string> fromTfms, string toTfm, bool applyChanges, CancellationToken cancellationToken) {
         // Initialize MSBuild before any Microsoft.Build.* types are loaded
         MSBuildInitializer.Initialize(_console, _options);
 
@@ -73,9 +73,12 @@ internal class TfmService {
             }
         }
 
+        var result = new TfmMigrationResult();
+        result.Projects = projectsToMigrate;
+
         if (projectsToMigrate.Count == 0) {
             _console.WriteInfo($"No projects found using {fromTfmsDisplay}.");
-            return 0;
+            return result;
         }
 
         _console.WriteInfo($"Found {projectsToMigrate.Count} projects to migrate from {fromTfmsDisplay} to {toTfm}");
@@ -159,7 +162,7 @@ internal class TfmService {
             _console.WriteInfo("\nUse --apply to perform the migration.");
         }
 
-        return 0;
+        return result;
     }
 
     private async Task<ProjectMigrationInfo?> AnalyzeProjectForMigrationAsync(string projectPath, List<string> fromTfms, string toTfm, CancellationToken cancellationToken) {
@@ -633,7 +636,7 @@ internal class TfmService {
         DotNet
     }
 
-    private class ProjectMigrationInfo {
+    public class ProjectMigrationInfo {
         public string ProjectPath { get; set; } = string.Empty;
         public string CurrentTfm { get; set; } = string.Empty;
         public List<PackageInfo> PackageReferences { get; set; } = new();
@@ -641,13 +644,20 @@ internal class TfmService {
         public List<string> TargetFrameworksToUpdate { get; set; } = new();
     }
 
-    private class PackageInfo {
+    public class PackageInfo {
         public string Id { get; set; } = string.Empty;
         public string Version { get; set; } = string.Empty;
         public string ProjectPath { get; set; } = string.Empty;
     }
 
-    private class PackageCompatibilityIssue {
+    public class TfmMigrationResult {
+        public List<ProjectMigrationInfo> Projects { get; set; } = new();
+        public List<PackageCompatibilityIssue> CompatibilityIssues { get; set; } = new();
+        public string TargetFramework { get; set; } = string.Empty;
+        public bool Applied { get; set; }
+    }
+
+    public class PackageCompatibilityIssue {
         public string ProjectPath { get; set; } = string.Empty;
         public string PackageId { get; set; } = string.Empty;
         public string CurrentVersion { get; set; } = string.Empty;

@@ -27,6 +27,7 @@ internal sealed class TfmCommand : BaseCommand {
         Add(_fromOption);
         Add(_toOption);
         Add(_applyOption);
+        Add(_jsonOption);
         Add(_logLevelOption);
         Add(_vsToolsPath);
         Add(_noResolveVsToolsPath);
@@ -39,6 +40,7 @@ internal sealed class TfmCommand : BaseCommand {
             Depth = parseResult.GetValue(_depthOption),
             VSToolsPath = parseResult.GetValue(_vsToolsPath),
             NoResolveVSToolsPath = parseResult.GetValue(_noResolveVsToolsPath),
+            JsonOutput = parseResult.GetValue(_jsonOption),
         };
 
         if (!options.NoResolveVSToolsPath && string.IsNullOrEmpty(options.VSToolsPath)) {
@@ -46,7 +48,7 @@ internal sealed class TfmCommand : BaseCommand {
             options.VSRootPath = vsRoot;
         }
 
-        base.Console = new SpectreConsoleOutput(options.LogLevel);
+        base.Console = new SpectreConsoleOutput(options.LogLevel, options.JsonOutput);
 
         var rootPath = parseResult.GetValue(_rootArgument) ?? parseResult.GetValue(_rootOption);
         if (string.IsNullOrWhiteSpace(rootPath)) {
@@ -87,7 +89,13 @@ internal sealed class TfmCommand : BaseCommand {
 
         try {
             var tfmService = new TfmService(Console, options);
-            return await tfmService.MigrateTargetFrameworkAsync(rootPath, fromTfms, to, apply, cancellationToken);
+            var result = await tfmService.MigrateTargetFrameworkAsync(rootPath, fromTfms, to, apply, cancellationToken);
+
+            if (options.JsonOutput) {
+                Console.WriteJson(result);
+            }
+
+            return 0;
         }
         catch (Exception ex) {
             Console.WriteError($"Error migrating target frameworks: {ex.Message}");

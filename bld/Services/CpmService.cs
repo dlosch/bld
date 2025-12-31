@@ -15,10 +15,27 @@ internal class CpmService {
         _options = options;
     }
 
+    public class CpmConversionResult {
+        public List<SolutionCpmData> Solutions { get; set; } = new();
+        public bool Applied { get; set; }
+    }
+
+    public class SolutionCpmData {
+        public string SolutionPath { get; set; } = string.Empty;
+        public int PackageCount { get; set; }
+        public int ProjectCount { get; set; }
+        public bool Success { get; set; }
+        public string? Error { get; set; }
+    }
+
     [MethodImpl(MethodImplOptions.NoInlining)]
-    public async Task ConvertToCentralPackageManagementAsync(string rootPath, bool applyChanges, bool overwrite, CancellationToken cancellationToken) {
+    public async Task<CpmConversionResult> ConvertToCentralPackageManagementAsync(string rootPath, bool applyChanges, bool overwrite, CancellationToken cancellationToken) {
         // Initialize MSBuild before any Microsoft.Build.* types are loaded
         MSBuildInitializer.Initialize(_console, _options);
+
+        var result = new CpmConversionResult {
+            Applied = applyChanges
+        };
 
         _console.WriteInfo("Starting Central Package Management conversion...");
 
@@ -68,7 +85,7 @@ internal class CpmService {
 
         if (solutionData.Count == 0) {
             _console.WriteError("No solution files found. Central Package Management requires a solution file.");
-            return;
+            return result;
         }
 
         _console.WriteInfo($"Found {solutionData.Count} solution(s) to process");
@@ -109,7 +126,16 @@ internal class CpmService {
 
                 _console.WriteInfo($"\n{solution.ProjectFiles.Count} project files would be updated to remove version attributes");
             }
+
+            result.Solutions.Add(new SolutionCpmData {
+                SolutionPath = solution.SolutionPath,
+                PackageCount = solution.PackageReferences.Count,
+                ProjectCount = solution.ProjectFiles.Count,
+                Success = true
+            });
         }
+
+        return result;
     }
 
     private async Task<List<(string PackageId, string Version)>> ExtractPackageReferencesAsync(string projectPath, CancellationToken cancellationToken) {

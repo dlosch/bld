@@ -39,6 +39,7 @@ internal sealed class CleanCommand : BaseCommand {
         Add(_outputFileOption);
     
         Add(_forceOption);
+        Add(_jsonOption);
         Add(_vsToolsPath);
         Add(_noResolveVsToolsPath);
 
@@ -62,13 +63,14 @@ internal sealed class CleanCommand : BaseCommand {
             VSToolsPath = parseResult.GetValue(_vsToolsPath),
             NoResolveVSToolsPath = parseResult.GetValue(_noResolveVsToolsPath),
             ConfirmLevel = parseResult.GetValue(_confirmLevelOption),
+            JsonOutput = parseResult.GetValue(_jsonOption),
         };
 
         if (!options.NoResolveVSToolsPath && string.IsNullOrEmpty(options.VSToolsPath)) {
             options.VSToolsPath = TryResolveVSToolsPath(out var vsRoot);
             options.VSRootPath = vsRoot;
         }
-        base.Console = new SpectreConsoleOutput(options.LogLevel);
+        base.Console = new SpectreConsoleOutput(options.LogLevel, options.JsonOutput);
 
         var rootPath = parseResult.GetValue(_rootArgument) ?? parseResult.GetValue(_rootOption);
         if (string.IsNullOrWhiteSpace(rootPath)) {
@@ -83,7 +85,11 @@ internal sealed class CleanCommand : BaseCommand {
 
             );
         await app.InitAsync(options);
-        await app.RunAsync(new[] { rootPath }, options);
+        var result = await app.RunAsync(new[] { rootPath }, options);
+
+        if (options.JsonOutput) {
+            Console.WriteJson(result);
+        }
 
         return 0;
     }

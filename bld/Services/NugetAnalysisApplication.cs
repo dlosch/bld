@@ -26,11 +26,20 @@ internal class NugetAnalysisApplication {
         return Task.CompletedTask;
     }
 
+    public class NugetAnalysisResult {
+        public List<ProjectNugetAnalysis> Projects { get; set; } = new();
+        public bool Aggregated { get; set; }
+    }
+
     [MethodImpl(MethodImplOptions.NoInlining)]
-    public async Task RunAsync(string[] rootPaths, CleaningOptions options, string? whitelistBlacklistFile, bool aggregate = false, bool showProjects = true) {
+    public async Task<NugetAnalysisResult> RunAsync(string[] rootPaths, CleaningOptions options, string? whitelistBlacklistFile, bool aggregate = false, bool showProjects = true) {
         if (!_isInitialized) {
             throw new InvalidOperationException("Application not initialized. Call InitAsync first.");
         }
+
+        var result = new NugetAnalysisResult {
+            Aggregated = aggregate
+        };
 
         using var msbuildService = new MSBuildService(_console);
         var errorSink = new ErrorSink(_console);
@@ -51,7 +60,7 @@ internal class NugetAnalysisApplication {
             }
             catch (Exception ex) {
                 _console.WriteError($"Failed to parse whitelist/blacklist file: {ex.Message}");
-                return;
+                return result;
             }
         }
 
@@ -91,6 +100,8 @@ internal class NugetAnalysisApplication {
                 .Select(g => g.First())
                 .ToList();
 
+            result.Projects = uniqueAnalyses;
+
             if (aggregate) {
                 DisplayAggregateResults(uniqueAnalyses, categorizer, showProjects);
             }
@@ -107,6 +118,8 @@ internal class NugetAnalysisApplication {
                 _console.WriteError($"Analysis completed with {_errors.Count} error(s).");
             }
         }
+
+        return result;
     }
 
     private static Dictionary<string, string> GetGlobalProperties(CleaningOptions options) {

@@ -22,9 +22,25 @@ internal class OutdatedService {
         _options = options;
     }
 
+    public class OutdatedAnalysisResult {
+        public List<OutdatedPackageInfo> OutdatedPackages { get; set; } = new();
+        public bool Applied { get; set; }
+    }
+
+    public class OutdatedPackageInfo {
+        public string PackageId { get; set; } = string.Empty;
+        public string CurrentVersion { get; set; } = string.Empty;
+        public string LatestVersion { get; set; } = string.Empty;
+        public List<string> Projects { get; set; } = new();
+    }
+
     [MethodImpl(MethodImplOptions.NoInlining)]
-    public async Task<int> CheckOutdatedPackagesAsync(string rootPath, bool updatePackages, bool skipTfmCheck, bool includePrerelease, CancellationToken cancellationToken) {
+    public async Task<OutdatedAnalysisResult> CheckOutdatedPackagesAsync(string rootPath, bool updatePackages, bool skipTfmCheck, bool includePrerelease, CancellationToken cancellationToken) {
         MSBuildService.RegisterMSBuildDefaults(_console, _options);
+
+        var result = new OutdatedAnalysisResult {
+            Applied = updatePackages
+        };
 
         _console.WriteRule("[bold blue]bld outdated (BETA)[/]");
         _console.WriteInfo("Checking for outdated packages...");
@@ -93,7 +109,7 @@ internal class OutdatedService {
 
         if (allPackageReferences.Count == 0) {
             _console.WriteInfo("No package references found.");
-            return 0;
+            return result;
         }
 
         _console.WriteInfo($"Found {allPackageReferences.Count} unique packages across {cache.Count} projects");
@@ -193,7 +209,7 @@ internal class OutdatedService {
             stopwatch.Stop();
             _console.WriteInfo($"Total elapsed time: {stopwatch.Elapsed}");
             errorSink.WriteTo();
-            return 0;
+            return result;
         }
 
         {
@@ -340,7 +356,16 @@ internal class OutdatedService {
         _console.WriteInfo($"Total elapsed time: {stopwatch.Elapsed}");
         errorSink.WriteTo();
 
-        return 0;
+        foreach (var kvp in outdatedPerPackage) {
+            result.OutdatedPackages.Add(new OutdatedPackageInfo {
+                PackageId = kvp.Key,
+                CurrentVersion = kvp.Value.CurrentMin.ToFullString(),
+                LatestVersion = kvp.Value.Latest.ToFullString(),
+                Projects = allPackageReferences[kvp.Key].Select(p => p.ProjectPath).Distinct().ToList()
+            });
+        }
+
+        return result;
     }
 
     private async Task UpdatePropsFileAsync(string propsPath, IReadOnlyDictionary<string, (string target, string? current)> updates, CancellationToken cancellationToken) {

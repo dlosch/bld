@@ -6,15 +6,15 @@ using System.Reflection;
 
 namespace bld.Tests;
 
-public class DotNetTests(ITestOutputHelper Console) {
+public class DotNetTests(/*ITestOutputHelper Console*/) {
     [Fact]
     public void PathCombineLinux() {
-        Assert.Throws<ArgumentNullException>(() => Path.Combine("/mnt/d/tests", null, "child"));
+        Assert.Throws<ArgumentNullException>(() => Path.Combine("/mnt/d/tests", null!, "child"));
     }
 
     [Fact]
     public void PathCombineWin() {
-        Assert.Throws<ArgumentNullException>(() => Path.Combine("d:\\tests", null, "child"));
+        Assert.Throws<ArgumentNullException>(() => Path.Combine("d:\\tests", null!, "child"));
     }
 }
 
@@ -37,7 +37,7 @@ public class TfmCommandTests {
     [InlineData("NET8.0", true)]  // Test case insensitivity
     [InlineData("  net7.0  ", true)]  // Test trimming
     [InlineData("", false)]
-    [InlineData(null, false)]
+    [InlineData(null!, false)]
     public void IsDotNetCoreFramework_ShouldFilterCorrectly(string tfm, bool expected) {
         // Use reflection to call the private static method
         var tfmCommandType = typeof(bld.Commands.TfmCommand);

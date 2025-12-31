@@ -13,6 +13,7 @@ internal sealed class StatsCommand : BaseCommand {
 
         Add(_nonCurrentOption);
         Add(_objOption);
+        Add(_jsonOption);
 
         Add(_logLevelOption);
 
@@ -34,13 +35,14 @@ internal sealed class StatsCommand : BaseCommand {
             Depth = parseResult.GetValue(_depthOption),
             VSToolsPath = parseResult.GetValue(_vsToolsPath),
             NoResolveVSToolsPath = parseResult.GetValue(_noResolveVsToolsPath),
+            JsonOutput = parseResult.GetValue(_jsonOption),
         };
 
         if (!options.NoResolveVSToolsPath && string.IsNullOrEmpty(options.VSToolsPath)) {
             options.VSToolsPath = TryResolveVSToolsPath(out var vsRoot);
             options.VSRootPath = vsRoot;
         }
-        base.Console = new SpectreConsoleOutput(options.LogLevel);
+        base.Console = new SpectreConsoleOutput(options.LogLevel, options.JsonOutput);
 
         var rootPath = parseResult.GetValue(_rootArgument) ?? parseResult.GetValue(_rootOption);
         if (string.IsNullOrWhiteSpace(rootPath)) {
@@ -50,7 +52,11 @@ internal sealed class StatsCommand : BaseCommand {
 
         var app = new CleaningApplication(base.Console, (a, b, c) => new MarkDeleteResultStatsProcessor(a, b, c));
         await app.InitAsync(options);
-        await app.RunAsync(new[] { rootPath }, options);
+        var result = await app.RunAsync(new[] { rootPath }, options);
+
+        if (options.JsonOutput) {
+            Console.WriteJson(result);
+        }
 
         return 0;
     }

@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="../bld/bld.csproj" />
+  <Project Path="bld.Tests.csproj" />
+</Solution>

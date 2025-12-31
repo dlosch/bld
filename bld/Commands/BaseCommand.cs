@@ -94,6 +94,11 @@ internal abstract class BaseCommand : Command {
         DefaultValueFactory = _ => false
     };
 
+    protected readonly Option<bool> _jsonOption = new Option<bool>("--json") {
+        Description = "Output results in JSON format for machine readability.",
+        DefaultValueFactory = _ => false
+    };
+
     protected readonly Argument<string?> _rootArgument = new Argument<string?>("root") {
         Arity = ArgumentArity.ZeroOrOne,
         Validators = {

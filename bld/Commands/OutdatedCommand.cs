@@ -26,6 +26,7 @@ internal sealed class OutdatedCommand : BaseCommand {
         Add(_rootOption);
         Add(_depthOption);
         Add(_applyOption);
+        Add(_jsonOption);
         Add(_skipTfmCheckOption);
         Add(_prereleaseOption);
         Add(_logLevelOption);
@@ -40,6 +41,7 @@ internal sealed class OutdatedCommand : BaseCommand {
             Depth = parseResult.GetValue(_depthOption),
             VSToolsPath = parseResult.GetValue(_vsToolsPath),
             NoResolveVSToolsPath = parseResult.GetValue(_noResolveVsToolsPath),
+            JsonOutput = parseResult.GetValue(_jsonOption),
         };
 
         if (!options.NoResolveVSToolsPath && string.IsNullOrEmpty(options.VSToolsPath)) {
@@ -47,7 +49,7 @@ internal sealed class OutdatedCommand : BaseCommand {
             options.VSRootPath = vsRoot;
         }
 
-        base.Console = new SpectreConsoleOutput(options.LogLevel);
+        base.Console = new SpectreConsoleOutput(options.LogLevel, options.JsonOutput);
 
         var rootValue = parseResult.GetValue(_rootOption) ?? parseResult.GetValue(_rootArgument);
         if (string.IsNullOrEmpty(rootValue)) {
@@ -59,6 +61,12 @@ internal sealed class OutdatedCommand : BaseCommand {
         var includePrerelease = parseResult.GetValue(_prereleaseOption);
 
         var service = new OutdatedService(Console, options);
-        return await service.CheckOutdatedPackagesAsync(rootValue, applyUpdates, skipTfmCheck, includePrerelease, cancellationToken);
+        var result = await service.CheckOutdatedPackagesAsync(rootValue, applyUpdates, skipTfmCheck, includePrerelease, cancellationToken);
+
+        if (options.JsonOutput) {
+            Console.WriteJson(result);
+        }
+
+        return 0;
     }
 }
