@@ -12,13 +12,13 @@ using System.Xml.Linq;
 
 namespace bld.Services;
 
-internal class TfmService {
+public class TfmService {
     private readonly IConsoleOutput _console;
     private readonly CleaningOptions _options;
     private readonly SourceCacheContext _cache;
     private readonly ILogger _logger;
 
-    public TfmService(IConsoleOutput console, CleaningOptions options) {
+    internal TfmService(IConsoleOutput console, CleaningOptions options) {
         _console = console;
         _options = options;
         _cache = new SourceCacheContext();

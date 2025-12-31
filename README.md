@@ -67,6 +67,7 @@ bld outdated --root /path/to/repo
 | `cpm` | Beta | Convert solutions to Central Package Management |
 | `outdated` | Beta | Check and update NuGet packages to newer versions |
 | `containerize` | Beta | Discover Dockerfiles and SDK container configurations |
+| `mcp` | Beta | Start Model Context Protocol (MCP) server for agentic workflows |
 
 ## Global Options
 
@@ -77,6 +78,7 @@ All commands support these options:
 | `--root` | `-r` | Directory or `.sln` to scan | Current directory |
 | `--depth` | `-d` | Directory recursion depth | 3 |
 | `--log` | `-v`, `--verbosity` | Log level: Debug, Verbose, Info, Warning, Error | Info |
+| `--json` | | Output results in JSON format for machine readability | false |
 | `--vstoolspath` | `-vs` | Explicit VSToolsPath for MSBuild | Auto-detected |
 | `--novstoolspath` | `-novs` | Skip VSToolsPath auto-resolution | false |
 
@@ -222,6 +224,48 @@ bld containerize --root /path/to/repo --all --list
 - `--list`, `-l` — Show paths only, no parsing
 - `--projects`, `-p` — Scan for .NET SDK container projects
 - `--all`, `-a` — Scan both Dockerfiles and container projects
+
+### mcp
+
+Start the Model Context Protocol (MCP) server for integration with AI coding assistants and agentic workflows.
+
+```bash
+# Start MCP server (communicates via stdio)
+bld mcp
+```
+
+The MCP server exposes all `bld` functionality as tools that can be invoked by AI agents:
+
+| Tool | Description |
+|------|-------------|
+| `bld_tfm_analyze` | Analyze projects and detect their current Target Framework(s) |
+| `bld_tfm_migrate` | Migrate projects from one TFM to another |
+| `bld_nuget_analyze` | Analyze NuGet package references across all projects |
+| `bld_outdated_check` | Check for outdated NuGet packages |
+| `bld_outdated_update` | Update outdated NuGet packages |
+| `bld_cpm_analyze` | Analyze solution for Central Package Management conversion |
+| `bld_cpm_convert` | Convert solution to Central Package Management |
+| `bld_clean_analyze` | Analyze build output directories for cleaning |
+| `bld_clean_execute` | Delete build output directories |
+
+#### Registering with Claude Desktop
+
+Add to your `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "bld": {
+      "command": "bld",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+#### Registering with VS Code / GitHub Copilot
+
+The MCP server can be used with any MCP-compatible client. For VS Code, configure in your workspace or user settings.
 
 ## How It Works
 

@@ -3,7 +3,7 @@ namespace bld.Models;
 /// <summary>
 /// Information about a NuGet package reference
 /// </summary>
-internal record NugetPackageInfo {
+public record NugetPackageInfo {
     public string Name { get; init; } = string.Empty;
     public string Version { get; init; } = string.Empty;
     public NugetPackageCategory Category { get; init; }
@@ -60,7 +60,7 @@ internal enum VersionOperator {
 /// <summary>
 /// Categories for NuGet packages
 /// </summary>
-internal enum NugetPackageCategory {
+public enum NugetPackageCategory {
     MicrosoftOfficial,      // Official .NET packages (System.*, Microsoft.Extensions.*, etc.)
     MicrosoftNonOfficial,   // Microsoft packages that are not official .NET
     TrustedThirdParty,      // Known trusted packages (high download count or whitelisted)
@@ -70,7 +70,7 @@ internal enum NugetPackageCategory {
 /// <summary>
 /// Analysis results for a single project
 /// </summary>
-internal record ProjectNugetAnalysis {
+public record ProjectNugetAnalysis {
     public string ProjectPath { get; init; } = string.Empty;
     public string? ProjectName { get; init; }
     public IReadOnlyList<NugetPackageInfo> Packages { get; init; } = Array.Empty<NugetPackageInfo>();
@@ -91,7 +91,7 @@ internal record ProjectNugetAnalysis {
 /// <summary>
 /// Represents an aggregated package occurrence across multiple projects
 /// </summary>
-internal record PackageOccurrence {
+public record PackageOccurrence {
     public string ProjectName { get; init; } = string.Empty;
     public string ProjectPath { get; init; } = string.Empty;
     public string Version { get; init; } = string.Empty;

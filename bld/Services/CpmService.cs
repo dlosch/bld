@@ -6,11 +6,11 @@ using System.Xml.Linq;
 
 namespace bld.Services;
 
-internal class CpmService {
+public class CpmService {
     private readonly IConsoleOutput _console;
     private readonly CleaningOptions _options;
 
-    public CpmService(IConsoleOutput console, CleaningOptions options) {
+    internal CpmService(IConsoleOutput console, CleaningOptions options) {
         _console = console;
         _options = options;
     }

@@ -9,17 +9,17 @@ namespace bld.Services;
 /// <summary>
 /// Application for analyzing NuGet package references
 /// </summary>
-internal class NugetAnalysisApplication {
+public class NugetAnalysisApplication {
     private readonly IConsoleOutput _console;
     private readonly List<Err> _errors = new();
     private bool _isInitialized = false;
 
-    public NugetAnalysisApplication(IConsoleOutput console) {
+    internal NugetAnalysisApplication(IConsoleOutput console) {
         _console = console;
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    public Task InitAsync(CleaningOptions options) {
+    internal Task InitAsync(CleaningOptions options) {
         // Register MSBuild defaults before any MSBuild types are loaded
         MSBuildService.RegisterMSBuildDefaults(_console, options);
         _isInitialized = true;
@@ -32,7 +32,7 @@ internal class NugetAnalysisApplication {
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    public async Task<NugetAnalysisResult> RunAsync(string[] rootPaths, CleaningOptions options, string? whitelistBlacklistFile, bool aggregate = false, bool showProjects = true) {
+    internal async Task<NugetAnalysisResult> RunAsync(string[] rootPaths, CleaningOptions options, string? whitelistBlacklistFile, bool aggregate = false, bool showProjects = true) {
         if (!_isInitialized) {
             throw new InvalidOperationException("Application not initialized. Call InitAsync first.");
         }

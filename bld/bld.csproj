@@ -33,6 +33,8 @@
     <PackageReference Include="NuGet.Versioning" />
     <PackageReference Include="NuGet.Packaging" />
     <PackageReference Include="NuGet.Frameworks" />
+    <PackageReference Include="ModelContextProtocol" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" />
   </ItemGroup>
 
   <PropertyGroup>

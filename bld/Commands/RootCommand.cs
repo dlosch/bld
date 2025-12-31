@@ -16,5 +16,6 @@ internal class RootCommand : System.CommandLine.RootCommand {
         Add(new CpmCommand(console));
         Add(new OutdatedCommand(console));
         Add(new TfmCommand(console));
+        Add(new McpCommand(console));
     }
 }

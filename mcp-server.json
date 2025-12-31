@@ -1,0 +1,49 @@
+{
+  "$schema": "https://raw.githubusercontent.com/modelcontextprotocol/servers/main/schemas/mcp-server.schema.json",
+  "name": "bld",
+  "version": "0.1.0",
+  "description": "A .NET tool for managing MSBuild projects: clean build output, analyze NuGet packages, migrate target frameworks, and enable Central Package Management.",
+  "transport": {
+    "type": "stdio",
+    "command": "bld",
+    "args": ["mcp"]
+  },
+  "tools": [
+    {
+      "name": "bld_tfm_analyze",
+      "description": "Analyzes .NET projects and detects their current Target Framework(s). Returns a list of projects with their TFMs."
+    },
+    {
+      "name": "bld_tfm_migrate",
+      "description": "Migrates .NET projects from one Target Framework to another."
+    },
+    {
+      "name": "bld_nuget_analyze",
+      "description": "Analyzes NuGet package references across all projects in a solution."
+    },
+    {
+      "name": "bld_outdated_check",
+      "description": "Checks for outdated NuGet packages and lists available updates."
+    },
+    {
+      "name": "bld_outdated_update",
+      "description": "Updates outdated NuGet packages to their latest versions."
+    },
+    {
+      "name": "bld_cpm_analyze",
+      "description": "Analyzes a solution for Central Package Management (CPM) conversion."
+    },
+    {
+      "name": "bld_cpm_convert",
+      "description": "Converts a solution to Central Package Management (CPM)."
+    },
+    {
+      "name": "bld_clean_analyze",
+      "description": "Analyzes build output directories (bin/obj) for cleaning."
+    },
+    {
+      "name": "bld_clean_execute",
+      "description": "Deletes build output directories (bin/obj)."
+    }
+  ]
+}

@@ -13,11 +13,11 @@ using System.Xml.Linq;
 
 namespace bld.Services;
 
-internal class OutdatedService {
+public class OutdatedService {
     private readonly IConsoleOutput _console;
     private readonly CleaningOptions _options;
 
-    public OutdatedService(IConsoleOutput console, CleaningOptions options) {
+    internal OutdatedService(IConsoleOutput console, CleaningOptions options) {
         _console = console;
         _options = options;
     }
