@@ -1,0 +1,12 @@
+{
+	"servers": {
+		"dosch-bld-mcp": {
+			"type": "stdio",
+			"command": "d:\\dlosch\\bld\\bld\\bin\\Debug\\net10.0\\bld.exe",
+			"args": [
+				"mcp"
+			]
+		}
+	},
+	"inputs": []
+}
