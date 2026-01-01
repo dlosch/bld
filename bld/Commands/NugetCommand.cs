@@ -52,10 +52,7 @@ internal sealed class NugetCommand : BaseCommand {
         var aggregate = parseResult.GetValue(_aggregateOption);
         var showProjects = parseResult.GetValue(_showProjectsOption);
 
-        var rootPath = parseResult.GetValue(_rootArgument) ?? parseResult.GetValue(_rootOption);
-        if (string.IsNullOrWhiteSpace(rootPath)) {
-            rootPath = Environment.CurrentDirectory;
-        }
+        var rootPath = GetRootPath(parseResult);
 
         var app = new NugetAnalysisApplication(base.Console);
         await app.InitAsync(options);

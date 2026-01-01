@@ -101,6 +101,14 @@ internal abstract class BaseCommand : Command {
         }
     };
 
+    protected string GetRootPath(ParseResult parseResult) {
+        var rootPath = parseResult.GetValue(_rootArgument) ?? parseResult.GetValue(_rootOption);
+        if (string.IsNullOrWhiteSpace(rootPath)) {
+            return Environment.CurrentDirectory;
+        }
+        return Path.GetFullPath(rootPath);
+    }
+
     protected static string? TryResolveVSToolsPath(out string? vsRoot) {
         vsRoot = default;
         // Try to resolve VSToolsPath from environment variables or other means

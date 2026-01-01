@@ -48,10 +48,7 @@ internal sealed class TfmCommand : BaseCommand {
 
         base.Console = new SpectreConsoleOutput(options.LogLevel);
 
-        var rootPath = parseResult.GetValue(_rootArgument) ?? parseResult.GetValue(_rootOption);
-        if (string.IsNullOrWhiteSpace(rootPath)) {
-            rootPath = Environment.CurrentDirectory;
-        }
+        var rootPath = GetRootPath(parseResult);
 
         var from = parseResult.GetValue(_fromOption);
         var to = parseResult.GetValue(_toOption);

@@ -49,10 +49,7 @@ internal sealed class OutdatedCommand : BaseCommand {
 
         base.Console = new SpectreConsoleOutput(options.LogLevel);
 
-        var rootValue = parseResult.GetValue(_rootOption) ?? parseResult.GetValue(_rootArgument);
-        if (string.IsNullOrEmpty(rootValue)) {
-            rootValue = Directory.GetCurrentDirectory();
-        }
+        var rootValue = GetRootPath(parseResult);
 
         var applyUpdates = parseResult.GetValue(_applyOption);
         var skipTfmCheck = parseResult.GetValue(_skipTfmCheckOption);

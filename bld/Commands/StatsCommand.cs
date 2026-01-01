@@ -42,11 +42,7 @@ internal sealed class StatsCommand : BaseCommand {
         }
         base.Console = new SpectreConsoleOutput(options.LogLevel);
 
-        var rootPath = parseResult.GetValue(_rootArgument) ?? parseResult.GetValue(_rootOption);
-        if (string.IsNullOrWhiteSpace(rootPath)) {
-            // If no root is specified, use the current directory
-            rootPath = Environment.CurrentDirectory;
-        }
+        var rootPath = GetRootPath(parseResult);
 
         var app = new CleaningApplication(base.Console, (a, b, c) => new MarkDeleteResultStatsProcessor(a, b, c));
         await app.InitAsync(options);

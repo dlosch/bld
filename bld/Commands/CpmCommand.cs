@@ -42,10 +42,7 @@ internal sealed class CpmCommand : BaseCommand {
         }
         base.Console = new SpectreConsoleOutput(options.LogLevel);
 
-        var rootPath = parseResult.GetValue(_rootArgument) ?? parseResult.GetValue(_rootOption);
-        if (string.IsNullOrWhiteSpace(rootPath)) {
-            rootPath = Environment.CurrentDirectory;
-        }
+        var rootPath = GetRootPath(parseResult);
 
         var apply = parseResult.GetValue(_applyOption);
         var overwrite = parseResult.GetValue(_overwriteOption);

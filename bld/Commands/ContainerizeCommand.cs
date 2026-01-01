@@ -64,10 +64,7 @@ internal sealed class ContainerizeCommand : BaseCommand {
         var logLevel = parseResult.GetValue(_logLevelOption);
         Console = new Services.SpectreConsoleOutput(logLevel);
 
-        var rootPath = parseResult.GetValue(_rootArgument) ?? parseResult.GetValue(_rootOption);
-        if (string.IsNullOrWhiteSpace(rootPath)) {
-            rootPath = Environment.CurrentDirectory;
-        }
+        var rootPath = GetRootPath(parseResult);
 
 //         var apply = parseResult.GetValue(_applyOption);
 
