@@ -1,14 +1,15 @@
 ﻿# bld
 
-`bld` utility for working with .NET/msbuild project files and solutions. 
-- clean build output
-- list nuget packages
-- list and update tfm
-- enable central package management
-- scan and update outdated nuget package versions
-- scan for docker base image references
+`bld` is a utility for working with .NET/MSBuild project files and solutions. It is intentionally small and focuses on repository hygiene:
+- Clean build output safely.
+- Inspect cleaning statistics without touching the disk.
+- List NuGet packages.
+- List and update TFMs.
+- Enable Central Package Management.
+- Scan and update outdated NuGet package versions.
+- Scan for Docker base image references.
 
-Some of this can be handy when working with agentic coding tools which at this stage may have an unconventional approach to tfms, central package management, nuget package references and versions.
+This is especially handy when working with agentic coding tools or large repos where TFMs, CPM, package references, and build outputs can drift.
 
 ## Quick Start
 
@@ -43,17 +44,30 @@ All commands accept the following shared options unless stated otherwise:
 - `--vstoolspath`, `-vs` — Explicit `VSToolsPath` for MSBuild evaluation.
 - `--novstoolspath`, `-novs` — Skip automatic `VSToolsPath` resolution.
 
-## Stable Commands
+## Stable Commands (Clean & Stats Focus)
 
 ### clean
 
-- `--non-current`, `--noncurrent`, `-nc` — Only target frameworks no longer referenced. Default: `false`.
-- `--obj`, `-obj` — Include `obj` directories. Default: `false`.
-- `--output-file`, `-o` — Where to write the deletion script (`clean.cmd` or `clean.sh` by default).
-- `--delete` — Execute deletions instead of just generating scripts. Default: `false`.
-- `--force` — Skip confirmation prompts (requires explicit `--root`).
+Purpose: enumerate build output, report what would be deleted, and either emit a deletion script (default) or delete the files.
 
-Example:
+**Options**
+- `--non-current`, `--noncurrent`, `-nc` — Restrict deletion to target-framework-specific directories *not* listed in the project’s current TFMs. Default: `false`.
+- `--obj`, `-obj` — Include `obj` / `BaseIntermediateOutputPath` directories. Default: `false` (bin-only).
+- `--output-file`, `-o` — Where to write the deletion script (`clean.cmd` or `clean.sh` by default depending on OS).
+- `--delete` — Execute deletions instead of just generating scripts. Default: `false` (dry-run).
+- `--force` — Skip confirmation prompts (requires explicit `--root` to avoid accidental repo-wide deletes).
+- Global options (`--root`, `--depth`, `--log`, `--vstoolspath`, `--novstoolspath`) apply.
+
+**Behavior**
+1. Resolves the root (directory or solution) and recursion depth, then resolves `VSToolsPath` unless `--novstoolspath` is set.
+2. Enumerates solutions/projects, evaluates MSBuild properties per configuration, and locates `bin`/`obj` output directories.
+3. Marks candidate directories, honoring:
+   - `--non-current` to only select TFM folders that are no longer referenced.
+   - Safety checks that avoid touching project roots or nested solutions.
+4. Default dry-run writes an OS-specific script to `--output-file` (or prints to console) with sizes and file counts.
+5. With `--delete`, the tool prompts per directory (or skips prompts with `--force`) and removes directories immediately.
+
+**Example**
 
 ```powershell
 bld clean --root C:\src\MyRepo --depth 4 --obj
@@ -61,14 +75,45 @@ bld clean --root C:\src\MyRepo --depth 4 --obj
 
 ### stats
 
-- `--non-current`, `--noncurrent`, `-nc` — Only report non-current TFMs. Default: `false`.
-- `--obj`, `-obj` — Include `obj` directories in the statistics. Default: `false`.
+Purpose: compute what *would* be cleaned and show totals without generating scripts or deleting anything.
 
-Example:
+**Options**
+- `--non-current`, `--noncurrent`, `-nc` — Only report TFM directories that no longer match current project TFMs. Default: `false`.
+- `--obj`, `-obj` — Include `obj` directories in the statistics. Default: `false`.
+- Shares all global options (`--root`, `--depth`, `--log`, `--vstoolspath`, `--novstoolspath`).
+
+**Behavior**
+1. Uses the same discovery and safety logic as `clean` but never writes files or deletes anything.
+2. Produces a table with file counts, KiB/MiB sizes, and TFM hints for each marked directory plus a total row.
+3. Reports “No directories marked for deletion” when nothing qualifies, making it safe to run in automation.
+
+**Example**
 
 ```powershell
 bld stats --root MySolution.sln --non-current
 ```
+
+## Other Commands (Beta, short overviews)
+
+### nuget
+- What it does: analyzes NuGet `PackageReference` usage across projects; can aggregate to a solution-wide view.
+- How it works: evaluates projects via MSBuild, parses package references, applies optional whitelist/blacklist categorization, and optionally aggregates with `--aggregate`/`--show-projects`.
+
+### tfm
+- What it does: migrates target frameworks (e.g., `net6.0` → `net8.0`) and can update package versions for compatibility.
+- How it works: scans solutions/projects, infers current TFMs, optionally auto-detects target TFM, evaluates compatibility via NuGet, and applies changes when `--apply` is set.
+
+### cpm
+- What it does: converts a solution to Central Package Management by creating `Directory.Packages.props` and stripping per-project version attributes.
+- How it works: aggregates package versions across projects, resolves conflicts, writes the props file, and updates project files when `--apply` (with optional `--overwrite`).
+
+### outdated
+- What it does: lists packages with newer versions and can update them.
+- How it works: queries NuGet feeds for newer versions, respects TFM compatibility unless `--skip-tfm-check`, and applies updates when `--apply` (with optional `--prerelease`).
+
+### containerize
+- What it does: finds Dockerfiles and SDK-style projects using container build properties.
+- How it works: scans the repo (or specific root) and reports Dockerfile paths, project names, or both depending on `--list`, `--projects`, or `--all`.
 
 ## Beta Commands
 
@@ -157,6 +202,16 @@ bld containerize --root C:\src\MyRepo --all --depth 5
 - MSBuild evaluation happens in-process; evaluation failures are reported but do not abort the run.
 - Auto-resolving MSBuild toolsets may require Visual Studio or the .NET SDK to be installed.
 - Beta commands surface rich diagnostics but are still evolving; file issues with exact command lines and logs when something looks off.
+
+## Detailed internals (clean & stats)
+
+- **Discovery pipeline**: `SlnScanner` finds solutions under `--root`/`--depth`, `SlnParser` enumerates project configs, and `ProjParser` evaluates MSBuild properties (OutDir, BaseIntermediateOutputPath, TFMs). `VSToolsPath` is resolved automatically unless `--novstoolspath` is specified.
+- **Marking logic**: `MarkDeleteProcessor` collects bin/obj candidates, deduplicates directories shared across configurations, and refuses to touch paths that look like project roots or nested solutions. When `--non-current` is set, TFM directories matching the project’s declared TFMs are skipped.
+- **Stats vs clean**:
+  - `stats` hands results to `MarkDeleteResultStatsProcessor`, which enumerates files (depth-limited) to compute counts and KiB/MiB totals without creating any output files.
+  - `clean` hands results to either `MarkDeleteResultBatchFileProcessor` (default) or `MarkDeleteResultDeleteProcessor` when `--delete` is set. The batch processor writes platform-specific scripts (respecting `--output-file`) and prints a table. The delete processor prompts per directory unless `--force` is used.
+- **Safety rails**: depth defaults to 3, `--force` requires an explicit `--root`, and the tool stops silently when nothing is marked. Errors are aggregated via `ErrorSink` and printed after processing.
+- **Other commands** reuse the same MSBuild initialization and scanning primitives, layering command-specific processors (NuGet analysis, TFM migration with NuGet metadata checks, CPM rewrite helpers, outdated package lookups, and Dockerfile/project scanners).
 
 ---
 
