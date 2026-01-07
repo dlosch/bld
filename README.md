@@ -143,6 +143,7 @@ bld stats --root MySolution.sln --non-current
 ### outdated
 - What it does: lists packages with newer versions and can update them.
 - How it works: queries NuGet feeds for newer versions, respects TFM compatibility unless `--skip-tfm-check`, and applies updates when `--apply` (with optional `--prerelease`).
+- (dotnet-outdated is another .NET tool which updates NuGet package versions)
 
 ### containerize
 - What it does: finds Dockerfiles and SDK-style projects using container build properties.
