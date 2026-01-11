@@ -196,6 +196,14 @@ internal class OutdatedService {
             return 0;
         }
 
+        int maxMajorLength = outdatedPerPackage.Values
+            .SelectMany(v => new[] { 
+                v.CurrentMin?.Major.ToString().Length ?? 0, 
+                v.Latest?.Major.ToString().Length ?? 0 
+            })
+            .DefaultIfEmpty(0)
+            .Max();
+
         {
             _console.WriteInfo($"\nFound {outdatedPerPackage.Count} packages with available updates:");
             var table = new Table().Border(TableBorder.Rounded);
@@ -206,8 +214,8 @@ internal class OutdatedService {
             foreach (var kvp in outdatedPerPackage.OrderBy(k => k.Key)) {
                 table.AddRow(
                     Markup.Escape(kvp.Key ?? ""),
-                    FormatVersion(kvp.Value.CurrentMin),
-                    GetFormattedVersion(kvp.Value.CurrentMin, kvp.Value.Latest)
+                    FormatVersion(kvp.Value.CurrentMin, maxMajorLength),
+                    GetFormattedVersion(kvp.Value.CurrentMin, kvp.Value.Latest, maxMajorLength)
                 );
                 //_console.WriteWarning($"{kvp.Key}: {kvp.Value.CurrentMin} → {kvp.Value.Latest}");
             }
@@ -275,8 +283,8 @@ internal class OutdatedService {
                 foreach (var item in kvp.Value.OrderBy(kvp2 => kvp2.Key)) {
                     table.AddRow(
                         Markup.Escape(item.Key ?? ""),
-                        FormatVersion(item.Value.current),
-                        GetFormattedVersion(item.Value.current, item.Value.target)
+                        FormatVersion(item.Value.current, maxMajorLength),
+                        GetFormattedVersion(item.Value.current, item.Value.target, maxMajorLength)
                     );
                 }
 
@@ -304,8 +312,8 @@ internal class OutdatedService {
                 foreach (var item in kvp.Value.OrderBy(kvp2 => kvp2.Key)) {
                     table.AddRow(
                         Markup.Escape(item.Key ?? ""),
-                        FormatVersion(item.Value.current),
-                        GetFormattedVersion(item.Value.current, item.Value.target),
+                        FormatVersion(item.Value.current, maxMajorLength),
+                        GetFormattedVersion(item.Value.current, item.Value.target, maxMajorLength),
                         Markup.Escape(Reason(item.Value.reason))
                     );
                 }
@@ -423,55 +431,55 @@ internal class OutdatedService {
         }
     }
 
-    private static string FormatVersion(NuGetVersion? ver) {
-        if (ver == null) return "";
-        var str = Markup.Escape(ver.ToFullString());
+    private static string FormatVersion(NuGetVersion? ver, int maxMajorLength) {
+        if (ver == null) return "".PadLeft(maxMajorLength);
+        var full = ver.ToFullString();
+        var major = ver.Major.ToString();
+        var paddedMajor = major.PadLeft(maxMajorLength);
+        var rest = full.Substring(major.Length);
+        var str = Markup.Escape(paddedMajor + rest);
         return ver.IsPrerelease ? $"[italic]{str}[/]" : str;
     }
 
-    private static string FormatVersion(string? version) {
-        if (string.IsNullOrEmpty(version)) return "";
-        if (NuGetVersion.TryParse(version, out var ver)) return FormatVersion(ver);
-        return Markup.Escape(version);
+    private static string FormatVersion(string? version, int maxMajorLength) {
+        if (string.IsNullOrEmpty(version)) return "".PadLeft(maxMajorLength);
+        if (NuGetVersion.TryParse(version, out var ver)) return FormatVersion(ver, maxMajorLength);
+        return Markup.Escape(version.PadLeft(maxMajorLength));
     }
 
-    private static string GetFormattedVersion(NuGetVersion? current, NuGetVersion? latest) {
-        if (latest == null) return "";
+    private static string GetFormattedVersion(NuGetVersion? current, NuGetVersion? latest, int maxMajorLength) {
+        if (latest == null) return "".PadLeft(maxMajorLength);
         var latestFull = latest.ToFullString();
-        if (current == null) return FormatVersion(latest);
+        var majorStr = latest.Major.ToString();
+        var paddedMajor = majorStr.PadLeft(maxMajorLength);
+        var restOfLatest = latestFull.Substring(majorStr.Length);
+
+        if (current == null) return FormatVersion(latest, maxMajorLength);
 
         string result;
         if (latest.Major > current.Major) {
-            result = $"[red]{Markup.Escape(latestFull)}[/]";
+            result = $"[red]{Markup.Escape(paddedMajor + restOfLatest)}[/]";
         }
         else if (latest.Minor > current.Minor) {
-            int firstDot = latestFull.IndexOf('.');
-            if (firstDot != -1) {
-                string majorPart = latestFull.Substring(0, firstDot + 1);
-                string rest = latestFull.Substring(firstDot + 1);
-                result = $"{Markup.Escape(majorPart)}[yellow]{Markup.Escape(rest)}[/]";
-            }
-            else {
-                result = $"[yellow]{Markup.Escape(latestFull)}[/]";
-            }
+            result = $"{Markup.Escape(paddedMajor)}[yellow]{Markup.Escape(restOfLatest)}[/]";
         }
         else if (latest.Patch > current.Patch) {
             int firstDot = latestFull.IndexOf('.');
             int secondDot = firstDot != -1 ? latestFull.IndexOf('.', firstDot + 1) : -1;
             if (secondDot != -1) {
-                string prefix = latestFull.Substring(0, secondDot + 1);
+                string prefix = latestFull.Substring(majorStr.Length, secondDot - majorStr.Length + 1);
                 string rest = latestFull.Substring(secondDot + 1);
-                result = $"{Markup.Escape(prefix)}[green]{Markup.Escape(rest)}[/]";
+                result = $"{Markup.Escape(paddedMajor)}{Markup.Escape(prefix)}[green]{Markup.Escape(rest)}[/]";
             }
             else {
-                result = $"[green]{Markup.Escape(latestFull)}[/]";
+                result = $"[green]{Markup.Escape(paddedMajor + restOfLatest)}[/]";
             }
         }
         else if (latest > current) {
-            result = $"[blue]{Markup.Escape(latestFull)}[/]";
+            result = $"[blue]{Markup.Escape(paddedMajor + restOfLatest)}[/]";
         }
         else {
-            result = Markup.Escape(latestFull);
+            result = Markup.Escape(paddedMajor + restOfLatest);
         }
 
         if (latest.IsPrerelease) {
@@ -481,11 +489,11 @@ internal class OutdatedService {
         return result;
     }
 
-    private static string GetFormattedVersion(string? current, string? latest) {
-        if (string.IsNullOrEmpty(latest)) return "";
-        if (!NuGetVersion.TryParse(latest, out var latestVer)) return Markup.Escape(latest);
-        if (string.IsNullOrEmpty(current) || !NuGetVersion.TryParse(current, out var currentVer)) return FormatVersion(latestVer);
-        return GetFormattedVersion(currentVer, latestVer);
+    private static string GetFormattedVersion(string? current, string? latest, int maxMajorLength) {
+        if (string.IsNullOrEmpty(latest)) return "".PadLeft(maxMajorLength);
+        if (!NuGetVersion.TryParse(latest, out var latestVer)) return Markup.Escape(latest.PadLeft(maxMajorLength));
+        if (string.IsNullOrEmpty(current) || !NuGetVersion.TryParse(current, out var currentVer)) return FormatVersion(latestVer, maxMajorLength);
+        return GetFormattedVersion(currentVer, latestVer, maxMajorLength);
     }
 
     internal class PackageInfoContainer : IEnumerable<OutdatedService.PackageInfo> {
