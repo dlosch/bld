@@ -15,7 +15,7 @@ This is especially handy when working with agentic coding tools or large repos w
 
 bld leverages the existing dotnet SDK msbuild targets as well as msbuild targets from a Visual Studio installation on the machine, if available. It transparantly locates and uses msbuild assemblies as well as msbuild .targets. It can process project files in current SDK style format as well as old style framework format (it does support processing projects targeting .net Framework even in old project file format). It can also process both recent and old solution file formats (.sln, .slnx, .slnf).
 
-bld fully evaluates project file properties using the Micrsoft build system. It never guesses where the build output *might* go, it evaluates the project files just as a build would. It extracts the actual artifact and intermediate output paths, package directories ...
+bld fully evaluates project file properties using the Microsoft build system. It *never guesses* where the build output *might* go, it evaluates the project files just as a build would. It extracts the actual artifact and intermediate output paths, package directories ...
 
 ## Targeting common dotnet clean pain points ...
 
@@ -23,7 +23,7 @@ bld fully evaluates project file properties using the Micrsoft build system. It 
 
 ### common pain points 
 
-Your output folders can grow big easily. Even with tooling from the dotnet SDK or msbuild itself, it is not always straightforward to clean (outdated) build output or publishing folders. Creating small proof of concept projects, having agentic coding tools create small projects, or even upgrading the target framework of your projects from .net8.0 to .net10.0 can leave you with obsolete build artifacts which dotnet clean won't delete anymore.  
+Your output folders can grow big easily. Even with tooling from the dotnet SDK or msbuild itself, it is not always straightforward to clean (outdated) build output or publishing folders. Creating small proof of concept projects, having agentic coding tools create small projects, or even upgrading the target framework of your projects from .net8.0 to .net10.0 can leave you with obsolete build artifacts which are either not straightforward to delete or which msbuild or dotnet clean won't delete anymore.  
 
 ### what does it do?
 
