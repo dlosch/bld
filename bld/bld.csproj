@@ -13,7 +13,7 @@
     <WarningsAsErrors>true</WarningsAsErrors>
     <WarningLevel>9999</WarningLevel>
     <DisableMSBuildAssemblyCopyCheck>true</DisableMSBuildAssemblyCopyCheck>
-     <Version>0.1.5</Version>
+    <Version>0.1.6</Version>
   </PropertyGroup>
 
   <PropertyGroup>
@@ -22,6 +22,9 @@
     <RepositoryUrl>https://github.com/dlosch/bld.git</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <IncludeSymbols>true</IncludeSymbols>
+    <DebugType>embedded</DebugType>
+    <EmbedAllSources>true</EmbedAllSources>
+    <Deterministic>true</Deterministic>
     <!-- <SymbolPackageFormat>snupkg</SymbolPackageFormat> -->
     <!-- <DebugType>portable</DebugType> -->
     <Deterministic>true</Deterministic>
@@ -45,12 +48,10 @@
     <PackAsTool>true</PackAsTool>
     <ToolCommandName>dotnet-bld</ToolCommandName>
     <AssemblyName>dotnet-bld</AssemblyName>
-    <!--<PackageOutputPath></PackageOutputPath>-->
     <!--<RuntimeIdentifier>win-x64</RuntimeIdentifier>-->
-    <!--<PackageId></PackageId>-->
     <PackageProjectUrl>https://github.com/dlosch/bld</PackageProjectUrl>
     <PackageId>dotnet-bld</PackageId>
-    <PackageVersion>0.1.5</PackageVersion>
+    <PackageVersion>0.1.6</PackageVersion>
     <Authors>D. Losch</Authors>
     <Copyright>Copyright © Daniel Losch</Copyright>
     <RepositoryType>git</RepositoryType>
@@ -58,7 +59,6 @@
     <PackageTags>tool msbuild clean purge nuget</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>    
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
-    <!--<PackageLicenseFile>LICENSE</PackageLicenseFile>-->
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
   </PropertyGroup>
