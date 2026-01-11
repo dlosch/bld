@@ -14,7 +14,7 @@ internal sealed class NugetCommand : BaseCommand {
 
     private readonly Option<bool> _aggregateOption = new Option<bool>("--aggregate", "--agg") {
         Description = "Display packages aggregated across all projects instead of per-project view.",
-        DefaultValueFactory = _ => false
+        DefaultValueFactory = _ => true
     };
 
     private readonly Option<bool> _showProjectsOption = new Option<bool>("--show-projects", "--sp") {

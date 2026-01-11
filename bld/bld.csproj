@@ -2,6 +2,8 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
+    <!-- <TargetFramework>net8.0</TargetFramework> -->
+    <!-- <TargetFrameworks>net8.0;net10.0</TargetFrameworks> -->
     <TargetFramework>net10.0</TargetFramework>
     <RollForward>Major</RollForward>
     <LangVersion>latest</LangVersion>
@@ -11,20 +13,22 @@
     <WarningsAsErrors>true</WarningsAsErrors>
     <WarningLevel>9999</WarningLevel>
     <DisableMSBuildAssemblyCopyCheck>true</DisableMSBuildAssemblyCopyCheck>
-
   </PropertyGroup>
 
   <PropertyGroup>
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
     <EmbedUntrackedSources>true</EmbedUntrackedSources>
-    <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
-    <!--<IncludeSymbols>false</IncludeSymbols>-->
-    <!--<SymbolPackageFormat>snupkg</SymbolPackageFormat>-->
+    <RepositoryUrl>https://github.com/dlosch/bld.git</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <IncludeSymbols>true</IncludeSymbols>
+    <!-- <SymbolPackageFormat>snupkg</SymbolPackageFormat> -->
+    <!-- <DebugType>portable</DebugType> -->
+    <Deterministic>true</Deterministic>
+    <ContinuousIntegrationBuild Condition="'$(GITHUB_ACTIONS)' == 'true'">true</ContinuousIntegrationBuild>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Build" ExcludeAssets="runtime" />
-    <!--<PackageReference Include="Microsoft.Build" Version="17.14.8" ExcludeAssets="runtime"/>-->
     <PackageReference Include="Microsoft.Build.Locator" />
     <PackageReference Include="Spectre.Console" />
     <PackageReference Include="System.CommandLine" />
@@ -38,20 +42,29 @@
   <PropertyGroup>
     <CopyOutputSymbolsToPublishDirectory>false</CopyOutputSymbolsToPublishDirectory>
     <PackAsTool>true</PackAsTool>
-    <ToolCommandName>bld</ToolCommandName>
-    <AssemblyName>bld</AssemblyName>
+    <ToolCommandName>dotnet-bld</ToolCommandName>
+    <AssemblyName>dotnet-bld</AssemblyName>
     <!--<PackageOutputPath></PackageOutputPath>-->
     <!--<RuntimeIdentifier>win-x64</RuntimeIdentifier>-->
     <!--<PackageId></PackageId>-->
-    <PackageId>Cloudsiders.bld</PackageId>
-    <PackageVersion>0.1.1</PackageVersion>
-    <Authors>dlosch</Authors>
-    <Description>Tool to clean build output folders for msbuild</Description>
-    <PackageTags>msbuild</PackageTags>
+    <PackageProjectUrl>https://github.com/dlosch/bld</PackageProjectUrl>
+    <PackageId>dotnet-bld</PackageId>
+    <PackageVersion>0.1.4</PackageVersion>
+    <Authors>D. Losch</Authors>
+    <Copyright>Copyright © Daniel Losch</Copyright>
+    <RepositoryType>git</RepositoryType>
+    <Description>Tool to clean build output folders for msbuild, dotnet build</Description>
+    <PackageTags>tool msbuild clean purge nuget</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>    
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
     <!--<PackageLicenseFile>LICENSE</PackageLicenseFile>-->
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
   </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="NOTICE" Pack="true" PackagePath="" />
+    <None Include="..\README.md" Pack="true" PackagePath="" />
+  </ItemGroup>
 
 </Project>

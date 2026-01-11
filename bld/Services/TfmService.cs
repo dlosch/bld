@@ -35,8 +35,8 @@ internal class TfmService {
 
         var projectsToMigrate = new List<ProjectMigrationInfo>();
 
-        // Check if the root path is a direct .csproj file
-        if (File.Exists(rootPath) && Path.GetExtension(rootPath).Equals(".csproj", StringComparison.OrdinalIgnoreCase)) {
+        // Check if the root path is a direct project file
+        if (File.Exists(rootPath) && SlnScanner.IsProjectFile(rootPath)) {
             _console.WriteVerbose($"Processing direct project file: {rootPath}");
             var migrationInfo = await AnalyzeProjectForMigrationAsync(rootPath, fromTfms, toTfm, cancellationToken);
 

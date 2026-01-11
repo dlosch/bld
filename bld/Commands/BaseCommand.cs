@@ -63,14 +63,14 @@ internal abstract class BaseCommand : Command {
         }
     }
     protected readonly Option<string?> _rootOption = new Option<string?>("--root", "-r") {
-        Description = "Root directory or .sln. Can also be specified as trailing argument.",
+        Description = "Root directory, .sln, or project file. Can also be specified as trailing argument.",
         Validators = {
             RootPathValidator
         }
     };
 
     protected readonly Option<int> _depthOption = new Option<int>("--depth", "-d") {
-        Description = "If root is a directory, recursion depth to search for .sln.",
+        Description = "If root is a directory, recursion depth to search for .sln or project files.",
         DefaultValueFactory = _ => 3,
         Validators = {
             v => {
