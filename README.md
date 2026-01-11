@@ -1,19 +1,29 @@
 ﻿# bld
 
-`bld` is a utility for working with .NET/MSBuild project files and solutions. It is intentionally small and focuses on repository hygiene:
+`bld` is a utility for working with .NET/MSBuild project files and solutions. It does rely on the Microsoft Build system (Microsoft.Build and NuGet assemblies) for proper property evaluation of msbuild project files (*.csproj ...). It is intentionally small and focuses on repository hygiene:
 - Clean build output safely.
 - Inspect cleaning statistics without touching the disk.
-- List NuGet packages.
-- List and update TFMs.
+- List NuGet package references.
+- List and update TFMs (target frameworks of your projects).
 - Enable Central Package Management.
 - Scan and update outdated NuGet package versions.
 - Scan for Docker base image references.
 
 This is especially handy when working with agentic coding tools or large repos where TFMs, CPM, package references, and build outputs can drift.
 
-## Pain points ... clean
+## Microsoft.Build & Visual Studio integration
 
-This is a tool to clean build output folders for (especially .net) MSBuild projects.
+bld leverages the existing dotnet SDK msbuild targets as well as msbuild targets from a Visual Studio installation on the machine, if available. It transparantly locates and uses msbuild assemblies as well as msbuild .targets. It can process project files in current SDK style format as well as old style framework format (it does support processing projects targeting .net Framework even in old project file format). It can also process both recent and old solution file formats (.sln, .slnx, .slnf).
+
+bld fully evaluates project file properties using the Micrsoft build system. It never guesses where the build output *might* go, it evaluates the project files just as a build would. It extracts the actual artifact and intermediate output paths, package directories ...
+
+## Targeting common dotnet clean pain points ...
+
+**bld clean** is a tool to clean build output folders for (especially .net) MSBuild projects. It can either generate clean scripts (.cmd or .sh) or delete build outputs directly. It is very defensive in what it actually deletes, and never touches any files without explicit consent.
+
+### common pain points 
+
+Your output folders can grow big easily. Even with tooling from the dotnet SDK or msbuild itself, it is not always straightforward to clean (outdated) build output or publishing folders. Creating small proof of concept projects, having agentic coding tools create small projects, or even upgrading the target framework of your projects from .net8.0 to .net10.0 can leave you with obsolete build artifacts which dotnet clean won't delete anymore.  
 
 ### what does it do?
 
@@ -34,15 +44,17 @@ Yes, you can just use git/source control to nuke anything not under source contr
 ### what this tool does
 - traverse directories looking for .sln, .slnx, .slnf
 - process all configurations from the solution files
-- in process evaluation of properties for each project and configuration (note: the Microsoft.Build evaluation is *not* instant)
-- automatically resolves default msbuild install (typically .NET SDK) and resolves VSToolsPath for additional target files provided by Visual Studio installations (if available)
-- enables you to delete only non-current build output (TagetFramework(s) no longer referenced in proj file)
+- in process evaluation of properties for each project and configuration using the Microsoft build assemblies and target files, just as a build would (note: the Microsoft.Build evaluation is *not* instant)
+- automatically resolves default msbuild install (typically .NET SDK) and resolves VSToolsPath for additional target files provided by Visual Studio installations (if available, not required)
+- enables you to delete only non-current build output (TagetFramework(s) no longer referenced in proj file), esp. useful after upgrading projects to a recent target framework
 - validates tfms for .net projects to make sure the correct stuff gets cleaned
 - by default doesn't delete, only dumps stats and the command line to delete folders. Nothing gets touched unless you specify --delete
-- basic support for linux
+- support for linux
+- defensive approach in determining what to delete
+- never deletes or changes files without explicit consent
 
 Note:
-- global.json ... doe to the consistent /s way msbuild, dotnet msbuild, and dotnet build handle global.json ... 
+- global.json ... due to the consistent /s way msbuild, dotnet msbuild, and dotnet build handle global.json ... 
 
 ## Quick Start
 
@@ -132,9 +144,13 @@ bld stats --root MySolution.sln --non-current
 - What it does: analyzes NuGet `PackageReference` usage across projects; can aggregate to a solution-wide view.
 - How it works: evaluates projects via MSBuild, parses package references, applies optional whitelist/blacklist categorization, and optionally aggregates with `--aggregate`/`--show-projects`.
 
+Helpful when your favorite agent creates your shiny new project but adds a lot of strange nuget package references. Or even your co-worker.
+
 ### tfm
 - What it does: migrates target frameworks (e.g., `net6.0` → `net8.0`) and can update package versions for compatibility.
 - How it works: scans solutions/projects, infers current TFMs, optionally auto-detects target TFM, evaluates compatibility via NuGet, and applies changes when `--apply` is set.
+
+Helpful when your favorite agent creates your shiny new project targeting a old version of .NET.
 
 ### cpm
 - What it does: converts a solution to Central Package Management by creating `Directory.Packages.props` and stripping per-project version attributes.
