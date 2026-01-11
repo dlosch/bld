@@ -143,7 +143,7 @@ internal class NugetAnalysisApplication {
 
     private void DisplayProjectAnalysis(ProjectNugetAnalysis analysis, NugetPackageCategorizer categorizer) {
         var content = new List<string>();
-        content.Add($"[dim]Path: {analysis.ProjectPath}[/]");
+        content.Add($"[dim]Path: {Markup.Escape(analysis.ProjectPath)}[/]");
         content.Add($"[dim]Total packages: {analysis.Packages.Count}[/]");
         content.Add("");
 
@@ -153,8 +153,8 @@ internal class NugetAnalysisApplication {
         AddCategorySection(content, "Known Trusted Packages", analysis.TrustedThirdPartyPackages);
         AddCategorySection(content, "Other Packages", analysis.OtherPackages);
 
-        var panel = new Panel(string.Join("\n", content))
-            .Header($"[bold blue]{analysis.ProjectName}[/]")
+        var panel = new Panel(new Markup(string.Join("\n", content)))
+            .Header($"[bold blue]{Markup.Escape(analysis.ProjectName ?? "")}[/]")
             .Border(BoxBorder.Rounded);
 
         AnsiConsole.Write(panel);
@@ -166,23 +166,23 @@ internal class NugetAnalysisApplication {
             return;
         }
 
-        content.Add($"[bold yellow]{categoryName}:[/]");
+        content.Add($"[bold yellow]{Markup.Escape(categoryName)}:[/]");
 
         foreach (var package in packageList.OrderBy(p => p.Name)) {
-            var packageInfo = $"• {package.Name} ({package.Version})";
+            var packageInfo = $"• {Markup.Escape(package.Name)} ({Markup.Escape(package.Version)})";
 
             // Add coloring and pattern information based on whitelist/blacklist/microsoft/trusted
             if (!string.IsNullOrWhiteSpace(package.BlacklistMatch)) {
-                packageInfo = $"[red]{packageInfo} ({package.BlacklistMatch})[/]";
+                packageInfo = $"[red]{packageInfo} ({Markup.Escape(package.BlacklistMatch)})[/]";
             }
             else if (!string.IsNullOrWhiteSpace(package.WhitelistMatch)) {
-                packageInfo = $"[green]{packageInfo} ({package.WhitelistMatch})[/]";
+                packageInfo = $"[green]{packageInfo} ({Markup.Escape(package.WhitelistMatch)})[/]";
             }
             else if (!string.IsNullOrWhiteSpace(package.MicrosoftMatch)) {
-                packageInfo = $"{packageInfo} ({package.MicrosoftMatch})";
+                packageInfo = $"{packageInfo} ({Markup.Escape(package.MicrosoftMatch)})";
             }
             else if (!string.IsNullOrWhiteSpace(package.TrustedMatch)) {
-                packageInfo = $"{packageInfo} ({package.TrustedMatch})";
+                packageInfo = $"{packageInfo} ({Markup.Escape(package.TrustedMatch)})";
             }
 
             content.Add(packageInfo);
@@ -235,7 +235,7 @@ internal class NugetAnalysisApplication {
         AddAggregateCategorySection(content, "Known Trusted Packages", trustedPackages, showProjects);
         AddAggregateCategorySection(content, "Other Packages", otherPackages, showProjects);
 
-        var panel = new Panel(string.Join("\n", content))
+        var panel = new Panel(new Markup(string.Join("\n", content)))
             .Header("[bold blue]Aggregated Package View[/]")
             .Border(BoxBorder.Rounded);
 
@@ -255,29 +255,29 @@ internal class NugetAnalysisApplication {
             return;
         }
 
-        content.Add($"[bold yellow]{categoryName}:[/]");
+        content.Add($"[bold yellow]{Markup.Escape(categoryName)}:[/]");
 
         foreach (var pkg in packages.OrderBy(p => p.Name)) {
             var versions = pkg.Occurrences.Select(o => o.Version).Distinct().ToList();
             var versionInfo = versions.Count == 1 
-                ? $"({versions[0]})" 
-                : $"(multiple versions: {string.Join(", ", versions)})";
+                ? $"({Markup.Escape(versions[0])})" 
+                : $"(multiple versions: {string.Join(", ", versions.Select(Markup.Escape))})";
 
-            var packageInfo = $"• {pkg.Name} {versionInfo}";
+            var packageInfo = $"• {Markup.Escape(pkg.Name)} {versionInfo}";
 
             // Add coloring based on match type (use first occurrence)
             var firstOccurrence = pkg.Occurrences.First();
             if (!string.IsNullOrWhiteSpace(firstOccurrence.BlacklistMatch)) {
-                packageInfo = $"[red]{packageInfo} ({firstOccurrence.BlacklistMatch})[/]";
+                packageInfo = $"[red]{packageInfo} ({Markup.Escape(firstOccurrence.BlacklistMatch)})[/]";
             }
             else if (!string.IsNullOrWhiteSpace(firstOccurrence.WhitelistMatch)) {
-                packageInfo = $"[green]{packageInfo} ({firstOccurrence.WhitelistMatch})[/]";
+                packageInfo = $"[green]{packageInfo} ({Markup.Escape(firstOccurrence.WhitelistMatch)})[/]";
             }
             else if (!string.IsNullOrWhiteSpace(firstOccurrence.MicrosoftMatch)) {
-                packageInfo = $"{packageInfo} ({firstOccurrence.MicrosoftMatch})";
+                packageInfo = $"{packageInfo} ({Markup.Escape(firstOccurrence.MicrosoftMatch)})";
             }
             else if (!string.IsNullOrWhiteSpace(firstOccurrence.TrustedMatch)) {
-                packageInfo = $"{packageInfo} ({firstOccurrence.TrustedMatch})";
+                packageInfo = $"{packageInfo} ({Markup.Escape(firstOccurrence.TrustedMatch)})";
             }
 
             content.Add(packageInfo);
@@ -285,9 +285,9 @@ internal class NugetAnalysisApplication {
             // Show which projects reference this package if enabled
             if (showProjects) {
                 foreach (var occurrence in pkg.Occurrences.OrderBy(o => o.ProjectName)) {
-                    var projectInfo = $"    [dim]→ {occurrence.ProjectName}";
+                    var projectInfo = $"    [dim]→ {Markup.Escape(occurrence.ProjectName)}";
                     if (versions.Count > 1) {
-                        projectInfo += $" (v{occurrence.Version})";
+                        projectInfo += $" (v{Markup.Escape(occurrence.Version)})";
                     }
                     projectInfo += "[/]";
                     content.Add(projectInfo);

@@ -206,8 +206,8 @@ internal class OutdatedService {
             foreach (var kvp in outdatedPerPackage.OrderBy(k => k.Key)) {
                 table.AddRow(
                     Markup.Escape(kvp.Key ?? ""),
-                    Markup.Escape(kvp.Value.CurrentMin?.ToFullString() ?? ""),
-                    Markup.Escape(kvp.Value.Latest?.ToFullString() ?? "")
+                    FormatVersion(kvp.Value.CurrentMin),
+                    GetFormattedVersion(kvp.Value.CurrentMin, kvp.Value.Latest)
                 );
                 //_console.WriteWarning($"{kvp.Key}: {kvp.Value.CurrentMin} → {kvp.Value.Latest}");
             }
@@ -275,8 +275,8 @@ internal class OutdatedService {
                 foreach (var item in kvp.Value.OrderBy(kvp2 => kvp2.Key)) {
                     table.AddRow(
                         Markup.Escape(item.Key ?? ""),
-                        Markup.Escape(item.Value.current ?? ""),
-                        Markup.Escape(item.Value.target ?? "")
+                        FormatVersion(item.Value.current),
+                        GetFormattedVersion(item.Value.current, item.Value.target)
                     );
                 }
 
@@ -304,8 +304,8 @@ internal class OutdatedService {
                 foreach (var item in kvp.Value.OrderBy(kvp2 => kvp2.Key)) {
                     table.AddRow(
                         Markup.Escape(item.Key ?? ""),
-                        Markup.Escape(item.Value.current ?? ""),
-                        Markup.Escape(item.Value.target ?? ""),
+                        FormatVersion(item.Value.current),
+                        GetFormattedVersion(item.Value.current, item.Value.target),
                         Markup.Escape(Reason(item.Value.reason))
                     );
                 }
@@ -421,6 +421,71 @@ internal class OutdatedService {
         catch (Exception ex) {
             _console.WriteError($"Failed to update {projectPath}: {ex.Message}");
         }
+    }
+
+    private static string FormatVersion(NuGetVersion? ver) {
+        if (ver == null) return "";
+        var str = Markup.Escape(ver.ToFullString());
+        return ver.IsPrerelease ? $"[italic]{str}[/]" : str;
+    }
+
+    private static string FormatVersion(string? version) {
+        if (string.IsNullOrEmpty(version)) return "";
+        if (NuGetVersion.TryParse(version, out var ver)) return FormatVersion(ver);
+        return Markup.Escape(version);
+    }
+
+    private static string GetFormattedVersion(NuGetVersion? current, NuGetVersion? latest) {
+        if (latest == null) return "";
+        var latestFull = latest.ToFullString();
+        if (current == null) return FormatVersion(latest);
+
+        string result;
+        if (latest.Major > current.Major) {
+            result = $"[red]{Markup.Escape(latestFull)}[/]";
+        }
+        else if (latest.Minor > current.Minor) {
+            int firstDot = latestFull.IndexOf('.');
+            if (firstDot != -1) {
+                string majorPart = latestFull.Substring(0, firstDot + 1);
+                string rest = latestFull.Substring(firstDot + 1);
+                result = $"{Markup.Escape(majorPart)}[yellow]{Markup.Escape(rest)}[/]";
+            }
+            else {
+                result = $"[yellow]{Markup.Escape(latestFull)}[/]";
+            }
+        }
+        else if (latest.Patch > current.Patch) {
+            int firstDot = latestFull.IndexOf('.');
+            int secondDot = firstDot != -1 ? latestFull.IndexOf('.', firstDot + 1) : -1;
+            if (secondDot != -1) {
+                string prefix = latestFull.Substring(0, secondDot + 1);
+                string rest = latestFull.Substring(secondDot + 1);
+                result = $"{Markup.Escape(prefix)}[green]{Markup.Escape(rest)}[/]";
+            }
+            else {
+                result = $"[green]{Markup.Escape(latestFull)}[/]";
+            }
+        }
+        else if (latest > current) {
+            result = $"[blue]{Markup.Escape(latestFull)}[/]";
+        }
+        else {
+            result = Markup.Escape(latestFull);
+        }
+
+        if (latest.IsPrerelease) {
+            result = $"[italic]{result}[/]";
+        }
+
+        return result;
+    }
+
+    private static string GetFormattedVersion(string? current, string? latest) {
+        if (string.IsNullOrEmpty(latest)) return "";
+        if (!NuGetVersion.TryParse(latest, out var latestVer)) return Markup.Escape(latest);
+        if (string.IsNullOrEmpty(current) || !NuGetVersion.TryParse(current, out var currentVer)) return FormatVersion(latestVer);
+        return GetFormattedVersion(currentVer, latestVer);
     }
 
     internal class PackageInfoContainer : IEnumerable<OutdatedService.PackageInfo> {

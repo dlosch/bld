@@ -13,6 +13,7 @@
     <WarningsAsErrors>true</WarningsAsErrors>
     <WarningLevel>9999</WarningLevel>
     <DisableMSBuildAssemblyCopyCheck>true</DisableMSBuildAssemblyCopyCheck>
+     <Version>0.1.5</Version>
   </PropertyGroup>
 
   <PropertyGroup>
@@ -49,7 +50,7 @@
     <!--<PackageId></PackageId>-->
     <PackageProjectUrl>https://github.com/dlosch/bld</PackageProjectUrl>
     <PackageId>dotnet-bld</PackageId>
-    <PackageVersion>0.1.4</PackageVersion>
+    <PackageVersion>0.1.5</PackageVersion>
     <Authors>D. Losch</Authors>
     <Copyright>Copyright © Daniel Losch</Copyright>
     <RepositoryType>git</RepositoryType>
