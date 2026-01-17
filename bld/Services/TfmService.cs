@@ -6,7 +6,9 @@ using NuGet.Protocol;
 using NuGet.Protocol.Core.Types;
 using NuGet.Versioning;
 using Spectre.Console;
+using System.Net.Http.Json;
 using System.Runtime.CompilerServices;
+using System.Text.Json.Serialization;
 using System.Xml;
 using System.Xml.Linq;
 
@@ -42,11 +44,12 @@ internal class TfmService : IDisposable {
         _console.WriteInfo($"Migrating projects from {fromTfmsDisplay} to {toTfm}...");
 
         var projectsToMigrate = new List<ProjectMigrationInfo>();
+        var eolTfms = await GetEolTfmsAsync(cancellationToken);
 
         // Check if the root path is a direct project file
         if (File.Exists(rootPath) && SlnScanner.IsProjectFile(rootPath)) {
             _console.WriteVerbose($"Processing direct project file: {rootPath}");
-            var migrationInfo = await AnalyzeProjectForMigrationAsync(rootPath, fromTfms, toTfm, cancellationToken);
+            var migrationInfo = await AnalyzeProjectForMigrationAsync(rootPath, fromTfms, toTfm, eolTfms, cancellationToken);
 
             if (migrationInfo != null) {
                 projectsToMigrate.Add(migrationInfo);
@@ -57,22 +60,18 @@ internal class TfmService : IDisposable {
             var errorSink = new ErrorSink(_console);
             var slnScanner = new SlnScanner(_options, errorSink);
             var slnParser = new SlnParser(_console, errorSink);
-            var processedProjects = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var cache = new ProjCfgCache(_console);
 
             await foreach (var slnPath in slnScanner.Enumerate(rootPath)) {
                 _console.WriteVerbose($"Processing solution: {slnPath}");
 
                 await foreach (var projCfg in slnParser.ParseSolution(slnPath)) {
-                    var projectPath = projCfg.Path;
-
-                    // Skip if we've already processed this project (due to multiple configurations)
-                    if (processedProjects.Contains(projectPath)) {
+                    // Skip if we've already processed this project+configuration
+                    if (!cache.Add(projCfg)) {
                         continue;
                     }
 
-                    processedProjects.Add(projectPath);
-
-                    var migrationInfo = await AnalyzeProjectForMigrationAsync(projectPath, fromTfms, toTfm, cancellationToken);
+                    var migrationInfo = await AnalyzeProjectForMigrationAsync(projCfg.Path, fromTfms, toTfm, eolTfms, cancellationToken);
 
                     if (migrationInfo != null) {
                         projectsToMigrate.Add(migrationInfo);
@@ -92,10 +91,10 @@ internal class TfmService : IDisposable {
             // Step 1: Update target frameworks
             foreach (var project in projectsToMigrate) {
                 if (project.UsesTargetFrameworks) {
-                    await UpdateProjectTargetFrameworksAsync(project, toTfm, cancellationToken);
+                    await UpdateProjectTargetFrameworksAsync(project, toTfm, eolTfms, cancellationToken);
                 }
                 else {
-                    await UpdateProjectTargetFrameworkAsync(project.ProjectPath, project.CurrentTfm, toTfm, cancellationToken);
+                    await UpdateProjectTargetFrameworkAsync(project.ProjectPath, project.CurrentTfm, toTfm, eolTfms, cancellationToken);
                     _console.WriteInfo($"Updated {Path.GetFileName(project.ProjectPath)} to {toTfm}");
                 }
             }
@@ -140,20 +139,38 @@ internal class TfmService : IDisposable {
             _console.WriteInfo($"Migration complete! Migrated {projectsToMigrate.Count} projects to {toTfm}");
         }
         else {
-            _console.WriteInfo("Dry run - showing what would be migrated:");
-            foreach (var project in projectsToMigrate) {
+            var actualMigrated = projectsToMigrate.Where(project => {
                 if (project.UsesTargetFrameworks) {
                     var currentTfms = project.CurrentTfm.Split(';').Select(t => t.Trim()).Where(t => !string.IsNullOrEmpty(t)).ToList();
-                    var newTfms = currentTfms.Select(tfm =>
-                        project.TargetFrameworksToUpdate.Contains(tfm, StringComparer.OrdinalIgnoreCase) ? toTfm : tfm
-                    ).ToList();
+                    var newTfms = GetUpdatedTfms(currentTfms, toTfm, eolTfms);
+                    return !Enumerable.SequenceEqual(currentTfms.OrderBy(t => t), newTfms.OrderBy(t => t), StringComparer.OrdinalIgnoreCase);
+                }
+                else {
+                    return !project.CurrentTfm.Equals(toTfm, StringComparison.OrdinalIgnoreCase);
+                }
+            }).ToList();
+
+            if (actualMigrated.Count == 0) {
+                _console.WriteInfo("Dry run - no projects require target framework changes.");
+                return 0;
+            }
+
+            _console.WriteInfo("Dry run - showing what would be migrated:");
+            foreach (var project in actualMigrated) {
+                if (project.UsesTargetFrameworks) {
+                    var currentTfms = project.CurrentTfm.Split(';').Select(t => t.Trim()).Where(t => !string.IsNullOrEmpty(t)).ToList();
+                    var newTfms = GetUpdatedTfms(currentTfms, toTfm, eolTfms);
+                    var removedTfms = currentTfms.Where(t => IsEolTfm(t, eolTfms)).ToList();
 
                     _console.WriteInfo($"  {Path.GetFileName(project.ProjectPath)}:");
                     _console.WriteInfo($"    Current: {string.Join("; ", currentTfms)}");
                     _console.WriteInfo($"    New: {string.Join("; ", newTfms)}");
 
-                    if (project.TargetFrameworksToUpdate.Count > 0) {
-                        _console.WriteInfo($"    Updating: {string.Join(", ", project.TargetFrameworksToUpdate)} → {toTfm}");
+                    if (removedTfms.Count > 0) {
+                        _console.WriteInfo($"    Removed EOL: {string.Join(", ", removedTfms)}");
+                    }
+                    if (!currentTfms.Any(t => t.Equals(toTfm, StringComparison.OrdinalIgnoreCase)) && newTfms.Contains(toTfm, StringComparer.OrdinalIgnoreCase)) {
+                        _console.WriteInfo($"    Added: {toTfm}");
                     }
                 }
                 else {
@@ -170,7 +187,7 @@ internal class TfmService : IDisposable {
         return 0;
     }
 
-    private async Task<ProjectMigrationInfo?> AnalyzeProjectForMigrationAsync(string projectPath, List<string> fromTfms, string toTfm, CancellationToken cancellationToken) {
+    private async Task<ProjectMigrationInfo?> AnalyzeProjectForMigrationAsync(string projectPath, List<string> fromTfms, string toTfm, ISet<string> eolTfms, CancellationToken cancellationToken) {
         try {
             // Use ProjParser to load project properties (this handles variable evaluation)
             var errorSink = new ErrorSink(_console);
@@ -203,12 +220,19 @@ internal class TfmService : IDisposable {
                     return null;
                 }
 
-                // Check if it matches any of the from TFMs
+                // Check if it matches any of the from TFMs or should be updated due to EOL/newer TFM
                 bool matches = fromTfms.Count == 0 ?
                     IsDirectPredecessor(tfmValue, toTfm) :
                     fromTfms.Any(f => tfmValue.Equals(f, StringComparison.OrdinalIgnoreCase));
 
-                if (!matches) {
+                var shouldUpdate = matches || IsEolTfm(tfmValue, eolTfms) || ShouldUpdateTfm(tfmValue, toTfm);
+
+                if (!shouldUpdate) {
+                    return null;
+                }
+
+                // If already at target framework and not EOL, nothing to do
+                if (tfmValue.Equals(toTfm, StringComparison.OrdinalIgnoreCase) && !IsEolTfm(tfmValue, eolTfms)) {
                     return null;
                 }
 
@@ -236,7 +260,7 @@ internal class TfmService : IDisposable {
 
                 var tfms = projectInfo.TargetFrameworks.ToList();
 
-                // For TargetFrameworks, determine which ones should be updated
+                // For TargetFrameworks, determine which ones should be updated (for reporting)
                 var tfmsToUpdate = new List<string>();
 
                 if (fromTfms.Count == 0) {
@@ -256,7 +280,17 @@ internal class TfmService : IDisposable {
                     }
                 }
 
-                if (tfmsToUpdate.Count == 0) {
+                var shouldUpdate = tfmsToUpdate.Count > 0
+                    || tfms.Any(t => IsEolTfm(t, eolTfms))
+                    || IsNewerThanAny(toTfm, tfms);
+
+                if (!shouldUpdate) {
+                    return null;
+                }
+
+                // Verify if GetUpdatedTfms actually makes changes
+                var updatedTfms = GetUpdatedTfms(tfms, toTfm, eolTfms);
+                if (Enumerable.SequenceEqual(tfms.OrderBy(t => t), updatedTfms.OrderBy(t => t), StringComparer.OrdinalIgnoreCase)) {
                     return null;
                 }
 
@@ -297,7 +331,17 @@ internal class TfmService : IDisposable {
                     }
                 }
 
-                if (tfmsToUpdate.Count == 0) {
+                var shouldUpdate = tfmsToUpdate.Count > 0
+                    || tfms.Any(t => IsEolTfm(t, eolTfms))
+                    || IsNewerThanAny(toTfm, tfms);
+
+                if (!shouldUpdate) {
+                    return null;
+                }
+
+                // Verify if GetUpdatedTfms actually makes changes
+                var updatedTfms = GetUpdatedTfms(tfms, toTfm, eolTfms);
+                if (Enumerable.SequenceEqual(tfms.OrderBy(t => t), updatedTfms.OrderBy(t => t), StringComparer.OrdinalIgnoreCase)) {
                     return null;
                 }
 
@@ -322,7 +366,7 @@ internal class TfmService : IDisposable {
         }
     }
 
-    private async Task UpdateProjectTargetFrameworkAsync(string projectPath, string fromTfm, string toTfm, CancellationToken cancellationToken) {
+    private async Task UpdateProjectTargetFrameworkAsync(string projectPath, string fromTfm, string toTfm, ISet<string> eolTfms, CancellationToken cancellationToken) {
         try {
             XDocument doc;
             using (var readStream = File.OpenRead(projectPath)) {
@@ -332,7 +376,10 @@ internal class TfmService : IDisposable {
             var targetFrameworkElement = doc.Descendants("TargetFramework").FirstOrDefault();
 
             if (targetFrameworkElement != null && targetFrameworkElement.Value.Equals(fromTfm, StringComparison.OrdinalIgnoreCase)) {
-                targetFrameworkElement.Value = toTfm;
+                // If current TFM is EOL or the target is newer, update to target
+                if (IsEolTfm(fromTfm, eolTfms) || ShouldUpdateTfm(fromTfm, toTfm)) {
+                    targetFrameworkElement.Value = toTfm;
+                }
             }
 
             using var writeStream = File.Create(projectPath);
@@ -348,7 +395,7 @@ internal class TfmService : IDisposable {
             _console.WriteError($"Failed to update {projectPath}: {ex.Message}");
         }
     }
-    private async Task UpdateProjectTargetFrameworksAsync(ProjectMigrationInfo project, string toTfm, CancellationToken cancellationToken) {
+    private async Task UpdateProjectTargetFrameworksAsync(ProjectMigrationInfo project, string toTfm, ISet<string> eolTfms, CancellationToken cancellationToken) {
         try {
             XDocument doc;
             using (var readStream = File.OpenRead(project.ProjectPath)) {
@@ -362,29 +409,7 @@ internal class TfmService : IDisposable {
             }
 
             var currentTfms = targetFrameworksElement.Value.Split(';').Select(t => t.Trim()).Where(t => !string.IsNullOrEmpty(t)).ToList();
-
-            // Check if toTfm is already in the list
-            bool alreadyHasToTfm = currentTfms.Any(tfm => tfm.Equals(toTfm, StringComparison.OrdinalIgnoreCase));
-
-            List<string> newTfms;
-            if (alreadyHasToTfm) {
-                // If toTfm already exists, just update matching TFMs
-                newTfms = currentTfms.Select(tfm =>
-                    project.TargetFrameworksToUpdate.Contains(tfm, StringComparer.OrdinalIgnoreCase) ? toTfm : tfm
-                ).ToList();
-            }
-            else {
-                // If toTfm doesn't exist, upgrade the highest matching framework or add toTfm
-                // Replace matching TFMs with toTfm
-                newTfms = currentTfms.Select(tfm =>
-                    project.TargetFrameworksToUpdate.Contains(tfm, StringComparer.OrdinalIgnoreCase) ? toTfm : tfm
-                ).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-                
-                // Defensive: ensure toTfm is in the list (should already be added by Select above)
-                if (!newTfms.Contains(toTfm, StringComparer.OrdinalIgnoreCase)) {
-                    newTfms.Add(toTfm);
-                }
-            }
+            var newTfms = GetUpdatedTfms(currentTfms, toTfm, eolTfms);
 
             var newTargetFrameworksValue = string.Join(";", newTfms);
 
@@ -526,6 +551,76 @@ internal class TfmService : IDisposable {
         return packageReferences;
     }
 
+    private List<string> GetUpdatedTfms(List<string> currentTfms, string toTfm, ISet<string> eolTfms) {
+        // Remove EOL TFMs
+        var filteredTfms = currentTfms
+            .Where(tfm => !IsEolTfm(tfm, eolTfms))
+            .ToList();
+
+        // If a newer TFM is available, add it (do not replace existing TFMs)
+        var alreadyHasToTfm = filteredTfms.Any(tfm => tfm.Equals(toTfm, StringComparison.OrdinalIgnoreCase));
+        if (!alreadyHasToTfm && IsNewerThanAny(toTfm, filteredTfms)) {
+            filteredTfms.Add(toTfm);
+        }
+
+        return filteredTfms;
+    }
+
+    private static bool IsEolTfm(string tfm, ISet<string> eolTfms) {
+        if (string.IsNullOrWhiteSpace(tfm)) return false;
+        var normalized = tfm.Trim().ToLowerInvariant();
+        return eolTfms.Contains(normalized);
+    }
+
+    private bool IsNewerThanAny(string candidateTfm, IEnumerable<string> existingTfms) {
+        if (!TryParseTfmVersion(candidateTfm, out var candidateType, out var candidateVersion)) return false;
+        var foundComparable = false;
+        foreach (var tfm in existingTfms) {
+            if (!TryParseTfmVersion(tfm, out var type, out var version)) continue;
+            if (type != candidateType) continue;
+            foundComparable = true;
+            if (candidateVersion <= version) return false;
+        }
+
+        return foundComparable;
+    }
+
+    private async Task<HashSet<string>> GetEolTfmsAsync(CancellationToken cancellationToken) {
+        const string releasesIndexUrl = "https://dotnetcli.blob.core.windows.net/dotnet/release-metadata/releases-index.json";
+        try {
+            using var client = new HttpClient();
+            var index = await client.GetFromJsonAsync<ReleasesIndex>(releasesIndexUrl, cancellationToken);
+
+            if (index?.Channels is null) return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            var eolTfms = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var today = DateTime.UtcNow.Date;
+
+            foreach (var channel in index.Channels) {
+                if (string.IsNullOrWhiteSpace(channel.ChannelVersion)) continue;
+
+                var isEol = string.Equals(channel.SupportPhase, "eol", StringComparison.OrdinalIgnoreCase)
+                    || (channel.EolDate.HasValue && channel.EolDate.Value.Date <= today);
+
+                if (!isEol) continue;
+
+                // Map channel version to TFM (net5+ => netX.Y, netcoreapp for <5)
+                if (Version.TryParse(channel.ChannelVersion, out var version)) {
+                    var tfm = version.Major >= 5
+                        ? $"net{version.Major}.{version.Minor}"
+                        : $"netcoreapp{version.Major}.{version.Minor}";
+                    eolTfms.Add(tfm.ToLowerInvariant());
+                }
+            }
+
+            return eolTfms;
+        }
+        catch (Exception ex) {
+            _console.WriteWarning($"Failed to load .NET release metadata: {ex.Message}");
+            return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        }
+    }
+
     private bool IsDirectPredecessor(string currentTfm, string targetTfm) {
         // Parse TFM versions
         if (!TryParseTfmVersion(currentTfm, out var currentType, out var currentVersion) ||
@@ -640,6 +735,16 @@ internal class TfmService : IDisposable {
         DotNetStandard,
         DotNet
     }
+
+    private sealed record ReleasesIndex(
+        [property: JsonPropertyName("releases-index")] List<ReleaseChannel> Channels
+    );
+
+    private sealed record ReleaseChannel(
+        [property: JsonPropertyName("channel-version")] string ChannelVersion,
+        [property: JsonPropertyName("support-phase")] string? SupportPhase,
+        [property: JsonPropertyName("eol-date")] DateTime? EolDate
+    );
 
     private class ProjectMigrationInfo {
         public string ProjectPath { get; set; } = string.Empty;

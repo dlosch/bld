@@ -27,6 +27,7 @@ internal class ContainerizeService {
         var errorSink = new ErrorSink(_console);
         var slnScanner = new SlnScanner(_options, errorSink);
         var slnParser = new SlnParser(_console, errorSink);
+        var cache = new ProjCfgCache(_console);
 
         var projectsWithDockerfiles = new List<(ProjectInfo Project, string DockerfilePath)>();
 
@@ -34,6 +35,10 @@ internal class ContainerizeService {
             _console.WriteVerbose($"Processing solution: {slnPath}");
 
             await foreach (var projCfg in slnParser.ParseSolution(slnPath)) {
+                if (!cache.Add(projCfg)) {
+                    continue;
+                }
+
                 var projParser = new ProjParser(_console, errorSink, _options);
                 var projectInfo = projParser.LoadProject(projCfg, Array.Empty<string>());
 

@@ -1,6 +1,7 @@
 using bld.Models;
 using bld.Services;
 using Microsoft.Build.Evaluation;
+using System.Collections.Concurrent;
 
 namespace bld.Infrastructure;
 
@@ -11,6 +12,7 @@ internal sealed class NugetPackageExtractor {
     private readonly IConsoleOutput _console;
     private readonly ErrorSink _errorSink;
     private readonly NugetPackageCategorizer _categorizer;
+    private readonly ConcurrentDictionary<(string Path, string? Configuration), ProjectNugetAnalysis> _analysisCache = new();
 
     public NugetPackageExtractor(IConsoleOutput console, ErrorSink errorSink, NugetPackageCategorizer categorizer) {
         _console = console;
@@ -22,57 +24,7 @@ internal sealed class NugetPackageExtractor {
     /// Extracts NuGet package references from a project
     /// </summary>
     public IReadOnlyList<NugetPackageInfo> ExtractPackageReferences(ProjCfg projCfg, Dictionary<string, string> globalProperties) {
-        var packages = new List<NugetPackageInfo>();
-
-        using var projectCollection = new ProjectCollection();
-
-        var properties = new Dictionary<string, string>(globalProperties);
-        // todo configuration hardcoded
-        properties["Configuration"] = projCfg.Configuration ?? "Release";
-
-        try {
-            var project = new Project(projCfg.Path, properties, null, projectCollection);
-
-            // Load Directory.Packages.props if it exists for centrally managed versions
-            var centralVersions = LoadCentralPackageVersions(projCfg.Path, projectCollection, properties);
-
-            // Get PackageReference items
-            var packageReferenceItems = project.GetItems("PackageReference");
-
-            foreach (var item in packageReferenceItems) {
-                var packageName = item.EvaluatedInclude;
-                var version = item.GetMetadataValue("Version");
-                // todo VersionOverride
-
-                // If no direct version, check centrally managed packages
-                if (string.IsNullOrWhiteSpace(version) && centralVersions.ContainsKey(packageName)) {
-                    version = centralVersions[packageName];
-                }
-
-                if (string.IsNullOrWhiteSpace(packageName)) {
-                    continue;
-                }
-
-                var category = _categorizer.CategorizePackage(packageName, version);
-                var (whitelistMatch, blacklistMatch, microsoftMatch, trustedMatch) = _categorizer.GetAllMatches(packageName, version);
-
-                packages.Add(new NugetPackageInfo {
-                    Name = packageName,
-                    Version = string.IsNullOrWhiteSpace(version) ? "Unknown" : version,
-                    Category = category,
-                    ProjectPath = projCfg.Path,
-                    WhitelistMatch = whitelistMatch,
-                    BlacklistMatch = blacklistMatch,
-                    MicrosoftMatch = microsoftMatch,
-                    TrustedMatch = trustedMatch
-                });
-            }
-        }
-        catch (Exception ex) {
-            _errorSink.AddError($"Failed to extract package references from project.", exception: ex, config: projCfg);
-            _console.WriteError($"Could not extract packages from {projCfg.Path}: {ex.Message}");
-        }
-
+        var (packages, _) = AnalyzeProjectInternal(projCfg, globalProperties);
         return packages.AsReadOnly();
     }
 
@@ -114,29 +66,81 @@ internal sealed class NugetPackageExtractor {
     /// Analyzes a project and returns complete package analysis
     /// </summary>
     public ProjectNugetAnalysis AnalyzeProject(ProjCfg projCfg, Dictionary<string, string> globalProperties) {
-        var packages = ExtractPackageReferences(projCfg, globalProperties);
+        var configuration = projCfg.Configuration ?? "Release";
+        var key = (projCfg.Path, configuration);
 
-        // Extract project name for display
-        string? projectName = null;
-        try {
-            using var projectCollection = new ProjectCollection();
-            var properties = new Dictionary<string, string>(globalProperties);
-            // todo Configuration hardcoded
-            properties["Configuration"] = projCfg.Configuration ?? "Release";
-            var project = new Project(projCfg.Path, properties, null, projectCollection);
-            projectName = project.GetPropertyValue("ProjectName");
-            if (string.IsNullOrWhiteSpace(projectName)) {
-                projectName = Path.GetFileNameWithoutExtension(projCfg.Path);
-            }
-        }
-        catch {
-            projectName = Path.GetFileNameWithoutExtension(projCfg.Path);
+        if (_analysisCache.TryGetValue(key, out var cached)) {
+            return cached;
         }
 
-        return new ProjectNugetAnalysis {
+        var (packages, projectName) = AnalyzeProjectInternal(projCfg, globalProperties);
+        var analysis = new ProjectNugetAnalysis {
             ProjectPath = projCfg.Path,
             ProjectName = projectName,
             Packages = packages
         };
+
+        _analysisCache[key] = analysis;
+        return analysis;
+    }
+
+    private (List<NugetPackageInfo> Packages, string ProjectName) AnalyzeProjectInternal(ProjCfg projCfg, Dictionary<string, string> globalProperties) {
+        var packages = new List<NugetPackageInfo>();
+        var projectName = Path.GetFileNameWithoutExtension(projCfg.Path);
+
+        using var projectCollection = new ProjectCollection();
+
+        var properties = new Dictionary<string, string>(globalProperties);
+        properties["Configuration"] = projCfg.Configuration ?? "Release";
+
+        try {
+            var project = new Project(projCfg.Path, properties, null, projectCollection);
+
+            // Load Directory.Packages.props if it exists for centrally managed versions
+            var centralVersions = LoadCentralPackageVersions(projCfg.Path, projectCollection, properties);
+
+            // Get PackageReference items
+            var packageReferenceItems = project.GetItems("PackageReference");
+
+            foreach (var item in packageReferenceItems) {
+                var packageName = item.EvaluatedInclude;
+                var version = item.GetMetadataValue("Version");
+                // todo VersionOverride
+
+                // If no direct version, check centrally managed packages
+                if (string.IsNullOrWhiteSpace(version) && centralVersions.ContainsKey(packageName)) {
+                    version = centralVersions[packageName];
+                }
+
+                if (string.IsNullOrWhiteSpace(packageName)) {
+                    continue;
+                }
+
+                var category = _categorizer.CategorizePackage(packageName, version);
+                var (whitelistMatch, blacklistMatch, microsoftMatch, trustedMatch) = _categorizer.GetAllMatches(packageName, version);
+
+                packages.Add(new NugetPackageInfo {
+                    Name = packageName,
+                    Version = string.IsNullOrWhiteSpace(version) ? "Unknown" : version,
+                    Category = category,
+                    ProjectPath = projCfg.Path,
+                    WhitelistMatch = whitelistMatch,
+                    BlacklistMatch = blacklistMatch,
+                    MicrosoftMatch = microsoftMatch,
+                    TrustedMatch = trustedMatch
+                });
+            }
+
+            var name = project.GetPropertyValue("ProjectName");
+            if (!string.IsNullOrWhiteSpace(name)) {
+                projectName = name;
+            }
+        }
+        catch (Exception ex) {
+            _errorSink.AddError($"Failed to extract package references from project.", exception: ex, config: projCfg);
+            _console.WriteError($"Could not extract packages from {projCfg.Path}: {ex.Message}");
+        }
+
+        return (packages, projectName);
     }
 }

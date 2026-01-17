@@ -57,6 +57,7 @@ internal class NugetAnalysisApplication {
 
         var categorizer = new NugetPackageCategorizer(whitelistBlacklistRules);
         var packageExtractor = new NugetPackageExtractor(_console, errorSink, categorizer);
+        var cache = new ProjCfgCache(_console);
 
         _console.WriteRule("[bold blue]NuGet Package Analysis[/]");
 
@@ -71,6 +72,10 @@ internal class NugetAnalysisApplication {
 
                     await foreach (var projCfg in slnParser.ParseSolution(sln, fileSystem)) {
                         try {
+                            if (!cache.Add(projCfg)) {
+                                continue;
+                            }
+
                             var globalProperties = GetGlobalProperties(options);
                             var analysis = packageExtractor.AnalyzeProject(projCfg, globalProperties);
 

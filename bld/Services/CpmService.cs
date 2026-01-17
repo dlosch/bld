@@ -26,6 +26,7 @@ internal class CpmService {
         var errorSink = new ErrorSink(_console);
         var slnScanner = new SlnScanner(_options, errorSink);
         var slnParser = new SlnParser(_console, errorSink);
+        var cache = new ProjCfgCache(_console);
 
         var solutionData = new List<SolutionData>();
 
@@ -37,6 +38,10 @@ internal class CpmService {
             var projectFiles = new List<string>();
 
             await foreach (var projCfg in slnParser.ParseSolution(slnPath)) {
+                if (!cache.Add(projCfg)) {
+                    continue;
+                }
+
                 var projectPath = projCfg.Path;
                 projectFiles.Add(projectPath);
 

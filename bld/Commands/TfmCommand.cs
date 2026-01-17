@@ -102,6 +102,7 @@ internal sealed class TfmCommand : BaseCommand {
             var projParser = new ProjParser(Console, errorSink, tempOptions);
 
             var targetFrameworks = new List<string>();
+            var cache = new ProjCfgCache(Console);
 
             // Check if the root path is a direct .csproj file
             if (File.Exists(rootPath) && Path.GetExtension(rootPath).Equals(".csproj", StringComparison.OrdinalIgnoreCase)) {
@@ -156,6 +157,10 @@ internal sealed class TfmCommand : BaseCommand {
                 await foreach (var slnPath in slnScanner.Enumerate(rootPath)) {
                     await foreach (var projCfg in slnParser.ParseSolution(slnPath)) {
                         try {
+                            if (!cache.Add(projCfg)) {
+                                continue;
+                            }
+
                             // Create a ProjCfg without specific Configuration to load project properties
                             var projForLoading = new ProjCfg(projCfg.Proj, null, projCfg.Platform);
                             var projectInfo = projParser.LoadProject(projForLoading, Array.Empty<string>());

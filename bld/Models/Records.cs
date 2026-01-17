@@ -22,11 +22,13 @@ internal sealed class ProjCfgEqualityComparer : IEqualityComparer<ProjCfg> {
         if (x is null || y is null) return false;
         if (ReferenceEquals(x, y)) return true;
 
-        // Compare Path (case sensitive) and Configuration (case insensitive)
-        if (x.Path != y.Path) return false;
-        if (0 != string.Compare(x.Configuration, y.Configuration, StringComparison.OrdinalIgnoreCase)) return false;
+        // Compare Path (case insensitive for Windows paths) and Configuration (case insensitive)
+        if (!string.Equals(x.Path, y.Path, StringComparison.OrdinalIgnoreCase)) return false;
+        if (!string.Equals(x.ConfigurationOrDefault, y.ConfigurationOrDefault, StringComparison.OrdinalIgnoreCase)) return false;
 
         return true;
     }
-    public int GetHashCode([DisallowNull] ProjCfg obj) => HashCode.Combine(obj.Path, obj.Configuration?.ToLower(), obj.Platform?.ToLower());
+    public int GetHashCode([DisallowNull] ProjCfg obj) => HashCode.Combine(
+        StringComparer.OrdinalIgnoreCase.GetHashCode(obj.Path),
+        StringComparer.OrdinalIgnoreCase.GetHashCode(obj.ConfigurationOrDefault));
 }
