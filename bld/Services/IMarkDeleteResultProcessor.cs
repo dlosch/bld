@@ -2,7 +2,7 @@ using bld.Models;
 
 namespace bld.Services;
 
-internal record class DirResult(DirectoryInfo Directory, List<Dir> References);
+internal record class DirResult(DirectoryInfo Directory, IReadOnlyList<Dir> References);
 internal record class MarkDeleteResult(List<DirResult> Directories);
 
 internal interface IMarkDeleteResultProcessor {

@@ -107,7 +107,7 @@ internal class OutdatedService {
         var outdatedPerPackage = new ConcurrentDictionary<string, (NuGetVersion CurrentMin, NuGetVersion Latest)>(StringComparer.OrdinalIgnoreCase);
 
         var options = new NugetMetadataOptions { MaxParallelRequests = Environment.ProcessorCount /* configure */ };
-        var client = NugetMetadataService.CreateHttpClient(options);
+        using var client = NugetMetadataService.CreateHttpClient(options);
 
         await Parallel.ForEachAsync(allPackageReferences, new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount }, async (packageReference, ct) => {
 

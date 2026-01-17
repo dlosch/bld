@@ -12,17 +12,25 @@ using System.Xml.Linq;
 
 namespace bld.Services;
 
-internal class TfmService {
+internal class TfmService : IDisposable {
     private readonly IConsoleOutput _console;
     private readonly CleaningOptions _options;
     private readonly SourceCacheContext _cache;
     private readonly ILogger _logger;
+    private bool _disposed;
 
     public TfmService(IConsoleOutput console, CleaningOptions options) {
         _console = console;
         _options = options;
         _cache = new SourceCacheContext();
         _logger = new NuGetLogger(_console);
+    }
+
+    public void Dispose() {
+        if (!_disposed) {
+            _cache.Dispose();
+            _disposed = true;
+        }
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]

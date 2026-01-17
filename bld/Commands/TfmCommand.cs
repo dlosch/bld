@@ -83,7 +83,7 @@ internal sealed class TfmCommand : BaseCommand {
         Console.WriteInfo($"Mode: {(apply ? "Apply changes" : "Dry run")}");
 
         try {
-            var tfmService = new TfmService(Console, options);
+            using var tfmService = new TfmService(Console, options);
             return await tfmService.MigrateTargetFrameworkAsync(rootPath, fromTfms, to, apply, cancellationToken);
         }
         catch (Exception ex) {

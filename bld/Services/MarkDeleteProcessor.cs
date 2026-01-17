@@ -12,8 +12,8 @@ internal sealed class MarkDeleteProcessor : IProjectProcessor {
     private static readonly StringComparer DefaultComparer = StringComparer.OrdinalIgnoreCase;
     private static readonly StringComparison DefaultComparison = StringComparison.OrdinalIgnoreCase;
 
-    // Track directories for deletion - mimicking the old processor's _deleteDirs
-    private readonly ConcurrentDictionary<string, List<Dir>> _deleteDirs = new ConcurrentDictionary<string, List<Dir>>(DefaultComparer);
+    // Track directories for deletion - using ConcurrentBag for thread-safe value collection
+    private readonly ConcurrentDictionary<string, ConcurrentBag<Dir>> _deleteDirs = new ConcurrentDictionary<string, ConcurrentBag<Dir>>(DefaultComparer);
     private readonly ConcurrentDictionary<string, Dir> _dirs = new ConcurrentDictionary<string, Dir>(DefaultComparer);
 
     public MarkDeleteProcessor(IConsoleOutput console, IFileSystem fileSystem, CleaningOptions options, ErrorSink errorSink) {
@@ -41,7 +41,7 @@ internal sealed class MarkDeleteProcessor : IProjectProcessor {
             if (!Directory.Exists(path)) continue;
             var dirInfo = new DirectoryInfo(path);
             if (dirInfo.Exists) {
-                results.Add(new DirResult(dirInfo, kvp.Value));
+                results.Add(new DirResult(dirInfo, kvp.Value.ToList()));
             }
         }
         return new MarkDeleteResult(results);
@@ -205,7 +205,7 @@ internal sealed class MarkDeleteProcessor : IProjectProcessor {
 
                         if (deleteCandidates is { }) {
                             foreach (var d in deleteCandidates) {
-                                _deleteDirs.AddOrUpdate(d.FullName, new List<Dir>() { dir }, (unused, dirList) => { dirList.Add(dir); return dirList; });
+                                _deleteDirs.GetOrAdd(d.FullName, _ => new ConcurrentBag<Dir>()).Add(dir);
                                 _console.WriteDebug($"{d.FullName} marked for deletion.");
                             }
                         }
@@ -222,14 +222,14 @@ internal sealed class MarkDeleteProcessor : IProjectProcessor {
                     Stats BaseIntermediateOutputDirDelete(string absPath, DirType dirType, Dir dir) {
                         if (!_options.CleanObjDirectory) return default;
                         if (Directory.Exists(absPath)) {
-                            _deleteDirs.AddOrUpdate(absPath, new List<Dir>() { dir }, (unused, dirList) => { dirList.Add(dir); return dirList; });
+                            _deleteDirs.GetOrAdd(absPath, _ => new ConcurrentBag<Dir>()).Add(dir);
                         }
                         return default;
                     }
 
                     Stats VcxDir(string absPath, DirType dirType, Dir dir) {
                         if (Directory.Exists(absPath)) {
-                            _deleteDirs.AddOrUpdate(absPath, new List<Dir>() { dir }, (unused, dirList) => { dirList.Add(dir); return dirList; });
+                            _deleteDirs.GetOrAdd(absPath, _ => new ConcurrentBag<Dir>()).Add(dir);
                         }
                         return default;
                     }
@@ -253,7 +253,8 @@ internal sealed class MarkDeleteProcessor : IProjectProcessor {
     /// <summary>
     /// Get the directories marked for deletion
     /// </summary>
-    public IReadOnlyDictionary<string, List<Dir>> GetMarkedDirectories() => _deleteDirs;
+    public IReadOnlyDictionary<string, IReadOnlyList<Dir>> GetMarkedDirectories() => 
+        _deleteDirs.ToDictionary(kvp => kvp.Key, kvp => (IReadOnlyList<Dir>)kvp.Value.ToList(), DefaultComparer);
 }
 
 

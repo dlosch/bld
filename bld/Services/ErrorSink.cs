@@ -1,6 +1,7 @@
 ﻿using bld.Infrastructure;
 using bld.Models;
 using Spectre.Console;
+using System.Collections.Concurrent;
 
 namespace bld.Services;
 
@@ -10,7 +11,7 @@ record class Err(string Message, Exception? Exception = default, Sln? Sln = defa
 
 internal class ErrorSink(IConsoleOutput console) {
 
-    private readonly List<Err> _errors = new();
+    private readonly ConcurrentBag<Err> _errors = new();
 
     internal void AddError(string message, Exception? exception = default, Sln? sln = default, Proj? proj = default, ProjCfg? config = default) {
         var error = new Err(message, exception, sln, proj, config);
@@ -18,7 +19,7 @@ internal class ErrorSink(IConsoleOutput console) {
     }
 
     internal void WriteTo() {
-        if (_errors.Count == 0) {
+        if (_errors.IsEmpty) {
             console.WriteInfo("No errors.");
             return;
         }
