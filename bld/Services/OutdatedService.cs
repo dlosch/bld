@@ -4,6 +4,7 @@ using bld.Services.NuGet;
 using NuGet.Frameworks;
 using NuGet.Versioning;
 using Spectre.Console;
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Linq;
 using System.Net.NetworkInformation;
@@ -103,7 +104,7 @@ internal class OutdatedService {
         //var metadataResource = await packageSource.GetResourceAsync<PackageMetadataResource>(cancellationToken);
 
         var latestPerPackage = new Dictionary<string, NuGetVersion>(StringComparer.OrdinalIgnoreCase);
-        var outdatedPerPackage = new Dictionary<string, (NuGetVersion CurrentMin, NuGetVersion Latest)>(StringComparer.OrdinalIgnoreCase);
+        var outdatedPerPackage = new ConcurrentDictionary<string, (NuGetVersion CurrentMin, NuGetVersion Latest)>(StringComparer.OrdinalIgnoreCase);
 
         var options = new NugetMetadataOptions { MaxParallelRequests = Environment.ProcessorCount /* configure */ };
         var client = NugetMetadataService.CreateHttpClient(options);
