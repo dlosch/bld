@@ -8,6 +8,11 @@ namespace bld.Tests;
 /// <summary>
 /// Tests to validate that beta commands have proper dry-run/safe behavior.
 /// All commands that modify files should require explicit --apply or --delete flags.
+/// 
+/// Note: These tests use reflection to verify that commands have the required options.
+/// While reflection-based tests are more tightly coupled to implementation, they ensure
+/// that the safety mechanisms (--apply, --delete flags) exist and are properly configured.
+/// This is important for publishing quality assurance.
 /// </summary>
 public class CommandSafetyTests {
     private class TestConsole : IConsoleOutput {
@@ -34,6 +39,9 @@ public class CommandSafetyTests {
 
     #region TFM Command Safety
 
+    /// <summary>
+    /// Validates that TfmCommand has an --apply option to prevent accidental file modifications.
+    /// </summary>
     [Fact]
     public void TfmCommand_HasApplyOption() {
         var console = new TestConsole();

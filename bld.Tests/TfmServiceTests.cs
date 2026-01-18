@@ -6,6 +6,11 @@ using System.Reflection;
 
 namespace bld.Tests;
 
+/// <summary>
+/// Tests for TfmService and related TFM functionality.
+/// Note: Some tests use reflection to access private methods. This is acceptable 
+/// for testing internal implementation details without changing the public API.
+/// </summary>
 public class TfmServiceTests {
     private class TestConsole : IConsoleOutput {
         public List<string> InfoMessages { get; } = new();
@@ -32,6 +37,10 @@ public class TfmServiceTests {
 
     #region IsDotNetCoreFramework Tests
 
+    /// <summary>
+    /// Tests the private IsDotNetCoreFramework method using reflection.
+    /// This validates the TFM filtering logic for .NET Core/5+ frameworks.
+    /// </summary>
     [Theory]
     [InlineData("net5.0", true)]
     [InlineData("net6.0", true)]
@@ -90,6 +99,12 @@ public class TfmServiceTests {
 
     #region EOL TFM Detection Tests
 
+    /// <summary>
+    /// Tests EOL TFM detection using a static list of known EOL frameworks.
+    /// Note: EOL dates are based on Microsoft's official .NET support policy as of January 2026.
+    /// The actual TfmService fetches EOL data dynamically from Microsoft's release metadata.
+    /// This test validates the logic works correctly with a known set of EOL frameworks.
+    /// </summary>
     [Theory]
     [InlineData("net5.0", true)]   // EOL since Nov 2022
     [InlineData("net6.0", true)]   // EOL since Nov 2024
@@ -98,7 +113,8 @@ public class TfmServiceTests {
     [InlineData("net9.0", false)]  // Current
     [InlineData("net10.0", false)] // Current/Preview
     public void KnownEolTfms_ShouldBeRecognized(string tfm, bool expectedEol) {
-        // Known EOL TFMs from Microsoft
+        // Static list of known EOL TFMs for testing purposes
+        // The actual TfmService fetches this dynamically from Microsoft's API
         var knownEolTfms = new HashSet<string>(StringComparer.OrdinalIgnoreCase) {
             "net5.0", "net6.0", "net7.0",
             "netcoreapp1.0", "netcoreapp1.1", "netcoreapp2.0", "netcoreapp2.1",

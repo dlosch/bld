@@ -47,11 +47,9 @@ internal class TfmService : IDisposable {
         var eolTfms = await GetEolTfmsAsync(cancellationToken);
 
         // Display EOL TFMs information
-        if (eolTfms.Count > 0) {
-            var eolFromTfms = fromTfms.Where(tfm => IsEolTfm(tfm, eolTfms)).ToList();
-            if (eolFromTfms.Count > 0) {
-                _console.WriteWarning($"End-of-life target frameworks detected: {string.Join(", ", eolFromTfms)}");
-            }
+        var eolFromTfms = fromTfms.Where(tfm => IsEolTfm(tfm, eolTfms)).ToList();
+        if (eolFromTfms.Count > 0) {
+            _console.WriteWarning($"End-of-life target frameworks detected: {string.Join(", ", eolFromTfms)}");
         }
 
         // Check if the root path is a direct project file
