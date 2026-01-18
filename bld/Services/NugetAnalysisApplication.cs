@@ -60,6 +60,7 @@ internal class NugetAnalysisApplication {
         var cache = new ProjCfgCache(_console);
 
         _console.WriteRule("[bold blue]NuGet Package Analysis[/]");
+        _console.WriteInfo("Analyzing NuGet package references...");
 
         var stopwatch = Stopwatch.StartNew();
 
@@ -68,25 +69,26 @@ internal class NugetAnalysisApplication {
 
             foreach (var rootPath in rootPaths) {
                 await foreach (var sln in scanner.Enumerate(rootPath)) {
-                    _console.WriteDebug($"Processing solution: {sln}");
+                    await _console.StartStatusAsync($"Processing solution {sln}", async ctx => {
+                        await foreach (var projCfg in slnParser.ParseSolution(sln, fileSystem)) {
+                            try {
+                                if (!cache.Add(projCfg)) {
+                                    continue;
+                                }
 
-                    await foreach (var projCfg in slnParser.ParseSolution(sln, fileSystem)) {
-                        try {
-                            if (!cache.Add(projCfg)) {
-                                continue;
+                                ctx.Status($"Analyzing project: {Path.GetFileName(projCfg.Path)}");
+                                var globalProperties = GetGlobalProperties(options);
+                                var analysis = packageExtractor.AnalyzeProject(projCfg, globalProperties);
+
+                                if (analysis.Packages.Any()) {
+                                    allProjectAnalyses.Add(analysis);
+                                }
                             }
-
-                            var globalProperties = GetGlobalProperties(options);
-                            var analysis = packageExtractor.AnalyzeProject(projCfg, globalProperties);
-
-                            if (analysis.Packages.Any()) {
-                                allProjectAnalyses.Add(analysis);
+                            catch (Exception ex) {
+                                _console.WriteError($"Failed to analyze project {projCfg.Path}: {ex.Message}");
                             }
                         }
-                        catch (Exception ex) {
-                            _console.WriteError($"Failed to analyze project {projCfg.Path}: {ex.Message}");
-                        }
-                    }
+                    });
                 }
             }
 

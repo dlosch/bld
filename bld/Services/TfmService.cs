@@ -46,6 +46,14 @@ internal class TfmService : IDisposable {
         var projectsToMigrate = new List<ProjectMigrationInfo>();
         var eolTfms = await GetEolTfmsAsync(cancellationToken);
 
+        // Display EOL TFMs information
+        if (eolTfms.Count > 0) {
+            var eolFromTfms = fromTfms.Where(tfm => IsEolTfm(tfm, eolTfms)).ToList();
+            if (eolFromTfms.Count > 0) {
+                _console.WriteWarning($"End-of-life target frameworks detected: {string.Join(", ", eolFromTfms)}");
+            }
+        }
+
         // Check if the root path is a direct project file
         if (File.Exists(rootPath) && SlnScanner.IsProjectFile(rootPath)) {
             _console.WriteVerbose($"Processing direct project file: {rootPath}");
@@ -63,20 +71,21 @@ internal class TfmService : IDisposable {
             var cache = new ProjCfgCache(_console);
 
             await foreach (var slnPath in slnScanner.Enumerate(rootPath)) {
-                _console.WriteVerbose($"Processing solution: {slnPath}");
+                await _console.StartStatusAsync($"Processing solution {slnPath}", async ctx => {
+                    await foreach (var projCfg in slnParser.ParseSolution(slnPath)) {
+                        // Skip if we've already processed this project+configuration
+                        if (!cache.Add(projCfg)) {
+                            continue;
+                        }
 
-                await foreach (var projCfg in slnParser.ParseSolution(slnPath)) {
-                    // Skip if we've already processed this project+configuration
-                    if (!cache.Add(projCfg)) {
-                        continue;
+                        ctx.Status($"Analyzing project: {Path.GetFileName(projCfg.Path)}");
+                        var migrationInfo = await AnalyzeProjectForMigrationAsync(projCfg.Path, fromTfms, toTfm, eolTfms, cancellationToken);
+
+                        if (migrationInfo != null) {
+                            projectsToMigrate.Add(migrationInfo);
+                        }
                     }
-
-                    var migrationInfo = await AnalyzeProjectForMigrationAsync(projCfg.Path, fromTfms, toTfm, eolTfms, cancellationToken);
-
-                    if (migrationInfo != null) {
-                        projectsToMigrate.Add(migrationInfo);
-                    }
-                }
+                });
             }
         }
 
@@ -163,18 +172,22 @@ internal class TfmService : IDisposable {
                     var removedTfms = currentTfms.Where(t => IsEolTfm(t, eolTfms)).ToList();
 
                     _console.WriteInfo($"  {Path.GetFileName(project.ProjectPath)}:");
-                    _console.WriteInfo($"    Current: {string.Join("; ", currentTfms)}");
+                    // Format current TFMs with EOL markers
+                    var currentTfmsFormatted = currentTfms.Select(t => 
+                        IsEolTfm(t, eolTfms) ? $"{t} [EOL]" : t);
+                    _console.WriteInfo($"    Current: {string.Join("; ", currentTfmsFormatted)}");
                     _console.WriteInfo($"    New: {string.Join("; ", newTfms)}");
 
                     if (removedTfms.Count > 0) {
-                        _console.WriteInfo($"    Removed EOL: {string.Join(", ", removedTfms)}");
+                        _console.WriteWarning($"    ⚠ Removing end-of-life frameworks: {string.Join(", ", removedTfms)}");
                     }
                     if (!currentTfms.Any(t => t.Equals(toTfm, StringComparison.OrdinalIgnoreCase)) && newTfms.Contains(toTfm, StringComparer.OrdinalIgnoreCase)) {
                         _console.WriteInfo($"    Added: {toTfm}");
                     }
                 }
                 else {
-                    _console.WriteInfo($"  {Path.GetFileName(project.ProjectPath)}: {project.CurrentTfm} → {toTfm}");
+                    var eolMarker = IsEolTfm(project.CurrentTfm, eolTfms) ? " [EOL]" : "";
+                    _console.WriteInfo($"  {Path.GetFileName(project.ProjectPath)}: {project.CurrentTfm}{eolMarker} → {toTfm}");
                 }
 
                 if (project.PackageReferences.Count > 0) {
