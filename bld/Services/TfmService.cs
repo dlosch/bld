@@ -46,6 +46,12 @@ internal class TfmService : IDisposable {
         var projectsToMigrate = new List<ProjectMigrationInfo>();
         var eolTfms = await GetEolTfmsAsync(cancellationToken);
 
+        // Display EOL TFMs information
+        var eolFromTfms = fromTfms.Where(tfm => IsEolTfm(tfm, eolTfms)).ToList();
+        if (eolFromTfms.Count > 0) {
+            _console.WriteWarning($"End-of-life target frameworks detected: {string.Join(", ", eolFromTfms)}");
+        }
+
         // Check if the root path is a direct project file
         if (File.Exists(rootPath) && SlnScanner.IsProjectFile(rootPath)) {
             _console.WriteVerbose($"Processing direct project file: {rootPath}");
@@ -63,20 +69,21 @@ internal class TfmService : IDisposable {
             var cache = new ProjCfgCache(_console);
 
             await foreach (var slnPath in slnScanner.Enumerate(rootPath)) {
-                _console.WriteVerbose($"Processing solution: {slnPath}");
+                await _console.StartStatusAsync($"Processing solution {slnPath}", async ctx => {
+                    await foreach (var projCfg in slnParser.ParseSolution(slnPath)) {
+                        // Skip if we've already processed this project+configuration
+                        if (!cache.Add(projCfg)) {
+                            continue;
+                        }
 
-                await foreach (var projCfg in slnParser.ParseSolution(slnPath)) {
-                    // Skip if we've already processed this project+configuration
-                    if (!cache.Add(projCfg)) {
-                        continue;
+                        ctx.Status($"Analyzing project: {Path.GetFileName(projCfg.Path)}");
+                        var migrationInfo = await AnalyzeProjectForMigrationAsync(projCfg.Path, fromTfms, toTfm, eolTfms, cancellationToken);
+
+                        if (migrationInfo != null) {
+                            projectsToMigrate.Add(migrationInfo);
+                        }
                     }
-
-                    var migrationInfo = await AnalyzeProjectForMigrationAsync(projCfg.Path, fromTfms, toTfm, eolTfms, cancellationToken);
-
-                    if (migrationInfo != null) {
-                        projectsToMigrate.Add(migrationInfo);
-                    }
-                }
+                });
             }
         }
 
@@ -156,31 +163,41 @@ internal class TfmService : IDisposable {
             }
 
             _console.WriteInfo("Dry run - showing what would be migrated:");
-            foreach (var project in actualMigrated) {
+
+            var table = new Table();
+            table.AddColumn("Project");
+            table.AddColumn("Old TFM");
+            table.AddColumn("New TFM");
+
+            var uniqueProjects = actualMigrated
+                .GroupBy(p => p.ProjectPath)
+                .Select(g => g.First())
+                .OrderBy(p => Path.GetFileName(p.ProjectPath));
+
+            foreach (var project in uniqueProjects) {
+                var projectName = Markup.Escape(Path.GetFileName(project.ProjectPath));
+                string oldTfm;
+                string newTfm;
+
                 if (project.UsesTargetFrameworks) {
                     var currentTfms = project.CurrentTfm.Split(';').Select(t => t.Trim()).Where(t => !string.IsNullOrEmpty(t)).ToList();
-                    var newTfms = GetUpdatedTfms(currentTfms, toTfm, eolTfms);
-                    var removedTfms = currentTfms.Where(t => IsEolTfm(t, eolTfms)).ToList();
+                    var newTfmsList = GetUpdatedTfms(currentTfms, toTfm, eolTfms);
 
-                    _console.WriteInfo($"  {Path.GetFileName(project.ProjectPath)}:");
-                    _console.WriteInfo($"    Current: {string.Join("; ", currentTfms)}");
-                    _console.WriteInfo($"    New: {string.Join("; ", newTfms)}");
-
-                    if (removedTfms.Count > 0) {
-                        _console.WriteInfo($"    Removed EOL: {string.Join(", ", removedTfms)}");
-                    }
-                    if (!currentTfms.Any(t => t.Equals(toTfm, StringComparison.OrdinalIgnoreCase)) && newTfms.Contains(toTfm, StringComparer.OrdinalIgnoreCase)) {
-                        _console.WriteInfo($"    Added: {toTfm}");
-                    }
+                    oldTfm = string.Join(", ", currentTfms.Select(t =>
+                        IsEolTfm(t, eolTfms) ? $"[red]{Markup.Escape(t)} [[EOL]][/]" : Markup.Escape(t)));
+                    newTfm = string.Join(", ", newTfmsList.Select(Markup.Escape));
                 }
                 else {
-                    _console.WriteInfo($"  {Path.GetFileName(project.ProjectPath)}: {project.CurrentTfm} → {toTfm}");
+                    oldTfm = IsEolTfm(project.CurrentTfm, eolTfms)
+                        ? $"[red]{Markup.Escape(project.CurrentTfm)} [[EOL]][/]"
+                        : Markup.Escape(project.CurrentTfm);
+                    newTfm = Markup.Escape(toTfm);
                 }
 
-                if (project.PackageReferences.Count > 0) {
-                    _console.WriteVerbose($"    Packages: {string.Join(", ", project.PackageReferences.Select(p => $"{p.Id}@{p.Version}"))}");
-                }
+                table.AddRow(projectName, oldTfm, newTfm);
             }
+
+            _console.WriteTable(table);
             _console.WriteInfo("\nUse --apply to perform the migration.");
         }
 

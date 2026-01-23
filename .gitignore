@@ -362,3 +362,7 @@ MigrationBackup/
 FodyWeavers.xsd
 
 .idea/
+
+# bld tool output files
+clean.sh
+clean.cmd

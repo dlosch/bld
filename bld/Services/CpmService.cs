@@ -1,5 +1,6 @@
 using bld.Infrastructure;
 using bld.Models;
+using Spectre.Console;
 using System.Runtime.CompilerServices;
 using System.Xml;
 using System.Xml.Linq;
@@ -31,37 +32,39 @@ internal class CpmService {
         var solutionData = new List<SolutionData>();
 
         await foreach (var slnPath in slnScanner.Enumerate(rootPath)) {
-            _console.WriteVerbose($"Processing solution: {slnPath}");
             var solutionDir = Path.GetDirectoryName(slnPath)!;
 
             var allPackageReferences = new Dictionary<string, string>(); // PackageId -> Version
             var projectFiles = new List<string>();
 
-            await foreach (var projCfg in slnParser.ParseSolution(slnPath)) {
-                if (!cache.Add(projCfg)) {
-                    continue;
-                }
+            await _console.StartStatusAsync($"Processing solution {slnPath}", async ctx => {
+                await foreach (var projCfg in slnParser.ParseSolution(slnPath)) {
+                    if (!cache.Add(projCfg)) {
+                        continue;
+                    }
 
-                var projectPath = projCfg.Path;
-                projectFiles.Add(projectPath);
+                    ctx.Status($"Analyzing project: {Path.GetFileName(projCfg.Path)}");
+                    var projectPath = projCfg.Path;
+                    projectFiles.Add(projectPath);
 
-                var packageRefs = await ExtractPackageReferencesAsync(projectPath, cancellationToken);
-                foreach (var (packageId, version) in packageRefs) {
-                    if (allPackageReferences.TryGetValue(packageId, out var existingVersion)) {
-                        // Handle version conflicts - use higher version
-                        if (CompareVersions(version, existingVersion) > 0) {
+                    var packageRefs = await ExtractPackageReferencesAsync(projectPath, cancellationToken);
+                    foreach (var (packageId, version) in packageRefs) {
+                        if (allPackageReferences.TryGetValue(packageId, out var existingVersion)) {
+                            // Handle version conflicts - use higher version
+                            if (CompareVersions(version, existingVersion) > 0) {
+                                allPackageReferences[packageId] = version;
+                                _console.WriteVerbose($"Updated {packageId} from {existingVersion} to {version}");
+                            }
+                            else if (!version.Equals(existingVersion, StringComparison.OrdinalIgnoreCase)) {
+                                _console.WriteWarning($"Version conflict for {packageId}: {existingVersion} vs {version}. Using {allPackageReferences[packageId]}");
+                            }
+                        }
+                        else {
                             allPackageReferences[packageId] = version;
-                            _console.WriteVerbose($"Updated {packageId} from {existingVersion} to {version}");
                         }
-                        else if (!version.Equals(existingVersion, StringComparison.OrdinalIgnoreCase)) {
-                            _console.WriteWarning($"Version conflict for {packageId}: {existingVersion} vs {version}. Using {allPackageReferences[packageId]}");
-                        }
-                    }
-                    else {
-                        allPackageReferences[packageId] = version;
                     }
                 }
-            }
+            });
 
             solutionData.Add(new SolutionData {
                 SolutionPath = slnPath,
