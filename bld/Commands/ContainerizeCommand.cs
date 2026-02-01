@@ -66,25 +66,6 @@ internal sealed class ContainerizeCommand : BaseCommand {
 
         var rootPath = GetRootPath(parseResult);
 
-//         var apply = parseResult.GetValue(_applyOption);
-
-//         Console.WriteInfo($"Containerizing projects in: {rootPath}");
-//         Console.WriteInfo($"Mode: {(apply ? "Apply changes" : "Dry run")}");
-
-//         try {
-//             var containerizeService = new ContainerizeService(Console, options);
-//             await containerizeService.ContainerizeProjectsAsync(rootPath, apply, cancellationToken);
-
-//             Console.WriteInfo("Containerization process completed successfully.");
-//             return 0;
-//         }
-//         catch (Exception ex) {
-//             Console.WriteError($"Error containerizing projects: {ex.Message}");
-//             return 1;
-//         }
-//     }
-// }
-
         var depth = parseResult.GetValue(_depthOption);
         var listOnly = parseResult.GetValue(_listOnlyOption);
         var scanProjects = parseResult.GetValue(_projectsOption);

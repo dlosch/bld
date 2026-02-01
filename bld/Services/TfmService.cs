@@ -88,7 +88,7 @@ internal class TfmService : IDisposable {
         }
 
         if (projectsToMigrate.Count == 0) {
-            _console.WriteInfo($"No projects found using {fromTfmsDisplay}.");
+            _console.WriteInfo($"No projects to migrate found.");
             return 0;
         }
 
