@@ -1,8 +1,10 @@
 using bld.Infrastructure;
 using bld.Models;
 using Spectre.Console;
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using System.Threading;
 
 namespace bld.Services;
 
@@ -64,33 +66,50 @@ internal class NugetAnalysisApplication {
 
         var stopwatch = Stopwatch.StartNew();
 
+        var parallelOptions = new ParallelOptions {
+            MaxDegreeOfParallelism = options.Parallel ? options.MaxDegreeOfParallelism : 1
+        };
+
         try {
-            var allProjectAnalyses = new List<ProjectNugetAnalysis>();
-
-            foreach (var rootPath in rootPaths) {
+            var allSlns = new ConcurrentBag<string>();
+            await Parallel.ForEachAsync(rootPaths, parallelOptions, async (rootPath, ct) => {
                 await foreach (var sln in scanner.Enumerate(rootPath)) {
-                    await _console.StartStatusAsync($"Processing solution {sln}", async ctx => {
-                        await foreach (var projCfg in slnParser.ParseSolution(sln, fileSystem)) {
-                            try {
-                                if (!cache.Add(projCfg)) {
-                                    continue;
-                                }
-
-                                ctx.Status($"Analyzing project: {Path.GetFileName(projCfg.Path)}");
-                                var globalProperties = GetGlobalProperties(options);
-                                var analysis = packageExtractor.AnalyzeProject(projCfg, globalProperties);
-
-                                if (analysis.Packages.Any()) {
-                                    allProjectAnalyses.Add(analysis);
-                                }
-                            }
-                            catch (Exception ex) {
-                                _console.WriteError($"Failed to analyze project {projCfg.Path}: {ex.Message}");
-                            }
-                        }
-                    });
+                    allSlns.Add(sln);
                 }
-            }
+            });
+
+            var allProjCfgs = new ConcurrentBag<ProjCfg>();
+            await Parallel.ForEachAsync(allSlns, parallelOptions, async (sln, ct) => {
+                await foreach (var projCfg in slnParser.ParseSolution(sln, fileSystem)) {
+                    if (cache.Add(projCfg)) {
+                        allProjCfgs.Add(projCfg);
+                    }
+                }
+            });
+
+            var allProjectAnalyses = new ConcurrentBag<ProjectNugetAnalysis>();
+
+            await _console.StartStatusAsync($"Analyzing {allProjCfgs.Count} project configurations...", async ctx => {
+                var count = 0;
+                var total = allProjCfgs.Count;
+
+                await Parallel.ForEachAsync(allProjCfgs, parallelOptions, async (projCfg, ct) => {
+                    var current = Interlocked.Increment(ref count);
+                    ctx.Status($"Analyzing projects: {current}/{total} ([bold]{Path.GetFileName(projCfg.Path)}[/])");
+
+                    try {
+                        var globalProperties = GetGlobalProperties(options);
+                        var analysis = packageExtractor.AnalyzeProject(projCfg, globalProperties);
+
+                        if (analysis.Packages.Any()) {
+                            allProjectAnalyses.Add(analysis);
+                        }
+                    }
+                    catch (Exception ex) {
+                        _console.WriteError($"Failed to analyze project {projCfg.Path}: {ex.Message}");
+                    }
+                });
+            });
 
             // Display results with unique projects only (deduplicate by path)
             var uniqueAnalyses = allProjectAnalyses

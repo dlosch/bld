@@ -1,7 +1,9 @@
 using bld.Infrastructure;
 using bld.Models;
 using Spectre.Console;
+using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
+using System.Threading;
 using System.Xml;
 using System.Xml.Linq;
 
@@ -31,46 +33,61 @@ internal class CpmService {
 
         var solutionData = new List<SolutionData>();
 
+        var allSlns = new ConcurrentBag<string>();
         await foreach (var slnPath in slnScanner.Enumerate(rootPath)) {
+            allSlns.Add(slnPath);
+        }
+
+        var parallelOptions = new ParallelOptions {
+            MaxDegreeOfParallelism = _options.Parallel ? _options.MaxDegreeOfParallelism : 1,
+            CancellationToken = cancellationToken
+        };
+
+        foreach (var slnPath in allSlns) {
             var solutionDir = Path.GetDirectoryName(slnPath)!;
 
-            var allPackageReferences = new Dictionary<string, string>(); // PackageId -> Version
-            var projectFiles = new List<string>();
+            var allPackageReferences = new ConcurrentDictionary<string, string>(); // PackageId -> Version
+            var projectFiles = new ConcurrentBag<string>();
+            var solutionProjCfgs = new List<ProjCfg>();
 
-            await _console.StartStatusAsync($"Processing solution {slnPath}", async ctx => {
-                await foreach (var projCfg in slnParser.ParseSolution(slnPath)) {
-                    if (!cache.Add(projCfg)) {
-                        continue;
-                    }
+            await foreach (var projCfg in slnParser.ParseSolution(slnPath)) {
+                if (cache.Add(projCfg)) {
+                    solutionProjCfgs.Add(projCfg);
+                }
+            }
 
-                    ctx.Status($"Analyzing project: {Path.GetFileName(projCfg.Path)}");
+            await _console.StartStatusAsync($"Analyzing {solutionProjCfgs.Count} project configurations in {Path.GetFileName(slnPath)}...", async ctx => {
+                var count = 0;
+                var total = solutionProjCfgs.Count;
+
+                await Parallel.ForEachAsync(solutionProjCfgs, parallelOptions, async (projCfg, ct) => {
+                    var current = Interlocked.Increment(ref count);
+                    ctx.Status($"Analyzing projects: {current}/{total} ([bold]{Path.GetFileName(projCfg.Path)}[/])");
+                    
                     var projectPath = projCfg.Path;
                     projectFiles.Add(projectPath);
 
                     var packageRefs = await ExtractPackageReferencesAsync(projectPath, cancellationToken);
                     foreach (var (packageId, version) in packageRefs) {
-                        if (allPackageReferences.TryGetValue(packageId, out var existingVersion)) {
-                            // Handle version conflicts - use higher version
+                        allPackageReferences.AddOrUpdate(packageId, version, (id, existingVersion) => {
                             if (CompareVersions(version, existingVersion) > 0) {
-                                allPackageReferences[packageId] = version;
-                                _console.WriteVerbose($"Updated {packageId} from {existingVersion} to {version}");
+                                _console.WriteVerbose($"Updated {id} from {existingVersion} to {version}");
+                                return version;
                             }
                             else if (!version.Equals(existingVersion, StringComparison.OrdinalIgnoreCase)) {
-                                _console.WriteWarning($"Version conflict for {packageId}: {existingVersion} vs {version}. Using {allPackageReferences[packageId]}");
+                                _console.WriteWarning($"Version conflict for {id}: {existingVersion} vs {version}. Using highest version.");
                             }
-                        }
-                        else {
-                            allPackageReferences[packageId] = version;
-                        }
+                            return existingVersion;
+                        });
                     }
-                }
+                });
             });
 
             solutionData.Add(new SolutionData {
                 SolutionPath = slnPath,
                 SolutionDirectory = solutionDir,
-                PackageReferences = allPackageReferences,
-                ProjectFiles = projectFiles
+                PackageReferences = allPackageReferences.ToDictionary(kvp => kvp.Key, kvp => kvp.Value, StringComparer.OrdinalIgnoreCase),
+                ProjectFiles = projectFiles.ToList()
             });
         }
 
