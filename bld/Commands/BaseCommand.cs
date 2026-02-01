@@ -94,6 +94,16 @@ internal abstract class BaseCommand : Command {
         DefaultValueFactory = _ => false
     };
 
+    protected readonly Option<bool> _parallelOption = new Option<bool>("--parallel") {
+        Description = "Use parallel processing for project evaluation.",
+        DefaultValueFactory = _ => true
+    };
+
+    protected readonly Option<int> _concurrencyOption = new Option<int>("--concurrency") {
+        Description = "Degree of parallelism for project evaluation.",
+        DefaultValueFactory = _ => Environment.ProcessorCount >> 1
+    };
+
     protected readonly Argument<string?> _rootArgument = new Argument<string?>("root") {
         Arity = ArgumentArity.ZeroOrOne,
         Validators = {

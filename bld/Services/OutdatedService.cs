@@ -41,52 +41,66 @@ internal class OutdatedService {
         var dirToPropsCache = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
         var propsContentCache = new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
 
-        var allPackageReferences = new Dictionary<string, PackageInfoContainer>(StringComparer.OrdinalIgnoreCase);
+        var allPackageReferences = new ConcurrentDictionary<string, PackageInfoContainer>(StringComparer.OrdinalIgnoreCase);
+
+        var parallelOptions = new ParallelOptions {
+            MaxDegreeOfParallelism = _options.Parallel ? _options.MaxDegreeOfParallelism : 1
+        };
 
         try {
             var projParser = new ProjParser(_console, errorSink, _options);
 
-            await foreach (var slnPath in slnScanner.Enumerate(rootPath)) {
-                await _console.StartStatusAsync($"Processing solution {slnPath}", async ctx => {
-                    await foreach (var projCfg in slnParser.ParseSolution(slnPath, fileSystem)) {
-                        var packageRefs = new PackageInfoContainer(); // new List<PackageInfo>();
-                        // Only process "Release" configuration as per spec
-                        // todo 20250830 aggregate
-                        if (!string.Equals(projCfg.Configuration, "Release", StringComparison.OrdinalIgnoreCase)) continue;
-                        if (!cache.Add(projCfg)) continue; // de-dupe project/configs
+            var allSlns = new ConcurrentBag<string>();
+            await foreach (var sln in slnScanner.Enumerate(rootPath)) {
+                allSlns.Add(sln);
+            }
 
-                        var refs = projParser.GetPackageReferences(projCfg);
+            var allProjCfgs = new ConcurrentBag<ProjCfg>();
+            await Parallel.ForEachAsync(allSlns, parallelOptions, async (sln, ct) => {
+                await foreach (var projCfg in slnParser.ParseSolution(sln, fileSystem)) {
+                    if (cache.Add(projCfg)) {
+                        allProjCfgs.Add(projCfg);
+                    }
+                }
+            });
 
-                        if (refs?.PackageReferences is null || !refs.PackageReferences.Any()) {
-                            _console.WriteDebug($"No references in {projCfg.Path}");
-                            continue;
-                        }
+            await _console.StartStatusAsync($"Analyzing {allProjCfgs.Count} project configurations...", async ctx => {
+                var count = 0;
+                var total = allProjCfgs.Count;
 
-                        var exnm = refs.PackageReferences.Select(re => new PackageInfo {
-                            Id = re.Key,
-                            FromProps = refs.UseCpm ?? false,
-                            TargetFramework = refs.TargetFramework,
-                            TargetFrameworks = refs.TargetFrameworks,
-                            ProjectPath = refs.Proj.Path,
-                            PropsPath = refs.CpmFile,
-                            Item = re.Value
-                            //, Version = re.Value ?? (refs.UseCpm == true && refs.PackageVersions is not null && refs.PackageVersions.TryGetValue(re.Key, out var v) ? v : null)
-                        });
+                await Parallel.ForEachAsync(allProjCfgs, parallelOptions, async (projCfg, ct) => {
+                    var current = Interlocked.Increment(ref count);
+                    ctx.Status($"Analyzing projects: {current}/{total} ([bold]{Path.GetFileName(projCfg.Path)}[/])");
 
-                        var bad = exnm.Where(e => string.IsNullOrEmpty(e.Version)).ToList();
-                        if (bad.Any()) _console.WriteWarning($"Project {projCfg.Path} has package references with no resolvable version: {string.Join(", ", bad.Select(b => b.Id))}");
-                        packageRefs.AddRange(exnm);
+                    // Only process "Release" configuration as per spec
+                    if (!string.Equals(projCfg.Configuration, "Release", StringComparison.OrdinalIgnoreCase)) return;
 
-                        foreach (var pkg in packageRefs) {
-                            if (!allPackageReferences.TryGetValue(pkg.Id, out var list)) {
-                                list = new PackageInfoContainer();
-                                allPackageReferences[pkg.Id] = list;
-                            }
-                            list.Add(pkg);
-                        }
+                    var refs = projParser.GetPackageReferences(projCfg);
+
+                    if (refs?.PackageReferences is null || !refs.PackageReferences.Any()) {
+                        _console.WriteDebug($"No references in {projCfg.Path}");
+                        return;
+                    }
+
+                    var exnm = refs.PackageReferences.Select(re => new PackageInfo {
+                        Id = re.Key,
+                        FromProps = refs.UseCpm ?? false,
+                        TargetFramework = refs.TargetFramework,
+                        TargetFrameworks = refs.TargetFrameworks,
+                        ProjectPath = refs.Proj.Path,
+                        PropsPath = refs.CpmFile,
+                        Item = re.Value
+                    });
+
+                    var bad = exnm.Where(e => string.IsNullOrEmpty(e.Version)).ToList();
+                    if (bad.Any()) _console.WriteWarning($"Project {projCfg.Path} has package references with no resolvable version: {string.Join(", ", bad.Select(b => b.Id))}");
+
+                    foreach (var pkg in exnm) {
+                        var list = allPackageReferences.GetOrAdd(pkg.Id, _ => new PackageInfoContainer());
+                        list.Add(pkg);
                     }
                 });
-            }
+            });
         }
         catch (Exception ex) {
             _console.WriteException(ex);
@@ -106,10 +120,10 @@ internal class OutdatedService {
         var latestPerPackage = new Dictionary<string, NuGetVersion>(StringComparer.OrdinalIgnoreCase);
         var outdatedPerPackage = new ConcurrentDictionary<string, (NuGetVersion CurrentMin, NuGetVersion Latest)>(StringComparer.OrdinalIgnoreCase);
 
-        var options = new NugetMetadataOptions { MaxParallelRequests = Environment.ProcessorCount /* configure */ };
+        var options = new NugetMetadataOptions { MaxParallelRequests = parallelOptions.MaxDegreeOfParallelism /* configure */ };
         using var client = NugetMetadataService.CreateHttpClient(options);
 
-        await Parallel.ForEachAsync(allPackageReferences, new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount }, async (packageReference, ct) => {
+        await Parallel.ForEachAsync(allPackageReferences, parallelOptions, async (packageReference, ct) => {
 
             if (packageReference.Value is null || !packageReference.Value.Any()) {
                 _console.WriteWarning($"No references found for package {packageReference.Key}");
@@ -179,9 +193,20 @@ internal class OutdatedService {
                     return;
                 }
 
-                outdatedPerPackage[packageReference.Key] = (currentMin
-                , NuGetVersion.Parse(targetVer)
-                //, NuGetVersion.Parse(result?.TargetFrameworkVersions?[packageReference.Value.Select(u => NuGetFramework.Parse(u.TargetFramework).GetShortFolderName()).FirstOrDefault()])
+                // outdatedPerPackage[packageReference.Key] = (currentMin
+                // , NuGetVersion.Parse(targetVer)
+                // //, NuGetVersion.Parse(result?.TargetFrameworkVersions?[packageReference.Value.Select(u => NuGetFramework.Parse(u.TargetFramework).GetShortFolderName()).FirstOrDefault()])
+                // );
+                outdatedPerPackage.AddOrUpdate(
+                    packageReference.Key,
+                    key => (currentMin, NuGetVersion.Parse(targetVer)),
+                    (key, existing) => {
+                        // Always keep the lowest currentMin and highest Latest
+                        var newLatest = NuGetVersion.Parse(targetVer);
+                        var minCurrent = existing.CurrentMin < currentMin ? existing.CurrentMin : currentMin;
+                        var maxLatest = existing.Latest > newLatest ? existing.Latest : newLatest;
+                        return (minCurrent, maxLatest);
+                    }
                 );
             }
             catch (Exception xcptn) {
@@ -499,20 +524,21 @@ internal class OutdatedService {
 
     internal class PackageInfoContainer : IEnumerable<OutdatedService.PackageInfo> {
         private readonly HashSet<PackageInfo> _items = new(new PackageInfoComparer());
+        private readonly HashSet<NuGetFramework> _tfms = new();
+
         internal void Add(PackageInfo item) {
-            if (item.TargetFrameworks is { } && item.TargetFrameworks.Length > 0) {
-                for (int odx = 0; odx < item.TargetFrameworks.Length; odx++) {
-                    var nuTfm = NuGetFramework.Parse(item.TargetFrameworks[odx]);
+            lock (_items) {
+                if (item.TargetFrameworks is { } && item.TargetFrameworks.Length > 0) {
+                    for (int odx = 0; odx < item.TargetFrameworks.Length; odx++) {
+                        var nuTfm = NuGetFramework.Parse(item.TargetFrameworks[odx]);
+                        _tfms.Add(nuTfm);
+                    }
+                }
+                else if (item.TargetFramework is { }) {
+                    var nuTfm = NuGetFramework.Parse(item.TargetFramework);
                     _tfms.Add(nuTfm);
                 }
-            }
-            else if (item.TargetFramework is { }) {
-                var nuTfm = NuGetFramework.Parse(item.TargetFramework);
-                _tfms.Add(nuTfm);
-
-            }
-            var added = _items.Add(item);
-            if (!added) {
+                _items.Add(item);
             }
         }
 
@@ -520,12 +546,31 @@ internal class OutdatedService {
             foreach (var item in exnm) Add(item);
         }
 
-        public IEnumerable<string> Tfms => _tfms.Select(nuTfm => nuTfm.GetShortFolderName());
-        public string? Tfm => _tfms.Count() == 1 ? _tfms.First().GetShortFolderName() : default;
-        private readonly HashSet<NuGetFramework> _tfms = new();
+        public IEnumerable<string> Tfms {
+            get {
+                lock (_items) {
+                    return _tfms.Select(nuTfm => nuTfm.GetShortFolderName()).ToList();
+                }
+            }
+        }
 
-        public IEnumerator<PackageInfo> GetEnumerator() => _items.GetEnumerator();
-        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => _items.GetEnumerator();
+        public string? Tfm {
+            get {
+                lock (_items) {
+                    return _tfms.Count == 1 ? _tfms.First().GetShortFolderName() : default;
+                }
+            }
+        }
+
+        public IEnumerator<PackageInfo> GetEnumerator() {
+            List<PackageInfo> snapshot;
+            lock (_items) {
+                snapshot = _items.ToList();
+            }
+            return snapshot.GetEnumerator();
+        }
+
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
     }
 
     internal sealed class PackageInfoComparer : IEqualityComparer<PackageInfo> {

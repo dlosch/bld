@@ -99,18 +99,20 @@ internal sealed class MarkDeleteProcessor : IProjectProcessor {
         _dirs.AddOrUpdate(absProjPath,
             (key) => new Dir(new List<(string, DirType)>() { (absPath, dirType) }, GetDict(absProjPath, projName), GetHashSetS(cfg), tfms, GetHashSetS(parentPath)),
             (key, existDir) => {
-                existDir.AbsPath.Add((absPath, dirType));
-                existDir.AbsProjPath.TryAdd(absProjPath, projName);
-                if (tfms is not null && tfms.Any()) {
-                    existDir.Tfms.UnionWith(tfms);
+                lock (existDir) {
+                    existDir.AbsPath.Add((absPath, dirType));
+                    existDir.AbsProjPath.TryAdd(absProjPath, projName);
+                    if (tfms is not null && tfms.Any()) {
+                        existDir.Tfms.UnionWith(tfms);
+                    }
+                    if (parentPath is not null) {
+                        existDir.AbsParentPath.Add(parentPath);
+                    }
+                    if (cfg is not null) {
+                        existDir.Configs.Add(cfg);
+                    }
+                    return existDir;
                 }
-                if (parentPath is not null) {
-                    existDir.AbsParentPath.Add(parentPath);
-                }
-                if (cfg is not null) {
-                    existDir.Configs.Add(cfg);
-                }
-                return existDir;
             });
 
         return ValueTask.CompletedTask;

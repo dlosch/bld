@@ -28,6 +28,10 @@ internal sealed class NugetCommand : BaseCommand {
         Add(_logLevelOption);
         Add(_vsToolsPath);
         Add(_noResolveVsToolsPath);
+
+        Add(_parallelOption);
+        Add(_concurrencyOption);
+
         Add(_whitelistBlacklistFileOption);
         Add(_aggregateOption);
         Add(_showProjectsOption);
@@ -40,6 +44,8 @@ internal sealed class NugetCommand : BaseCommand {
             Depth = parseResult.GetValue(_depthOption),
             VSToolsPath = parseResult.GetValue(_vsToolsPath),
             NoResolveVSToolsPath = parseResult.GetValue(_noResolveVsToolsPath),
+            Parallel = parseResult.GetValue(_parallelOption),
+            MaxDegreeOfParallelism = parseResult.GetValue(_concurrencyOption),
         };
 
         if (!options.NoResolveVSToolsPath && string.IsNullOrEmpty(options.VSToolsPath)) {

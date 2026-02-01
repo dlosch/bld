@@ -1,8 +1,10 @@
 using bld.Infrastructure;
 using bld.Models;
 using Spectre.Console;
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using System.Threading;
 
 namespace bld.Services;
 
@@ -44,31 +46,44 @@ internal class CleaningApplication(IConsoleOutput _console, Func<IConsoleOutput,
 
         var stopwatch = Stopwatch.StartNew();
 
+        var parallelOptions = new ParallelOptions {
+            MaxDegreeOfParallelism = options.Parallel ? options.MaxDegreeOfParallelism : 1
+        };
+
         try {
-            foreach (var rootPath in rootPaths) {
-                // todo check for csproj
+            var allSlns = new ConcurrentBag<string>();
+            await Parallel.ForEachAsync(rootPaths, parallelOptions, async (rootPath, ct) => {
                 await foreach (var sln in scanner.Enumerate(rootPath)) {
-                    await _console.StartStatusAsync($"Processing solution {sln}", async ctx => {
-                        var curProj = default(string);
-                        await foreach (var projCfg in slnParser.ParseSolution(sln, fileSystem)) {
-                            if (!cache.Add(projCfg)) continue;
-
-                            if (curProj is null || curProj != projCfg.Path) {
-                                curProj = projCfg.Path;
-                                ctx.Status($"Processing project: {projCfg.Path}");
-                            }
-
-                            var properties = projParser.LoadProject(projCfg, ProjConstants.PropertyNames);
-                            if (properties is null) {
-                                _console.WriteWarning($"Error evaluating project properties for {projCfg.Path} and configuration {projCfg.Configuration}.");
-                                continue;
-                            }
-
-                            await markDeleteProcessor.ProcessAsync(projCfg, properties);
-                        }
-                    });
+                    allSlns.Add(sln);
                 }
-            }
+            });
+
+            var allProjCfgs = new ConcurrentBag<ProjCfg>();
+            await Parallel.ForEachAsync(allSlns, parallelOptions, async (sln, ct) => {
+                await foreach (var projCfg in slnParser.ParseSolution(sln, fileSystem)) {
+                    if (cache.Add(projCfg)) {
+                        allProjCfgs.Add(projCfg);
+                    }
+                }
+            });
+
+            await _console.StartStatusAsync($"Evaluating {allProjCfgs.Count} project configurations...", async ctx => {
+                var count = 0;
+                var total = allProjCfgs.Count;
+
+                await Parallel.ForEachAsync(allProjCfgs, parallelOptions, async (projCfg, ct) => {
+                    var current = Interlocked.Increment(ref count);
+                    ctx.Status($"Evaluating projects: {current}/{total} ([bold]{Path.GetFileName(projCfg.Path)}[/])");
+
+                    var properties = projParser.LoadProject(projCfg, ProjConstants.PropertyNames);
+                    if (properties is null) {
+                        _console.WriteWarning($"Error evaluating project properties for {projCfg.Path} and configuration {projCfg.Configuration}.");
+                        return;
+                    }
+
+                    await markDeleteProcessor.ProcessAsync(projCfg, properties);
+                });
+            });
 
             await markDeleteProcessor.ProcessDirs();
 

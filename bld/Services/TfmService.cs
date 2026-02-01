@@ -6,9 +6,11 @@ using NuGet.Protocol;
 using NuGet.Protocol.Core.Types;
 using NuGet.Versioning;
 using Spectre.Console;
+using System.Collections.Concurrent;
 using System.Net.Http.Json;
 using System.Runtime.CompilerServices;
 using System.Text.Json.Serialization;
+using System.Threading;
 using System.Xml;
 using System.Xml.Linq;
 
@@ -43,7 +45,7 @@ internal class TfmService : IDisposable {
         var fromTfmsDisplay = string.Join(", ", fromTfms);
         _console.WriteInfo($"Migrating projects from {fromTfmsDisplay} to {toTfm}...");
 
-        var projectsToMigrate = new List<ProjectMigrationInfo>();
+        var projectsToMigrate = new ConcurrentBag<ProjectMigrationInfo>();
         var eolTfms = await GetEolTfmsAsync(cancellationToken);
 
         // Display EOL TFMs information
@@ -66,25 +68,42 @@ internal class TfmService : IDisposable {
             var errorSink = new ErrorSink(_console);
             var slnScanner = new SlnScanner(_options, errorSink);
             var slnParser = new SlnParser(_console, errorSink);
+            var fileSystem = new FileSystem(_console, errorSink);
             var cache = new ProjCfgCache(_console);
 
+            var parallelOptions = new ParallelOptions {
+                MaxDegreeOfParallelism = _options.Parallel ? _options.MaxDegreeOfParallelism : 1
+            };
+
+            var allSlns = new ConcurrentBag<string>();
             await foreach (var slnPath in slnScanner.Enumerate(rootPath)) {
-                await _console.StartStatusAsync($"Processing solution {slnPath}", async ctx => {
-                    await foreach (var projCfg in slnParser.ParseSolution(slnPath)) {
-                        // Skip if we've already processed this project+configuration
-                        if (!cache.Add(projCfg)) {
-                            continue;
-                        }
+                allSlns.Add(slnPath);
+            }
 
-                        ctx.Status($"Analyzing project: {Path.GetFileName(projCfg.Path)}");
-                        var migrationInfo = await AnalyzeProjectForMigrationAsync(projCfg.Path, fromTfms, toTfm, eolTfms, cancellationToken);
+            var allProjCfgs = new ConcurrentBag<ProjCfg>();
+            await Parallel.ForEachAsync(allSlns, parallelOptions, async (slnPath, ct) => {
+                await foreach (var projCfg in slnParser.ParseSolution(slnPath, fileSystem)) {
+                    if (cache.Add(projCfg)) {
+                        allProjCfgs.Add(projCfg);
+                    }
+                }
+            });
 
-                        if (migrationInfo != null) {
-                            projectsToMigrate.Add(migrationInfo);
-                        }
+            await _console.StartStatusAsync($"Analyzing {allProjCfgs.Count} project configurations...", async ctx => {
+                var count = 0;
+                var total = allProjCfgs.Count;
+
+                await Parallel.ForEachAsync(allProjCfgs, parallelOptions, async (projCfg, ct) => {
+                    var current = Interlocked.Increment(ref count);
+                    ctx.Status($"Analyzing projects: {current}/{total} ([bold]{Path.GetFileName(projCfg.Path)}[/])");
+
+                    var migrationInfo = await AnalyzeProjectForMigrationAsync(projCfg.Path, fromTfms, toTfm, eolTfms, cancellationToken);
+
+                    if (migrationInfo != null) {
+                        projectsToMigrate.Add(migrationInfo);
                     }
                 });
-            }
+            });
         }
 
         if (projectsToMigrate.Count == 0) {

@@ -22,6 +22,9 @@ internal record CleaningOptions {
     public bool NoResolveVSToolsPath { get; internal set; } = false;
     public ConfirmLevel? ConfirmLevel { get; internal set; }
 
+    public bool Parallel { get; init; } = true;
+    public int MaxDegreeOfParallelism { get; init; } = Environment.ProcessorCount >> 1;
+
     private static bool FilterSupportedSlnFileFormats(string file) =>
         // no support for slnx
         file.EndsWith(".sln", StringComparison.OrdinalIgnoreCase)
