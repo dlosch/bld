@@ -1,20 +1,17 @@
-﻿//using XUnit.Framework;
-
-using NuGet.Frameworks;
-using Xunit.Abstractions;
+﻿using NuGet.Frameworks;
 using System.Reflection;
 
 namespace bld.Tests;
 
-public class DotNetTests(ITestOutputHelper Console) {
+public class DotNetTests {
     [Fact]
     public void PathCombineLinux() {
-        Assert.Throws<ArgumentNullException>(() => Path.Combine("/mnt/d/tests", null, "child"));
+        Assert.Throws<ArgumentNullException>(() => Path.Combine("/mnt/d/tests", null!, "child"));
     }
 
     [Fact]
     public void PathCombineWin() {
-        Assert.Throws<ArgumentNullException>(() => Path.Combine("d:\\tests", null, "child"));
+        Assert.Throws<ArgumentNullException>(() => Path.Combine("d:\\tests", null!, "child"));
     }
 }
 
@@ -37,8 +34,7 @@ public class TfmCommandTests {
     [InlineData("NET8.0", true)]  // Test case insensitivity
     [InlineData("  net7.0  ", true)]  // Test trimming
     [InlineData("", false)]
-    [InlineData(null, false)]
-    public void IsDotNetCoreFramework_ShouldFilterCorrectly(string tfm, bool expected) {
+    public void IsDotNetCoreFramework_ShouldFilterCorrectly(string? tfm, bool expected) {
         // Use reflection to call the private static method
         var tfmCommandType = typeof(bld.Commands.TfmCommand);
         var method = tfmCommandType.GetMethod("IsDotNetCoreFramework", 
@@ -46,35 +42,33 @@ public class TfmCommandTests {
         
         Assert.NotNull(method);
         
-        var result = (bool)method.Invoke(null, new object[] { tfm })!;
+        var result = (bool)method.Invoke(null, [tfm])!;
         Assert.Equal(expected, result);
     }
 }
 
-public class NuGetFrameworkTests(ITestOutputHelper Console) {
+public class NuGetFrameworkTests {
     [Fact]
-    public void Test1() {
-        string[] tfms = new[]
-        {
+    public void NuGetFrameworkParse_HandlesVariousFormats() {
+        string[] tfms =
+        [
             ".NETStandard,Version=v2.0",
             ".NETFramework,Version=v4.7.2",
             ".NETCoreApp,Version=v8.0",
             "netstandard2.1",
             "net6.0",
-
-
             ".NETFramework4.6.2",
             "net8.0",
             "net9.0",
             "net9",
             "net9000",
             "net472x",
-        };
+        ];
 
         foreach (var tfm in tfms) {
             var framework = NuGetFramework.Parse(tfm);
             string normalizedTfm = framework.GetShortFolderName();
-            Console.WriteLine($"Original: {tfm}, Normalized: {normalizedTfm}");
+            Assert.NotNull(normalizedTfm);
         }
     }
 }

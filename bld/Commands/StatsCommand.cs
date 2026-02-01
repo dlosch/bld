@@ -26,7 +26,7 @@ internal sealed class StatsCommand : BaseCommand {
         var errors = new List<string>();
 
         var options = new CleaningOptions {
-            Delete = false, //TODO parseResult.GetValue(_deleteOption),
+            Delete = false,
             CleanOnlyNonCurrentTfms = parseResult.GetValue(_nonCurrentOption),
             CleanObjDirectory = parseResult.GetValue(_objOption),
             CleanNupkgFiles = parseResult.GetValue(_nupkgOption),

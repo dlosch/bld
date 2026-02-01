@@ -152,21 +152,6 @@ internal sealed class ProjParser(IConsoleOutput Console, ErrorSink ErrorSink, Cl
                 //project.GetItems("PackageVersion")?.Select(pr => new ProjectPackage(pr.Xml.Include, pr.Metadata?.FirstOrDefault(meta => meta.Name == "Version")?.EvaluatedValue))
                 );
                 return retVal;
-                //tfm = ;
-                //var useCpm = ;
-                //if (useCpm ?? false) {
-                //    string directoryPackagesPropsPath = null;
-                //    foreach (var import in project.Imports) {
-                //        if (import.ImportedProject.FullPath.EndsWith("Directory.Packages.props", StringComparison.OrdinalIgnoreCase)) {
-                //            Console.WriteInfo($"Directory.Packages.props {import.ImportedProject.FullPath}");
-                //            directoryPackagesPropsPath = import.ImportedProject.FullPath;
-                //            //break;
-                //        }
-                //    }
-                //}
-
-                //var vers = project.GetItems("PackageVersion").ToList();
-                //return project.GetItems("PackageReference").ToList();
             }
             catch (Exception xcptn) {
                 ErrorSink.AddError($"Failed to load project.", exception: xcptn, config: proj);
