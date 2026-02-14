@@ -366,3 +366,4 @@ FodyWeavers.xsd
 # bld tool output files
 clean.sh
 clean.cmd
+session.md
