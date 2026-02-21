@@ -183,40 +183,71 @@ internal class TfmService : IDisposable {
 
             _console.WriteInfo("Dry run - showing what would be migrated:");
 
-            var table = new Table();
-            table.AddColumn("Project");
-            table.AddColumn("Old TFM");
-            table.AddColumn("New TFM");
-
             var uniqueProjects = actualMigrated
                 .GroupBy(p => p.ProjectPath)
                 .Select(g => g.First())
                 .OrderBy(p => Path.GetFileName(p.ProjectPath));
 
-            foreach (var project in uniqueProjects) {
-                var projectName = Markup.Escape(Path.GetFileName(project.ProjectPath));
-                string oldTfm;
-                string newTfm;
+            if (_options.MarkdownOutput) {
+                var rows = uniqueProjects.Select(project => {
+                    string oldTfm;
+                    string newTfm;
 
-                if (project.UsesTargetFrameworks) {
-                    var currentTfms = project.CurrentTfm.Split(';').Select(t => t.Trim()).Where(t => !string.IsNullOrEmpty(t)).ToList();
-                    var newTfmsList = GetUpdatedTfms(currentTfms, toTfm, eolTfms);
+                    if (project.UsesTargetFrameworks) {
+                        var currentTfms = project.CurrentTfm.Split(';').Select(t => t.Trim()).Where(t => !string.IsNullOrEmpty(t)).ToList();
+                        var newTfmsList = GetUpdatedTfms(currentTfms, toTfm, eolTfms);
 
-                    oldTfm = string.Join(", ", currentTfms.Select(t =>
-                        IsEolTfm(t, eolTfms) ? $"[red]{Markup.Escape(t)} [[EOL]][/]" : Markup.Escape(t)));
-                    newTfm = string.Join(", ", newTfmsList.Select(Markup.Escape));
-                }
-                else {
-                    oldTfm = IsEolTfm(project.CurrentTfm, eolTfms)
-                        ? $"[red]{Markup.Escape(project.CurrentTfm)} [[EOL]][/]"
-                        : Markup.Escape(project.CurrentTfm);
-                    newTfm = Markup.Escape(toTfm);
-                }
+                        oldTfm = string.Join(", ", currentTfms.Select(t =>
+                            IsEolTfm(t, eolTfms) ? $"{t} (EOL)" : t));
+                        newTfm = string.Join(", ", newTfmsList);
+                    }
+                    else {
+                        oldTfm = IsEolTfm(project.CurrentTfm, eolTfms)
+                            ? $"{project.CurrentTfm} (EOL)"
+                            : project.CurrentTfm;
+                        newTfm = toTfm;
+                    }
 
-                table.AddRow(projectName, oldTfm, newTfm);
+                    return (IReadOnlyList<string?>)new[] {
+                        Path.GetFileName(project.ProjectPath),
+                        oldTfm,
+                        newTfm
+                    };
+                });
+
+                MarkdownTableFormatter.Write(_console, "TFM migration dry-run (markdown)", new[] { "Project", "Old TFM", "New TFM" }, rows);
             }
+            else {
+                var table = new Table();
+                table.AddColumn("Project");
+                table.AddColumn("Old TFM");
+                table.AddColumn("New TFM");
 
-            _console.WriteTable(table);
+                foreach (var project in uniqueProjects) {
+                    var projectName = Markup.Escape(Path.GetFileName(project.ProjectPath));
+                    string oldTfm;
+                    string newTfm;
+
+                    if (project.UsesTargetFrameworks) {
+                        var currentTfms = project.CurrentTfm.Split(';').Select(t => t.Trim()).Where(t => !string.IsNullOrEmpty(t)).ToList();
+                        var newTfmsList = GetUpdatedTfms(currentTfms, toTfm, eolTfms);
+
+                        oldTfm = string.Join(", ", currentTfms.Select(t =>
+                            IsEolTfm(t, eolTfms) ? $"[red]{Markup.Escape(t)} [[EOL]][/]" : Markup.Escape(t)));
+                        newTfm = string.Join(", ", newTfmsList.Select(Markup.Escape));
+                    }
+                    else {
+                        oldTfm = IsEolTfm(project.CurrentTfm, eolTfms)
+                            ? $"[red]{Markup.Escape(project.CurrentTfm)} [[EOL]][/]"
+                            : Markup.Escape(project.CurrentTfm);
+                        newTfm = Markup.Escape(toTfm);
+                    }
+
+                    table.AddRow(projectName, oldTfm, newTfm);
+                }
+
+                _console.WriteTable(table);
+            }
             _console.WriteInfo("\nUse --apply to perform the migration.");
         }
 

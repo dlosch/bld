@@ -29,7 +29,7 @@ internal class NugetAnalysisApplication {
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    public async Task RunAsync(string[] rootPaths, CleaningOptions options, string? whitelistBlacklistFile, bool aggregate = false, bool showProjects = true) {
+    public async Task RunAsync(string[] rootPaths, CleaningOptions options, string? whitelistBlacklistFile, bool aggregate = false, bool showProjects = true, bool markdownOutput = false) {
         if (!_isInitialized) {
             throw new InvalidOperationException("Application not initialized. Call InitAsync first.");
         }
@@ -117,7 +117,10 @@ internal class NugetAnalysisApplication {
                 .Select(g => g.First())
                 .ToList();
 
-            if (aggregate) {
+            if (markdownOutput) {
+                DisplayMarkdownResults(uniqueAnalyses);
+            }
+            else if (aggregate) {
                 DisplayAggregateResults(uniqueAnalyses, categorizer, showProjects);
             }
             else {
@@ -321,5 +324,67 @@ internal class NugetAnalysisApplication {
             }
         }
         content.Add("");
+    }
+
+    private void DisplayMarkdownResults(List<ProjectNugetAnalysis> analyses) {
+        if (!analyses.Any()) {
+            _console.WriteWarning("No projects with NuGet package references found.");
+            return;
+        }
+
+        var rows = analyses
+            .SelectMany(a => a.Packages.Select(p => new {
+                Package = p,
+                ProjectName = string.IsNullOrWhiteSpace(a.ProjectName) ? Path.GetFileNameWithoutExtension(a.ProjectPath) : a.ProjectName
+            }))
+            .GroupBy(x => x.Package.Name, StringComparer.OrdinalIgnoreCase)
+            .OrderBy(g => g.Key, StringComparer.OrdinalIgnoreCase)
+            .Select(g => {
+                var versions = g.Select(x => x.Package.Version)
+                    .Where(v => !string.IsNullOrWhiteSpace(v))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(v => v, StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+
+                var projects = g.Select(x => x.ProjectName ?? "Unknown")
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+
+                var trustedComment = GetTrustComment(g.Select(x => x.Package));
+
+                return (IReadOnlyList<string?>)new[] {
+                    g.Key,
+                    versions.Length == 0 ? string.Empty : string.Join(", ", versions),
+                    trustedComment,
+                    string.Join("<br>", projects)
+                };
+            })
+            .ToList();
+
+        MarkdownTableFormatter.Write(
+            _console,
+            "NuGet packages (markdown)",
+            new[] { "Package name", "Package Version", "Trusted", "Projects" },
+            rows);
+    }
+
+    private static string GetTrustComment(IEnumerable<NugetPackageInfo> packages) {
+        var packageList = packages.ToList();
+        if (packageList.Any(p => !string.IsNullOrWhiteSpace(p.BlacklistMatch))) {
+            return "Not trusted (blacklisted)";
+        }
+
+        if (packageList.Any(p =>
+            p.Category is NugetPackageCategory.MicrosoftOfficial
+            or NugetPackageCategory.MicrosoftNonOfficial
+            or NugetPackageCategory.TrustedThirdParty
+            || !string.IsNullOrWhiteSpace(p.WhitelistMatch)
+            || !string.IsNullOrWhiteSpace(p.MicrosoftMatch)
+            || !string.IsNullOrWhiteSpace(p.TrustedMatch))) {
+            return "Trusted";
+        }
+
+        return "Not trusted";
     }
 }

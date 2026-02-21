@@ -38,6 +38,7 @@ internal class MarkDeleteResultStatsProcessor : IMarkDeleteResultProcessor {
         table.AddColumn(new TableColumn("Size (MiB)").RightAligned());
         table.AddColumn(new TableColumn("Directory").LeftAligned());
         table.AddColumn(new TableColumn("TFMs").LeftAligned());
+        var markdownRows = new List<IReadOnlyList<string?>>();
 
         long totalBytes = 0L;
         int totalFiles = 0;
@@ -59,6 +60,14 @@ internal class MarkDeleteResultStatsProcessor : IMarkDeleteResultProcessor {
                 Markup.Escape(path.FullName),
                 "" + string.Join(", ", kvp.References?.SelectMany(d => d.Tfms).Distinct() ?? Array.Empty<string>()) + " "
                 );
+
+            markdownRows.Add(new[] {
+                count.ToString(),
+                (bytes / 1024d).ToString("N0"),
+                (bytes / 1024d / 1024d).ToString("N2"),
+                path.FullName,
+                string.Join(", ", kvp.References?.SelectMany(d => d.Tfms).Distinct() ?? Array.Empty<string>())
+            });
         }
 
         if (totalFiles == 0 && totalBytes == 0) {
@@ -73,7 +82,21 @@ internal class MarkDeleteResultStatsProcessor : IMarkDeleteResultProcessor {
                 (totalBytes / 1024d).ToString("N0"),
                 (totalBytes / 1024d / 1024d).ToString("N2")
                 , "[bold]Total[/]");
-            _console.WriteTable(table);
+
+            if (_options.MarkdownOutput) {
+                markdownRows.Add(new[] {
+                    totalFiles.ToString(),
+                    (totalBytes / 1024d).ToString("N0"),
+                    (totalBytes / 1024d / 1024d).ToString("N2"),
+                    "Total",
+                    string.Empty
+                });
+
+                MarkdownTableFormatter.Write(_console, "Stats (markdown)", new[] { "Files", "Size (KiB)", "Size (MiB)", "Directory", "TFMs" }, markdownRows);
+            }
+            else {
+                _console.WriteTable(table);
+            }
         }
 
         return Task.CompletedTask;

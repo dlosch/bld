@@ -24,6 +24,7 @@ internal record CleaningOptions {
 
     public bool Parallel { get; init; } = true;
     public int MaxDegreeOfParallelism { get; init; } = Environment.ProcessorCount >> 1;
+    public bool MarkdownOutput { get; init; } = false;
 
     private static bool FilterSupportedSlnFileFormats(string file) =>
         // no support for slnx

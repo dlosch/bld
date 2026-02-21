@@ -232,20 +232,33 @@ internal class OutdatedService {
 
         {
             _console.WriteInfo($"\nFound {outdatedPerPackage.Count} packages with available updates:");
-            var table = new Table().Border(TableBorder.Rounded);
-            table.AddColumn(new TableColumn("PackageId").LeftAligned());
-            table.AddColumn(new TableColumn("current").LeftAligned());
-            table.AddColumn(new TableColumn("latest").LeftAligned());
+            if (_options.MarkdownOutput) {
+                var rows = outdatedPerPackage
+                    .OrderBy(k => k.Key)
+                    .Select(kvp => (IReadOnlyList<string?>)new[] {
+                        kvp.Key,
+                        PlainVersion(kvp.Value.CurrentMin),
+                        PlainVersion(kvp.Value.Latest)
+                    });
 
-            foreach (var kvp in outdatedPerPackage.OrderBy(k => k.Key)) {
-                table.AddRow(
-                    Markup.Escape(kvp.Key ?? ""),
-                    FormatVersion(kvp.Value.CurrentMin, maxMajorLength),
-                    GetFormattedVersion(kvp.Value.CurrentMin, kvp.Value.Latest, maxMajorLength)
-                );
-                //_console.WriteWarning($"{kvp.Key}: {kvp.Value.CurrentMin} → {kvp.Value.Latest}");
+                MarkdownTableFormatter.Write(_console, "Outdated packages (markdown)", new[] { "PackageId", "Current", "Latest" }, rows);
             }
-            _console.WriteTable(table);
+            else {
+                var table = new Table().Border(TableBorder.Rounded);
+                table.AddColumn(new TableColumn("PackageId").LeftAligned());
+                table.AddColumn(new TableColumn("current").LeftAligned());
+                table.AddColumn(new TableColumn("latest").LeftAligned());
+
+                foreach (var kvp in outdatedPerPackage.OrderBy(k => k.Key)) {
+                    table.AddRow(
+                        Markup.Escape(kvp.Key ?? ""),
+                        FormatVersion(kvp.Value.CurrentMin, maxMajorLength),
+                        GetFormattedVersion(kvp.Value.CurrentMin, kvp.Value.Latest, maxMajorLength)
+                    );
+                    //_console.WriteWarning($"{kvp.Key}: {kvp.Value.CurrentMin} → {kvp.Value.Latest}");
+                }
+                _console.WriteTable(table);
+            }
         }
 
         // Prepare batch updates: props file -> (package -> version) and project -> (package -> version)
@@ -301,20 +314,33 @@ internal class OutdatedService {
                 if (!kvp.Value.Any()) continue;
 
                 _console.WriteHeader($"{kvp.Key}", "Version upgrades to central package management file.");
-                var table = new Table().Border(TableBorder.Rounded);
-                table.AddColumn(new TableColumn("Package").LeftAligned());
-                table.AddColumn(new TableColumn("current").LeftAligned());
-                table.AddColumn(new TableColumn("target").LeftAligned());
+                if (_options.MarkdownOutput) {
+                    var rows = kvp.Value
+                        .OrderBy(kvp2 => kvp2.Key)
+                        .Select(item => (IReadOnlyList<string?>)new[] {
+                            item.Key,
+                            item.Value.current,
+                            item.Value.target
+                        });
 
-                foreach (var item in kvp.Value.OrderBy(kvp2 => kvp2.Key)) {
-                    table.AddRow(
-                        Markup.Escape(item.Key ?? ""),
-                        FormatVersion(item.Value.current, maxMajorLength),
-                        GetFormattedVersion(item.Value.current, item.Value.target, maxMajorLength)
-                    );
+                    MarkdownTableFormatter.Write(_console, "CPM updates (markdown)", new[] { "Package", "Current", "Target" }, rows);
                 }
+                else {
+                    var table = new Table().Border(TableBorder.Rounded);
+                    table.AddColumn(new TableColumn("Package").LeftAligned());
+                    table.AddColumn(new TableColumn("current").LeftAligned());
+                    table.AddColumn(new TableColumn("target").LeftAligned());
 
-                _console.WriteTable(table);
+                    foreach (var item in kvp.Value.OrderBy(kvp2 => kvp2.Key)) {
+                        table.AddRow(
+                            Markup.Escape(item.Key ?? ""),
+                            FormatVersion(item.Value.current, maxMajorLength),
+                            GetFormattedVersion(item.Value.current, item.Value.target, maxMajorLength)
+                        );
+                    }
+
+                    _console.WriteTable(table);
+                }
             }
         }
         {
@@ -335,16 +361,30 @@ internal class OutdatedService {
                     _ => ""
                 };
 
-                foreach (var item in kvp.Value.OrderBy(kvp2 => kvp2.Key)) {
-                    table.AddRow(
-                        Markup.Escape(item.Key ?? ""),
-                        FormatVersion(item.Value.current, maxMajorLength),
-                        GetFormattedVersion(item.Value.current, item.Value.target, maxMajorLength),
-                        Markup.Escape(Reason(item.Value.reason))
-                    );
-                }
+                if (_options.MarkdownOutput) {
+                    var rows = kvp.Value
+                        .OrderBy(kvp2 => kvp2.Key)
+                        .Select(item => (IReadOnlyList<string?>)new[] {
+                            item.Key,
+                            item.Value.current,
+                            item.Value.target,
+                            Reason(item.Value.reason)
+                        });
 
-                _console.WriteTable(table);
+                    MarkdownTableFormatter.Write(_console, "Project updates (markdown)", new[] { "Package", "Current", "Target", "Reason" }, rows);
+                }
+                else {
+                    foreach (var item in kvp.Value.OrderBy(kvp2 => kvp2.Key)) {
+                        table.AddRow(
+                            Markup.Escape(item.Key ?? ""),
+                            FormatVersion(item.Value.current, maxMajorLength),
+                            GetFormattedVersion(item.Value.current, item.Value.target, maxMajorLength),
+                            Markup.Escape(Reason(item.Value.reason))
+                        );
+                    }
+
+                    _console.WriteTable(table);
+                }
             }
         }
 
@@ -521,6 +561,8 @@ internal class OutdatedService {
         if (string.IsNullOrEmpty(current) || !NuGetVersion.TryParse(current, out var currentVer)) return FormatVersion(latestVer, maxMajorLength);
         return GetFormattedVersion(currentVer, latestVer, maxMajorLength);
     }
+
+    private static string PlainVersion(NuGetVersion? version) => version?.ToFullString() ?? string.Empty;
 
     internal class PackageInfoContainer : IEnumerable<OutdatedService.PackageInfo> {
         private readonly HashSet<PackageInfo> _items = new(new PackageInfoComparer());
