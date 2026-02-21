@@ -39,6 +39,7 @@ internal sealed class StatsCommand : BaseCommand {
             NoResolveVSToolsPath = parseResult.GetValue(_noResolveVsToolsPath),
             Parallel = parseResult.GetValue(_parallelOption),
             MaxDegreeOfParallelism = parseResult.GetValue(_concurrencyOption),
+            MarkdownOutput = parseResult.GetValue(_markdownOption),
         };
 
         if (!options.NoResolveVSToolsPath && string.IsNullOrEmpty(options.VSToolsPath)) {

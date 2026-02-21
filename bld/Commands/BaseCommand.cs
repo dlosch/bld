@@ -7,14 +7,6 @@ namespace bld.Commands;
 
 internal abstract class BaseCommand : Command {
     protected IConsoleOutput Console { get; set; }
-    protected BaseCommand(string name, string? description, IConsoleOutput console) : base(name, description) {
-        Console = console;
-
-        SetAction(async (parseResult, cancellationToken) => {
-            var exitCode = await ExecuteAsync(parseResult, cancellationToken);
-            return exitCode;
-        });
-    }
 
     protected virtual Task<int> ExecuteAsync(ParseResult parseResult, CancellationToken cancellationToken) {
         return Task.FromResult(0);
@@ -89,6 +81,11 @@ internal abstract class BaseCommand : Command {
         DefaultValueFactory = _ => LogLevel.Info
     };
 
+    protected readonly Option<bool> _markdownOption = new Option<bool>("--markdown", "-md") {
+        Description = "Emit markdown table output where supported.",
+        DefaultValueFactory = _ => false
+    };
+
     protected readonly Option<bool> _nupkgOption = new Option<bool>("--nupkg") {
         Description = "(Currently implicit via CleanAll) Also delete produced .nupkg artifacts.",
         DefaultValueFactory = _ => false
@@ -110,6 +107,17 @@ internal abstract class BaseCommand : Command {
             RootPathValidator
         }
     };
+
+    protected BaseCommand(string name, string? description, IConsoleOutput console) : base(name, description) {
+        Console = console;
+
+        Add(_markdownOption);
+
+        SetAction(async (parseResult, cancellationToken) => {
+            var exitCode = await ExecuteAsync(parseResult, cancellationToken);
+            return exitCode;
+        });
+    }
 
     protected string GetRootPath(ParseResult parseResult) {
         var rootPath = parseResult.GetValue(_rootArgument) ?? parseResult.GetValue(_rootOption);

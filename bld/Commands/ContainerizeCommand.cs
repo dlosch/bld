@@ -70,6 +70,7 @@ internal sealed class ContainerizeCommand : BaseCommand {
         var listOnly = parseResult.GetValue(_listOnlyOption);
         var scanProjects = parseResult.GetValue(_projectsOption);
         var scanAll = parseResult.GetValue(_allOption);
+        var markdownOutput = parseResult.GetValue(_markdownOption);
 
         // If --all is specified, scan both; otherwise respect individual flags
         var shouldScanDockerfiles = scanAll || !scanProjects;
@@ -118,39 +119,64 @@ internal sealed class ContainerizeCommand : BaseCommand {
 
             if (containerProjects.Count > 0) {
                 foundAny = true;
-                Console.WriteInfo($"Found {containerProjects.Count} .NET Container Project(s):");
-                Console.WriteInfo("");
+                if (markdownOutput) {
+                    var rows = containerProjects
+                        .OrderBy(project => project.ProjectName, StringComparer.OrdinalIgnoreCase)
+                        .Select(project => {
+                            var relativePath = Path.GetRelativePath(rootPath, project.ProjectPath);
+                            return (IReadOnlyList<string?>)new[] {
+                                project.ProjectName,
+                                relativePath,
+                                project.PublishProfile ?? string.Empty,
+                                project.ContainerBaseImage ?? string.Empty,
+                                project.ContainerImage ?? string.Empty,
+                                project.ContainerFamily ?? string.Empty,
+                                project.ContainerRegistry ?? string.Empty,
+                                project.EnableSdkContainerSupport ? "Enabled" : string.Empty
+                            };
+                        });
 
-                foreach (var project in containerProjects) {
-                    var relativePath = Path.GetRelativePath(rootPath, project.ProjectPath);
-                    Console.WriteInfo($"  • {project.ProjectName} ({relativePath})");
+                    MarkdownTableFormatter.Write(
+                        Console,
+                        ".NET container projects (markdown)",
+                        new[] { "Project", "Path", "PublishProfile", "ContainerBaseImage", "ContainerImage", "ContainerFamily", "ContainerRegistry", "SDKContainerSupport" },
+                        rows);
+                }
+                else {
+                    Console.WriteInfo($"Found {containerProjects.Count} .NET Container Project(s):");
+                    Console.WriteInfo("");
 
-                    if (!listOnly) {
-                        if (project.PublishProfile != null) {
-                            Console.WriteInfo($"    Publish Profile: {project.PublishProfile}");
-                        }
-                        
-                        if (project.EnableSdkContainerSupport) {
-                            Console.WriteInfo($"    SDK Container Support: Enabled");
-                        }
+                    foreach (var project in containerProjects) {
+                        var relativePath = Path.GetRelativePath(rootPath, project.ProjectPath);
+                        Console.WriteInfo($"  • {project.ProjectName} ({relativePath})");
 
-                        if (project.ContainerBaseImage != null) {
-                            Console.WriteInfo($"    Container Base Image: {project.ContainerBaseImage}");
-                        }
-                        
-                        if (project.ContainerImage != null) {
-                            Console.WriteInfo($"    Container Image: {project.ContainerImage}");
-                        }
-                        
-                        if (project.ContainerFamily != null) {
-                            Console.WriteInfo($"    Container Family: {project.ContainerFamily}");
-                        }
+                        if (!listOnly) {
+                            if (project.PublishProfile != null) {
+                                Console.WriteInfo($"    Publish Profile: {project.PublishProfile}");
+                            }
+                            
+                            if (project.EnableSdkContainerSupport) {
+                                Console.WriteInfo($"    SDK Container Support: Enabled");
+                            }
 
-                        if (project.ContainerRegistry != null) {
-                            Console.WriteInfo($"    Container Registry: {project.ContainerRegistry}");
-                        }
+                            if (project.ContainerBaseImage != null) {
+                                Console.WriteInfo($"    Container Base Image: {project.ContainerBaseImage}");
+                            }
+                            
+                            if (project.ContainerImage != null) {
+                                Console.WriteInfo($"    Container Image: {project.ContainerImage}");
+                            }
+                            
+                            if (project.ContainerFamily != null) {
+                                Console.WriteInfo($"    Container Family: {project.ContainerFamily}");
+                            }
 
-                        Console.WriteInfo("");
+                            if (project.ContainerRegistry != null) {
+                                Console.WriteInfo($"    Container Registry: {project.ContainerRegistry}");
+                            }
+
+                            Console.WriteInfo("");
+                        }
                     }
                 }
             }
@@ -162,41 +188,74 @@ internal sealed class ContainerizeCommand : BaseCommand {
 
             if (dockerfiles.Count > 0) {
                 foundAny = true;
-                Console.WriteInfo($"Found {dockerfiles.Count} Dockerfile(s):");
-                Console.WriteInfo("");
+                if (markdownOutput) {
+                    if (listOnly) {
+                        var rows = dockerfiles
+                            .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+                            .Select(dockerfile => (IReadOnlyList<string?>)new[] {
+                                Path.GetRelativePath(rootPath, dockerfile)
+                            });
+                        MarkdownTableFormatter.Write(Console, "Dockerfiles (markdown)", new[] { "Dockerfile" }, rows);
+                    }
+                    else {
+                        var rows = new List<IReadOnlyList<string?>>();
+                        foreach (var dockerfile in dockerfiles.OrderBy(path => path, StringComparer.OrdinalIgnoreCase)) {
+                            var info = await DockerfileParser.ParseAsync(dockerfile);
+                            rows.Add(new[] {
+                                Path.GetRelativePath(rootPath, dockerfile),
+                                string.Join(", ", info.BaseImages),
+                                string.Join(", ", info.Stages),
+                                string.Join(", ", info.ExposedPorts),
+                                info.WorkDir ?? string.Empty,
+                                info.EntryPoint ?? string.Empty,
+                                info.Cmd ?? string.Empty,
+                            });
+                        }
 
-                foreach (var dockerfile in dockerfiles) {
-                    var relativePath = Path.GetRelativePath(rootPath, dockerfile);
-                    Console.WriteInfo($"  • {relativePath}");
-                    
-                    if (!listOnly) {
-                        var info = await DockerfileParser.ParseAsync(dockerfile);
+                        MarkdownTableFormatter.Write(
+                            Console,
+                            "Dockerfiles (markdown)",
+                            new[] { "Dockerfile", "Base Images", "Build Stages", "Exposed Ports", "Working Directory", "Entry Point", "CMD" },
+                            rows);
+                    }
+                }
+                else {
+                    Console.WriteInfo($"Found {dockerfiles.Count} Dockerfile(s):");
+                    Console.WriteInfo("");
+
+                    foreach (var dockerfile in dockerfiles) {
+                        var relativePath = Path.GetRelativePath(rootPath, dockerfile);
+                        Console.WriteInfo($"  • {relativePath}");
                         
-                        if (info.BaseImages.Any()) {
-                            Console.WriteInfo($"    Base Images: {string.Join(", ", info.BaseImages)}");
+                        if (!listOnly) {
+                            var info = await DockerfileParser.ParseAsync(dockerfile);
+                            
+                            if (info.BaseImages.Any()) {
+                                Console.WriteInfo($"    Base Images: {string.Join(", ", info.BaseImages)}");
+                            }
+                            
+                            if (info.Stages.Any()) {
+                                Console.WriteInfo($"    Build Stages: {string.Join(", ", info.Stages)}");
+                            }
+                            
+                            if (info.ExposedPorts.Any()) {
+                                Console.WriteInfo($"    Exposed Ports: {string.Join(", ", info.ExposedPorts)}");
+                            }
+                            
+                            if (!string.IsNullOrEmpty(info.WorkDir)) {
+                                Console.WriteInfo($"    Working Directory: {info.WorkDir}");
+                            }
+                            
+                            if (!string.IsNullOrEmpty(info.EntryPoint)) {
+                                Console.WriteInfo($"    Entry Point: {info.EntryPoint}");
+                            }
+                            
+                            if (!string.IsNullOrEmpty(info.Cmd)) {
+                                Console.WriteInfo($"    CMD: {info.Cmd}");
+                            }
+                            
+                            Console.WriteInfo("");
                         }
-                        
-                        if (info.Stages.Any()) {
-                            Console.WriteInfo($"    Build Stages: {string.Join(", ", info.Stages)}");
-                        }
-                        
-                        if (info.ExposedPorts.Any()) {
-                            Console.WriteInfo($"    Exposed Ports: {string.Join(", ", info.ExposedPorts)}");
-                        }
-                        
-                        if (!string.IsNullOrEmpty(info.WorkDir)) {
-                            Console.WriteInfo($"    Working Directory: {info.WorkDir}");
-                        }
-                        
-                        if (!string.IsNullOrEmpty(info.EntryPoint)) {
-                            Console.WriteInfo($"    Entry Point: {info.EntryPoint}");
-                        }
-                        
-                        if (!string.IsNullOrEmpty(info.Cmd)) {
-                            Console.WriteInfo($"    CMD: {info.Cmd}");
-                        }
-                        
-                        Console.WriteInfo("");
                     }
                 }
             }

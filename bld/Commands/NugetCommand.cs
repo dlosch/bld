@@ -46,6 +46,7 @@ internal sealed class NugetCommand : BaseCommand {
             NoResolveVSToolsPath = parseResult.GetValue(_noResolveVsToolsPath),
             Parallel = parseResult.GetValue(_parallelOption),
             MaxDegreeOfParallelism = parseResult.GetValue(_concurrencyOption),
+            MarkdownOutput = parseResult.GetValue(_markdownOption),
         };
 
         if (!options.NoResolveVSToolsPath && string.IsNullOrEmpty(options.VSToolsPath)) {
@@ -62,7 +63,7 @@ internal sealed class NugetCommand : BaseCommand {
 
         var app = new NugetAnalysisApplication(base.Console);
         await app.InitAsync(options);
-        await app.RunAsync(new[] { rootPath }, options, whitelistBlacklistFile, aggregate, showProjects);
+        await app.RunAsync(new[] { rootPath }, options, whitelistBlacklistFile, aggregate, showProjects, options.MarkdownOutput);
 
         return 0;
     }
