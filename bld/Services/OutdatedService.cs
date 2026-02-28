@@ -6,8 +6,6 @@ using NuGet.Versioning;
 using Spectre.Console;
 using System.Collections.Concurrent;
 using System.Diagnostics;
-using System.Linq;
-using System.Net.NetworkInformation;
 using System.Runtime.CompilerServices;
 using System.Xml;
 using System.Xml.Linq;
@@ -142,10 +140,17 @@ internal class OutdatedService {
                 return;
             }
 
-            var currentMin = packageReference.Value
+            var parsedVersions = packageReference.Value
                 .Select(u => NuGetVersion.TryParse(u.Version, out var v) ? v : null)
-                .Where(v => v is not null)!
-                .Min()!;
+                .Where(v => v is not null)
+                .ToList();
+
+            if (parsedVersions.Count == 0) {
+                _console.WriteWarning($"Package {packageReference.Key} has no parseable version strings, skipping.");
+                return;
+            }
+
+            var currentMin = parsedVersions.Min()!;
 
             try {
                 var targetVer = default(string?);
@@ -153,7 +158,6 @@ internal class OutdatedService {
                     foreach (var item in request.CompatibleTargetFrameworksTyped) {
                         var curVer = default(string?);
                         var exists = result?.TargetFrameworkVersions?.TryGetValue(item, out curVer) ?? false;
-                        //if (!exists) Debugger.Break();
 
                         if (curVer is not null && targetVer is not null && 0 != string.Compare(curVer, targetVer, StringComparison.OrdinalIgnoreCase)) {
                             _console.WriteWarning($"Package {packageReference.Key} has multiple target framework versions: {targetVer} vs {curVer} for {string.Join(',', request.CompatibleTargetFrameworks)}");
@@ -163,25 +167,34 @@ internal class OutdatedService {
                     }
                 }
                 else {
-                    if (result.TargetFrameworkVersions.Values.Distinct().Count() == 1) {
+                    if (result.TargetFrameworkVersions.Count == 0) {
+                        // no versions returned at all
+                    }
+                    else if (result.TargetFrameworkVersions.Values.Distinct(StringComparer.OrdinalIgnoreCase).Count() == 1) {
                         targetVer = result.TargetFrameworkVersions.Values.First();
                     }
-
                     else {
-                        targetVer = result?.TargetFrameworkVersions?[packageReference.Value.Select(u => NuGetFramework.Parse(u.TargetFramework)
-                        //.GetShortFolderName())
-                        ).First()];
+                        // Try to find the version for the first matching TFM
+                        var firstTfm = packageReference.Value
+                            .Where(u => !string.IsNullOrWhiteSpace(u.TargetFramework))
+                            .Select(u => NuGetFramework.Parse(u.TargetFramework))
+                            .FirstOrDefault();
+
+                        if (firstTfm is not null && result.TargetFrameworkVersions.TryGetValue(firstTfm, out var tfmVer)) {
+                            targetVer = tfmVer;
+                        }
+                        else {
+                            // Fallback: take the highest version from any compatible framework
+                            targetVer = result.TargetFrameworkVersions.Values
+                                .Select(v => NuGetVersion.TryParse(v, out var nv) ? nv : null)
+                                .Where(v => v is not null)
+                                .Max()?.ToFullString();
+                        }
                     }
                 }
 
-                //var targetVersions = packageReference.Value.SelectMany(u => u.TargetFrameworks).Select(NuGetFramework.Parse).Select(x => x.GetShortFolderName()).Distinct();
-                //if (targetVersions.Count() > 1) {
-                //    Debugger.Break();
-                //}
-
-
                 if (targetVer is null) {
-                    _console.WriteInfo($"No compatible version found for {packageReference.Key} {packageReference.Value.Tfm} {result?.ToString()} {string.Join(',', result?.TargetFrameworkVersions?.Select(x => x.Key.GetShortFolderName()) ?? Array.Empty<string>())}");
+                    _console.WriteInfo($"No compatible version found for {packageReference.Key} (tfm: {packageReference.Value.Tfm ?? "any"})");
                     return;
                 }
                 if (!NuGetVersion.TryParse(targetVer, out var latestVer)) {
@@ -193,10 +206,6 @@ internal class OutdatedService {
                     return;
                 }
 
-                // outdatedPerPackage[packageReference.Key] = (currentMin
-                // , NuGetVersion.Parse(targetVer)
-                // //, NuGetVersion.Parse(result?.TargetFrameworkVersions?[packageReference.Value.Select(u => NuGetFramework.Parse(u.TargetFramework).GetShortFolderName()).FirstOrDefault()])
-                // );
                 outdatedPerPackage.AddOrUpdate(
                     packageReference.Key,
                     key => (currentMin, NuGetVersion.Parse(targetVer)),
@@ -246,8 +255,8 @@ internal class OutdatedService {
             else {
                 var table = new Table().Border(TableBorder.Rounded);
                 table.AddColumn(new TableColumn("PackageId").LeftAligned());
-                table.AddColumn(new TableColumn("current").LeftAligned());
-                table.AddColumn(new TableColumn("latest").LeftAligned());
+                table.AddColumn(new TableColumn("Current").LeftAligned());
+                table.AddColumn(new TableColumn("Latest").LeftAligned());
 
                 foreach (var kvp in outdatedPerPackage.OrderBy(k => k.Key)) {
                     table.AddRow(
@@ -328,8 +337,8 @@ internal class OutdatedService {
                 else {
                     var table = new Table().Border(TableBorder.Rounded);
                     table.AddColumn(new TableColumn("Package").LeftAligned());
-                    table.AddColumn(new TableColumn("current").LeftAligned());
-                    table.AddColumn(new TableColumn("target").LeftAligned());
+                    table.AddColumn(new TableColumn("Current").LeftAligned());
+                    table.AddColumn(new TableColumn("Target").LeftAligned());
 
                     foreach (var item in kvp.Value.OrderBy(kvp2 => kvp2.Key)) {
                         table.AddRow(
@@ -350,9 +359,9 @@ internal class OutdatedService {
                 _console.WriteHeader($"{kvp.Key}", "Version upgrades to project file.");
                 var table = new Table().Border(TableBorder.Rounded);
                 table.AddColumn(new TableColumn("Package").LeftAligned());
-                table.AddColumn(new TableColumn("current").LeftAligned());
-                table.AddColumn(new TableColumn("target").LeftAligned());
-                table.AddColumn(new TableColumn("reason").LeftAligned());
+                table.AddColumn(new TableColumn("Current").LeftAligned());
+                table.AddColumn(new TableColumn("Target").LeftAligned());
+                table.AddColumn(new TableColumn("Reason").LeftAligned());
 
                 static string Reason(VersionReason vr) => vr switch {
                     VersionReason.PackageReferenceProj => "Version in PackageReference in project file",
@@ -622,12 +631,9 @@ internal class OutdatedService {
             return string.Equals(x.Id, y.Id, StringComparison.OrdinalIgnoreCase)
                 && string.Equals(x.Version, y.Version, StringComparison.OrdinalIgnoreCase)
                 && string.Equals(x.ProjectPath, y.ProjectPath, StringComparison.OrdinalIgnoreCase)
-                &&
-                    //string.Equals(x.TargetFramework, y.TargetFramework, StringComparison.OrdinalIgnoreCase)
-                    //&& ((x.TargetFrameworks == null && y.TargetFrameworks == null) ||
+                && ((x.TargetFrameworks == null && y.TargetFrameworks == null) ||
                     (x.TargetFrameworks != null && y.TargetFrameworks != null &&
-                     x.TargetFrameworks.SequenceEqual(y.TargetFrameworks, StringComparer.OrdinalIgnoreCase))
-                //)
+                     x.TargetFrameworks.SequenceEqual(y.TargetFrameworks, StringComparer.OrdinalIgnoreCase)))
                 && string.Equals(x.PropsPath, y.PropsPath, StringComparison.OrdinalIgnoreCase)
                 && x.FromProps == y.FromProps;
         }
