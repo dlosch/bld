@@ -229,6 +229,13 @@ internal sealed class MarkDeleteProcessor : IProjectProcessor {
                         return default;
                     }
 
+                    Stats NpmDir(string absPath, DirType dirType, Dir dir) {
+                        if (Directory.Exists(absPath)) {
+                            _deleteDirs.GetOrAdd(absPath, _ => new ConcurrentBag<Dir>()).Add(dir);
+                        }
+                        return default;
+                    }
+
                     Stats VcxDir(string absPath, DirType dirType, Dir dir) {
                         if (Directory.Exists(absPath)) {
                             _deleteDirs.GetOrAdd(absPath, _ => new ConcurrentBag<Dir>()).Add(dir);
@@ -237,6 +244,7 @@ internal sealed class MarkDeleteProcessor : IProjectProcessor {
                     }
 
                     var deleteTask = (dir.ProjType, item.type) switch {
+                        (ProjectType.Npm, _) => NpmDir(item.path, item.type, dir),
                         (ProjectType.Vcxproj, _) => VcxDir(item.path, item.type, dir),
                         (_, DirType.OutDir) => OutDirDelete(item.path, item.type, dir),
                         (_, DirType.BaseOutputPath) => BaseOutDirDelete(item.path, item.type, dir),

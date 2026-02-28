@@ -75,6 +75,16 @@ internal class CleaningApplication(IConsoleOutput _console, Func<IConsoleOutput,
                     var current = Interlocked.Increment(ref count);
                     ctx.Status($"Evaluating projects: {current}/{total} ([bold]{Path.GetFileName(projCfg.Path)}[/])");
 
+                    if (SlnScanner.IsNpmProjectFile(projCfg.Path)) {
+                        var npmInfo = new ProjectInfo {
+                            ProjectPath = projCfg.Path,
+                            ProjectName = Path.GetFileName(projCfg.ProjDir),
+                            OutDir = "node_modules",
+                        };
+                        await markDeleteProcessor.ProcessAsync(projCfg, npmInfo);
+                        return;
+                    }
+
                     var properties = projParser.LoadProject(projCfg, ProjConstants.PropertyNames);
                     if (properties is null) {
                         _console.WriteWarning($"Error evaluating project properties for {projCfg.Path} and configuration {projCfg.Configuration}.");

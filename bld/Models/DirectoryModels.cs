@@ -21,6 +21,7 @@ internal enum ProjectType {
     Vbproj,
     Sqlproj,
     Vcxproj,
+    Npm,
 }
 
 /// <summary>
@@ -38,6 +39,8 @@ internal record class Dir(
 
     private static ProjectType GetProjectType(string? projectFileAbsPath) {
         if (projectFileAbsPath == null) return ProjectType.Unknown;
+        if (Path.GetFileName(projectFileAbsPath).Equals("package.json", StringComparison.OrdinalIgnoreCase))
+            return ProjectType.Npm;
         switch (Path.GetExtension(projectFileAbsPath).ToLowerInvariant()) {
             case ".csproj": return ProjectType.Csproj;
             case ".fsproj": return ProjectType.Fsproj;

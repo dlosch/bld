@@ -12,6 +12,12 @@ internal enum ProcessingType {
 
 internal sealed class SlnParser(IConsoleOutput Console, ErrorSink ErrorSink) {
     public async IAsyncEnumerable<ProjCfg> ParseSolution(string slnPath, IFileSystem? fileSystem = default, bool createDefaultDebugConfiguration = true) {
+        if (SlnScanner.IsNpmProjectFile(slnPath)) {
+            var proj = new Proj(slnPath, null);
+            yield return new ProjCfg(proj, null, null);
+            yield break;
+        }
+
         if (SlnScanner.IsProjectFile(slnPath)) {
             var proj = new Proj(slnPath, null);
             if (createDefaultDebugConfiguration) {
