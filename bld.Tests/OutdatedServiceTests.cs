@@ -16,7 +16,7 @@ public class PackageInfoComparerTests {
             Id = id,
             Item = new Pkg(id, version),
             ProjectPath = projectPath,
-            TargetFramework = tfms?.FirstOrDefault()!,
+            TargetFramework = tfms?.FirstOrDefault() ?? string.Empty,
             TargetFrameworks = tfms!,
             PropsPath = propsPath,
             FromProps = fromProps,

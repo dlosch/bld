@@ -167,7 +167,7 @@ internal class OutdatedService {
                     }
                 }
                 else {
-                    if (result.TargetFrameworkVersions.Count == 0) {
+                    if (result.TargetFrameworkVersions is null || result.TargetFrameworkVersions.Count == 0) {
                         // no versions returned at all
                     }
                     else if (result.TargetFrameworkVersions.Values.Distinct(StringComparer.OrdinalIgnoreCase).Count() == 1) {
