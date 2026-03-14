@@ -26,8 +26,6 @@ internal sealed class StatsCommand : BaseCommand {
     }
 
     protected override async Task<int> ExecuteAsync(ParseResult parseResult, CancellationToken cancellationToken) {
-        var errors = new List<string>();
-
         var options = new CleaningOptions {
             Delete = false,
             CleanOnlyNonCurrentTfms = parseResult.GetValue(_nonCurrentOption),
@@ -52,7 +50,7 @@ internal sealed class StatsCommand : BaseCommand {
 
         var app = new CleaningApplication(base.Console, (a, b, c) => new MarkDeleteResultStatsProcessor(a, b, c));
         await app.InitAsync(options);
-        await app.RunAsync(new[] { rootPath }, options);
+        await app.RunAsync(new[] { rootPath }, options, cancellationToken);
 
         return 0;
     }

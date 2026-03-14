@@ -100,7 +100,7 @@ internal class ContainerizeService {
             }
         }
         catch (Exception ex) {
-            _console.WriteError($"  Error processing {project.ProjectPath}: {ex.Message}");
+            _console.WriteError($"  Error processing {project.ProjectPath}: {ex.FormatMessage()}");
         }
     }
 

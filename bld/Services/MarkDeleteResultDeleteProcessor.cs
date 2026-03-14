@@ -29,7 +29,7 @@ internal class MarkDeleteResultDeleteProcessor : IMarkDeleteResultProcessor {
                     _console.WriteInfo($"Deleted directory {path.FullName}.");
                 }
                 catch (Exception ex) {
-                    _console.WriteError($"Failed to delete directory {path.FullName}: {ex.Message}");
+                    _console.WriteError($"Failed to delete directory {path.FullName}: {ex.FormatMessage()}");
                 }
             }
             else {

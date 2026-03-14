@@ -3,7 +3,6 @@
 using bld.Models;
 using bld.Services;
 using Microsoft.Build.Evaluation;
-using System.Diagnostics;
 
 namespace bld.Infrastructure;
 
@@ -11,28 +10,19 @@ internal record class Pkg(string Id, string? Version, string? VersionOverride = 
     public string EffectiveVersion => VersionOverride ?? Version ?? CpmVersion ?? string.Empty;
 };
 
-//internal record class AggregatedPackageReferenceInfo(string PackageId, string? Version, bool PrivateAssets = false);
 internal record class ProjectPackageReferenceInfo(
         ProjCfg Proj,
         string[] TargetFrameworks,
         bool? UseCpm,
         string? CpmFile,
-        //Dictionary<string, string?> PackageReferences,
         Dictionary<string, Pkg> PackageReferences,
         Dictionary<string, string?>? PackageVersions) {
-    public string TargetFramework {
-        get {
-            //if (!(TargetFrameworks?.Any() ?? false)) Debugger.Launch(); 
-            return TargetFrameworks.First();
-        }
-    }
-
+    public string TargetFramework => TargetFrameworks.First();
 }
-//internal record class ProjectPackageReferenceInfo(ProjCfg Proj, string? TargetFramework, bool? UseCpm, string? CpmFile, IEnumerable<ProjectPackage> PackageReferences, IEnumerable<ProjectPackage>? PackageVersions);
 internal record class ProjectPackage(string PackageId, string? Version);
-//internal class ProjectPackageVersion(string PackageId, string Version);
 
 internal sealed class ProjParser(IConsoleOutput Console, ErrorSink ErrorSink, CleaningOptions Options) {
+
 
     private Dictionary<string, string> _globalProperties = default!;
 
@@ -64,39 +54,6 @@ internal sealed class ProjParser(IConsoleOutput Console, ErrorSink ErrorSink, Cl
         }
     }
 
-
-
-    //internal void SetPackageReferences(ProjCfg proj, ProjectPackageReferenceInfo info) {
-    //    string projectPath = proj.Path;
-    //    string? configuration = proj.Configuration;
-
-    //    using (var projectCollection = new ProjectCollection()) {
-    //        var project = default(Project);
-
-    //        var properties = new Dictionary<string, string>(GlobalProperties);
-    //        if (!string.IsNullOrEmpty(configuration)) {
-    //            properties["Configuration"] = configuration;
-    //        }
-    //        try {
-    //            project.RemoveItems(project.GetItems("PackageReference"));
-    //            // Add new PackageReference items
-    //            foreach (var pr in info.PackageReferences) {
-    //                var item = project.AddItem("PackageReference", pr.Key);
-    //                if (!string.IsNullOrEmpty(pr.Value)) {
-    //                    item[0].SetMetadataValue("Version", pr.Value);
-    //                }
-    //            }
-    //            // Save the modified project file
-    //            project.Save();
-    //        }
-    //        catch {
-
-    //        }
-
-
-    //    }
-    //}
-
     internal ProjectPackageReferenceInfo? GetPackageReferences(ProjCfg proj) {
         Console.WriteDebug($"Loading project {proj.Path} [{proj.Configuration}]...");
         string projectPath = proj.Path;
@@ -123,15 +80,11 @@ internal sealed class ProjParser(IConsoleOutput Console, ErrorSink ErrorSink, Cl
                     : default;
 
                 var retVal = new ProjectPackageReferenceInfo(proj,
-
-                    // todo TargetFrameworks
-                    //[Safe(project.GetPropertyValue("TargetFramework"))],
                     project.TfmOrTfmsSafe(),
                     usesCpm,
                     (usesCpm ?? false)
                         ? project.Imports.FirstOrDefault(imp => string.Equals(Path.GetFileName(imp.ImportedProject.FullPath), "Directory.Packages.props", StringComparison.OrdinalIgnoreCase)).ImportedProject?.FullPath
                         : default,
-                        //var privateAssets = string.Equals(item.GetMetadataValue("PrivateAssets"), "all", StringComparison.OrdinalIgnoreCase);
                         // todo this pukes if a single package reference include is included more than once 
                         // dotnet build picks the first not the highest or lowest and warns only
                         project.GetItems("PackageReference")
@@ -143,19 +96,15 @@ internal sealed class ProjParser(IConsoleOutput Console, ErrorSink ErrorSink, Cl
                                         , pr.Metadata?.FirstOrDefault(meta => meta.Name == "VersionOverride")?.EvaluatedValue
                                         , versions?.GetValueOrDefault(pr.Xml.Include)
                                         )
-                                    //pr.Metadata?.FirstOrDefault(meta => meta.Name == "Version")?.EvaluatedValue
-                                    //?? pr.Metadata?.FirstOrDefault(meta => meta.Name == "VersionOverride")?.EvaluatedValue
                                     , StringComparer.OrdinalIgnoreCase)
                                 ,
                             versions
-                //project.GetItems("PackageReference").Select(pr => new ProjectPackage(pr.Xml.Include, pr.Metadata?.FirstOrDefault(meta => meta.Name == "Version")?.EvaluatedValue)),
-                //project.GetItems("PackageVersion")?.Select(pr => new ProjectPackage(pr.Xml.Include, pr.Metadata?.FirstOrDefault(meta => meta.Name == "Version")?.EvaluatedValue))
                 );
                 return retVal;
             }
             catch (Exception xcptn) {
                 ErrorSink.AddError($"Failed to load project.", exception: xcptn, config: proj);
-                Console.WriteError($"{projectPath} could not be parsed: {xcptn.Message}.");
+                Console.WriteError($"{projectPath} could not be parsed: {xcptn.FormatMessage()}");
                 return default;
             }
 
@@ -190,7 +139,7 @@ internal sealed class ProjParser(IConsoleOutput Console, ErrorSink ErrorSink, Cl
             }
             catch (Exception xcptn) {
                 ErrorSink.AddError($"Failed to load project.", exception: xcptn, config: proj);
-                Console.WriteError($"{projectPath} could not be parsed: {xcptn.Message}.");
+                Console.WriteError($"{projectPath} could not be parsed: {xcptn.FormatMessage()}");
                 return default;
             }
 

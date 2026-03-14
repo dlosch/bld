@@ -63,6 +63,7 @@ internal class NetUtil {
         "net47",
         "net471",
         "net472",
-        "net48"
+        "net48",
+        "net481"
     };
 }

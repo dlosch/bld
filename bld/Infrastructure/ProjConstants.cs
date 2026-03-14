@@ -1,4 +1,4 @@
-﻿namespace bld.Infrastructure;
+namespace bld.Infrastructure;
 
 static class ProjConstants {
 
@@ -13,9 +13,8 @@ static class ProjConstants {
         //@"PublishTrimmed",
         //@"PublishAot",
 
-        "UsingMicrosoftNETSdk", // true or empty
+        "UsingMicrosoftNETSdk",
 
-        // todo
         "IsPackable",
 
         "PackageOutputPath",

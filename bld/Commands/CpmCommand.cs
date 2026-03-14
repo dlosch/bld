@@ -40,6 +40,7 @@ internal sealed class CpmCommand : BaseCommand {
             NoResolveVSToolsPath = parseResult.GetValue(_noResolveVsToolsPath),
             Parallel = parseResult.GetValue(_parallelOption),
             MaxDegreeOfParallelism = parseResult.GetValue(_concurrencyOption),
+            MarkdownOutput = parseResult.GetValue(_markdownOption),
         };
 
         if (!options.NoResolveVSToolsPath && string.IsNullOrEmpty(options.VSToolsPath)) {
@@ -65,7 +66,7 @@ internal sealed class CpmCommand : BaseCommand {
             return 0;
         }
         catch (Exception ex) {
-            Console.WriteError($"Error converting to Central Package Management: {ex.Message}");
+            Console.WriteError($"Error converting to Central Package Management: {ex.FormatMessage()}");
             return 1;
         }
     }

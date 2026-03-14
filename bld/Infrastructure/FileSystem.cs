@@ -1,4 +1,4 @@
-﻿using bld.Services;
+using bld.Services;
 
 namespace bld.Infrastructure;
 #pragma warning disable CS9113 // Parameter is unread.

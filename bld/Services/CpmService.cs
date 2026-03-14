@@ -155,7 +155,7 @@ internal class CpmService {
             }
         }
         catch (Exception ex) {
-            _console.WriteWarning($"Failed to parse project file {projectPath}: {ex.Message}");
+            _console.WriteWarning($"Failed to parse project file {projectPath}: {ex.FormatMessage()}");
         }
 
         return packageReferences;
@@ -218,7 +218,7 @@ internal class CpmService {
             }
         }
         catch (Exception ex) {
-            _console.WriteError($"Failed to update project file {projectPath}: {ex.Message}");
+            _console.WriteError($"Failed to update project file {projectPath}: {ex.FormatMessage()}");
         }
     }
 

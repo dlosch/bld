@@ -30,62 +30,6 @@ SOFTWARE.
 
 internal static partial class MSBuildHelper {
 
-#if FALSE
-    public static IEnumerable<MsbuildLocation> GetPreferredLocations(bool prefer64bit = true) {
-        string[] vs15Locations = GetVS15Locations();
-        if (vs15Locations != null && vs15Locations.Length > 0) {
-            HashSet<string> hashSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            if (prefer64bit) {
-                hashSet.UnionWith(vs15Locations.Select((string l) => Path.Combine(l, "MSBuild", "15.0", "Bin", "amd64", "MSBuild.exe")));
-                hashSet.UnionWith(vs15Locations.Select((string l) => Path.Combine(l, "MSBuild", "Current", "Bin", "amd64", "MSBuild.exe")));
-            }
-            else {
-                hashSet.UnionWith(vs15Locations.Select((string l) => Path.Combine(l, "MSBuild", "15.0", "Bin", "MSBuild.exe")));
-                hashSet.UnionWith(vs15Locations.Select((string l) => Path.Combine(l, "MSBuild", "Current", "Bin", "MSBuild.exe")));
-            }
-
-            var msbuildLoc = hashSet
-                .Where(path => Path.Exists(path))
-                .OrderByDescending(path => path)
-                .Select(path => new MsbuildLocation(path, MsbuildExecType.ExecTypeExe, MsbuildLocationType.VisualStudio))
-                .FirstOrDefault();
-
-            if (msbuildLoc is not null) yield return msbuildLoc;
-        }
-
-        MsbuildLocation Translate(VisualStudioInstance instance) {
-            if (instance is null) return default;
-
-            var isFile = File.Exists(instance.MSBuildPath);
-            if (!isFile) {
-                if (File.Exists(Path.Combine(instance.MSBuildPath, "MSBuild.exe"))) {
-                    return new MsbuildLocation(Path.Combine(instance.MSBuildPath, "MSBuild.exe"), MsbuildExecType.ExecTypeExe, MsbuildLocationType.VisualStudio);
-                }
-                else if (File.Exists(Path.Combine(instance.MSBuildPath, "MSBuild.dll"))) {
-                    return new MsbuildLocation(Path.Combine(instance.MSBuildPath, "MSBuild.dll"), MsbuildExecType.ExecTypeDllDotnet, MsbuildLocationType.DotNetSdk);
-                }
-            }
-            else {
-                var ext = Path.GetExtension(instance.MSBuildPath);
-                if (ext is null) {
-                    return null;
-                }
-                else {
-                    if (0 == string.Compare(".exe", ext, StringComparison.OrdinalIgnoreCase)) new MsbuildLocation(instance.MSBuildPath, MsbuildExecType.ExecTypeExe, MsbuildLocationType.VisualStudio);
-                    if (0 == string.Compare(".dll", ext, StringComparison.OrdinalIgnoreCase)) new MsbuildLocation(instance.MSBuildPath, MsbuildExecType.ExecTypeDllDotnet, MsbuildLocationType.DotNetSdk);
-                }
-            }
-            return null;
-        }
-
-        var msbuildLoc2 = MSBuildLocator.QueryVisualStudioInstances(new VisualStudioInstanceQueryOptions { DiscoveryTypes = DiscoveryType.DotNetSdk })
-            .OrderByDescending(inst => inst.Version)
-            .Select(Translate)
-            .FirstOrDefault();
-
-        if (msbuildLoc2 is not null) yield return msbuildLoc2;
-    }
-#endif
     internal static string[] GetVS15Locations() {
         string vswhere = Path.Combine(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Microsoft Visual Studio", "Installer"), "vswhere.exe");
         if (!File.Exists(vswhere)) {

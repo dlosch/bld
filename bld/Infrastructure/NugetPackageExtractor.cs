@@ -138,7 +138,7 @@ internal sealed class NugetPackageExtractor {
         }
         catch (Exception ex) {
             _errorSink.AddError($"Failed to extract package references from project.", exception: ex, config: projCfg);
-            _console.WriteError($"Could not extract packages from {projCfg.Path}: {ex.Message}");
+            _console.WriteError($"Could not extract packages from {projCfg.Path}: {ex.FormatMessage()}");
         }
 
         return (packages, projectName);

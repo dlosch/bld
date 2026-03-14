@@ -2,7 +2,6 @@ using bld.Infrastructure;
 using bld.Models;
 using Microsoft.Build.Evaluation;
 using Microsoft.Build.Locator;
-using System.Collections.Concurrent;
 
 namespace bld.Services;
 /// <summary>
@@ -12,11 +11,9 @@ internal class MSBuildService : IMSBuildService, IDisposable {
     private static bool _isRegistered = false;
     private static readonly object _lockObject = new object();
     private readonly IConsoleOutput _console;
-    private readonly ConcurrentDictionary<string, ProjectCollection> _projectCollections = new();
 
     public MSBuildService(IConsoleOutput console) {
         _console = console;
-        //RegisterMSBuildDefaults();
     }
 
 
@@ -38,16 +35,13 @@ internal class MSBuildService : IMSBuildService, IDisposable {
                         }
 
                         var queryOptions = new VisualStudioInstanceQueryOptions { DiscoveryTypes = DiscoveryType.VisualStudioSetup | DiscoveryType.DotNetSdk | DiscoveryType.DeveloperConsole };
-                        var instances = MSBuildLocator.QueryVisualStudioInstances(queryOptions).ToList();
 
-
-                        //var instance = new VisualStudioInstance()
                         var instance = MSBuildLocator.QueryVisualStudioInstances(queryOptions)
                             .Where(x => x.DiscoveryType != DiscoveryType.DotNetSdk)
                             .OrderByDescending(x => x.Version)
                             .FirstOrDefault();
 
-                        if (instance is { }) // and not { DiscoveryType: DiscoveryType.DotNetSdk })
+                        if (instance is { })
                         {
                             MSBuildLocator.RegisterInstance(instance);
                             console?.WriteDebug($"Registered MSBuild instance: {instance.Name} {instance.Version}");
@@ -60,9 +54,17 @@ internal class MSBuildService : IMSBuildService, IDisposable {
                     _isRegistered = true;
                 }
                 catch (Exception ex) {
-                    console?.WriteError($"Failed to register MSBuild: {ex.Message}");
+                    console?.WriteError($"Failed to register MSBuild: {ex.FormatMessage()}");
                     throw;
                 }
+            }
+        }
+    }
+
+    internal static bool IsRegistered {
+        get {
+            lock (_lockObject) {
+                return _isRegistered;
             }
         }
     }
@@ -74,49 +76,34 @@ internal class MSBuildService : IMSBuildService, IDisposable {
             if (!string.IsNullOrEmpty(configuration))
                 globalProperties["Configuration"] = configuration;
 
-            //if (!string.IsNullOrEmpty(platform))
-            //    globalProperties["Platform"] = platform;
+            using var projectCollection = new ProjectCollection();
 
-            var projectCollection = new ProjectCollection();
+            var project = new Project(projectPath, globalProperties, null, projectCollection);
 
-            try {
+            var resultProperties = new Dictionary<string, string>();
 
-                var project = new Project(projectPath, globalProperties, null, projectCollection); // projectCollection.LoadProject(projectPath);
-
-                var resultProperties = new Dictionary<string, string>();
-
-                // Get all properties if none specified
-                if (properties.Length == 0) {
-                    foreach (var prop in project.Properties) {
-                        resultProperties[prop.Name] = prop.EvaluatedValue;
+            if (properties.Length == 0) {
+                foreach (var prop in project.Properties) {
+                    resultProperties[prop.Name] = prop.EvaluatedValue;
+                }
+            }
+            else {
+                foreach (var propName in properties) {
+                    var prop = project.GetProperty(propName);
+                    if (prop != null) {
+                        resultProperties[propName] = prop.EvaluatedValue;
                     }
                 }
-                else {
-                    // Get specific properties
-                    foreach (var propName in properties) {
-                        var prop = project.GetProperty(propName);
-                        if (prop != null) {
-                            resultProperties[propName] = prop.EvaluatedValue;
-                        }
-                    }
-                }
+            }
 
-                return Task.FromResult<ProjectProperties?>(new ProjectProperties { Properties = resultProperties });
-            }
-            finally {
-                projectCollection.Dispose();
-            }
+            return Task.FromResult<ProjectProperties?>(new ProjectProperties { Properties = resultProperties });
         }
         catch (Exception ex) {
-            _console.WriteError($"Failed to evaluate project {projectPath}: {ex.Message}");
+            _console.WriteError($"Failed to evaluate project {projectPath}: {ex.FormatMessage()}");
             return Task.FromResult<ProjectProperties?>(null);
         }
     }
 
     public void Dispose() {
-        foreach (var collection in _projectCollections.Values) {
-            collection.Dispose();
-        }
-        _projectCollections.Clear();
     }
 }

@@ -27,7 +27,6 @@ internal record CleaningOptions {
     public bool MarkdownOutput { get; init; } = false;
 
     private static bool FilterSupportedSlnFileFormats(string file) =>
-        // no support for slnx
         file.EndsWith(".sln", StringComparison.OrdinalIgnoreCase)
         || file.EndsWith(".slnf", StringComparison.OrdinalIgnoreCase)
         || file.EndsWith(".slnx", StringComparison.OrdinalIgnoreCase);

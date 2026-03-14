@@ -26,7 +26,7 @@ internal class TargetFrameworkValidator {
         "netcoreapp2.2",
         "netcoreapp3.0",
         "netcoreapp3.1",
-        
+
         // .NET 5+
         "net5.0",
         "net6.0",
@@ -34,7 +34,7 @@ internal class TargetFrameworkValidator {
         "net8.0",
         "net9.0",
         "net10.0",
-        
+
         // .NET Standard
         "netstandard1.0",
         "netstandard1.1",
@@ -45,7 +45,7 @@ internal class TargetFrameworkValidator {
         "netstandard1.6",
         "netstandard2.0",
         "netstandard2.1",
-        
+
         // .NET Framework
         "net11",
         "net20",
@@ -61,7 +61,8 @@ internal class TargetFrameworkValidator {
         "net47",
         "net471",
         "net472",
-        "net48"
+        "net48",
+        "net481"
     ];
 
     /// <summary>
@@ -84,11 +85,11 @@ internal class TargetFrameworkValidator {
     }
 
     /// <summary>
-    /// Gets the current target framework from the environment
+    /// Gets the current target framework by detecting the runtime version
     /// </summary>
     public string GetCurrentTargetFramework() {
-        // Default to .NET 8.0 as it's the current framework for this project
-        return "net8.0";
+        var version = Environment.Version;
+        return $"net{version.Major}.{version.Minor}";
     }
 
     /// <summary>

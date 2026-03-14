@@ -94,7 +94,7 @@ internal sealed class TfmCommand : BaseCommand {
             return await tfmService.MigrateTargetFrameworkAsync(rootPath, fromTfms, to, apply, cancellationToken);
         }
         catch (Exception ex) {
-            Console.WriteError($"Error migrating target frameworks: {ex.Message}");
+            Console.WriteError($"Error migrating target frameworks: {ex.FormatMessage()}");
             return 1;
         }
     }
@@ -152,7 +152,7 @@ internal sealed class TfmCommand : BaseCommand {
                     }
                 }
                 catch (Exception ex) {
-                    Console.WriteVerbose($"Could not read {rootPath}: {ex.Message}");
+                    Console.WriteVerbose($"Could not read {rootPath}: {ex.FormatMessage()}");
                     return null;
                 }
             }
@@ -195,7 +195,7 @@ internal sealed class TfmCommand : BaseCommand {
                             }
                         }
                         catch (Exception ex) {
-                            Console.WriteVerbose($"Could not read {projCfg.Path}: {ex.Message}");
+                            Console.WriteVerbose($"Could not read {projCfg.Path}: {ex.FormatMessage()}");
                         }
                     }
                 }
@@ -225,7 +225,7 @@ internal sealed class TfmCommand : BaseCommand {
             return null;
         }
         catch (Exception ex) {
-            Console.WriteVerbose($"Error detecting source framework: {ex.Message}");
+            Console.WriteVerbose($"Error detecting source framework: {ex.FormatMessage()}");
             return null;
         }
     }
@@ -274,7 +274,7 @@ internal sealed class TfmCommand : BaseCommand {
             return highest != null ? $"net{highest.Major}.{highest.Minor}" : null;
         }
         catch (Exception ex) {
-            Console.WriteVerbose($"Error detecting SDK versions: {ex.Message}");
+            Console.WriteVerbose($"Error detecting SDK versions: {ex.FormatMessage()}");
             return null;
         }
     }

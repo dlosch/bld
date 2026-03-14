@@ -141,15 +141,13 @@ internal sealed class MarkDeleteProcessor : IProjectProcessor {
 
                     if (NotSafeToDelete(dir)) {
                         _console.WriteVerbose($"{dir} is not safe to delete, skipping.");
+                        // Opus 4.6 thinks continue would be correct here ...
                         return Task.CompletedTask;
                     }
 
                     Stats OutDirDelete(string absPath, DirType dirType, Dir dir) {
                         var dirInfo = new DirectoryInfo(absPath);
                         var exists = dirInfo.Exists;
-
-                        //if (!Directory.Exists(absPath)) return default;
-                        //if (!dirInfo.Exists) return default;
 
                         if (exists && dirInfo.IsEmpty()) {
                             // todo we dont delete empty dirs.
@@ -185,8 +183,6 @@ internal sealed class MarkDeleteProcessor : IProjectProcessor {
                                     if (cfgDir.Parent is { } binDir) {
                                         if (0 == string.Compare(binDir.Name, "bin", DefaultComparison)
                                             || dir.AbsProjPath.Any(kvp => kvp.Value is { } projectName && (0 == string.Compare(binDir.Name, projectName, DefaultComparison)))) {
-
-                                            //_console.WriteVerbose($"{absPath} #2");
 
                                             if (binDir.EnumerateFiles().Any()
                                             || binDir.EnumerateDirectories().Any(cfgDir => !dir.Configs.Contains(cfgDir.Name))) {

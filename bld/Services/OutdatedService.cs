@@ -6,8 +6,6 @@ using NuGet.Versioning;
 using Spectre.Console;
 using System.Collections.Concurrent;
 using System.Diagnostics;
-using System.Linq;
-using System.Net.NetworkInformation;
 using System.Runtime.CompilerServices;
 using System.Xml;
 using System.Xml.Linq;
@@ -113,10 +111,6 @@ internal class OutdatedService {
 
         _console.WriteInfo($"Found {allPackageReferences.Count} unique packages across {cache.Count} projects");
 
-        // Determine latest versions per package and prepare updates
-        //var packageSource = Repository.Factory.GetCoreV3("https://api.nuget.org/v3/index.json");
-        //var metadataResource = await packageSource.GetResourceAsync<PackageMetadataResource>(cancellationToken);
-
         var latestPerPackage = new Dictionary<string, NuGetVersion>(StringComparer.OrdinalIgnoreCase);
         var outdatedPerPackage = new ConcurrentDictionary<string, (NuGetVersion CurrentMin, NuGetVersion Latest)>(StringComparer.OrdinalIgnoreCase);
 
@@ -153,7 +147,6 @@ internal class OutdatedService {
                     foreach (var item in request.CompatibleTargetFrameworksTyped) {
                         var curVer = default(string?);
                         var exists = result?.TargetFrameworkVersions?.TryGetValue(item, out curVer) ?? false;
-                        //if (!exists) Debugger.Break();
 
                         if (curVer is not null && targetVer is not null && 0 != string.Compare(curVer, targetVer, StringComparison.OrdinalIgnoreCase)) {
                             _console.WriteWarning($"Package {packageReference.Key} has multiple target framework versions: {targetVer} vs {curVer} for {string.Join(',', request.CompatibleTargetFrameworks)}");
@@ -168,16 +161,10 @@ internal class OutdatedService {
                     }
 
                     else {
-                        targetVer = result?.TargetFrameworkVersions?[packageReference.Value.Select(u => NuGetFramework.Parse(u.TargetFramework)
-                        //.GetShortFolderName())
-                        ).First()];
+                        targetVer = result?.TargetFrameworkVersions?[packageReference.Value.Select(u => NuGetFramework.Parse(u.TargetFramework)).First()];
                     }
                 }
 
-                //var targetVersions = packageReference.Value.SelectMany(u => u.TargetFrameworks).Select(NuGetFramework.Parse).Select(x => x.GetShortFolderName()).Distinct();
-                //if (targetVersions.Count() > 1) {
-                //    Debugger.Break();
-                //}
 
 
                 if (targetVer is null) {
@@ -193,10 +180,6 @@ internal class OutdatedService {
                     return;
                 }
 
-                // outdatedPerPackage[packageReference.Key] = (currentMin
-                // , NuGetVersion.Parse(targetVer)
-                // //, NuGetVersion.Parse(result?.TargetFrameworkVersions?[packageReference.Value.Select(u => NuGetFramework.Parse(u.TargetFramework).GetShortFolderName()).FirstOrDefault()])
-                // );
                 outdatedPerPackage.AddOrUpdate(
                     packageReference.Key,
                     key => (currentMin, NuGetVersion.Parse(targetVer)),
@@ -210,7 +193,7 @@ internal class OutdatedService {
                 );
             }
             catch (Exception xcptn) {
-                _console.WriteWarning($"Failed to parse version for {packageReference.Key}: {packageReference.Value.Tfm} {string.Join(',', result?.TargetFrameworkVersions?.Select(x => x.Key.GetShortFolderName()) ?? Array.Empty<string>())} {xcptn.Message}");
+                _console.WriteWarning($"Failed to parse version for {packageReference.Key}: {packageReference.Value.Tfm} {string.Join(',', result?.TargetFrameworkVersions?.Select(x => x.Key.GetShortFolderName()) ?? Array.Empty<string>())} {xcptn.FormatMessage()}");
             }
         });
 
@@ -255,7 +238,6 @@ internal class OutdatedService {
                         FormatVersion(kvp.Value.CurrentMin, maxMajorLength),
                         GetFormattedVersion(kvp.Value.CurrentMin, kvp.Value.Latest, maxMajorLength)
                     );
-                    //_console.WriteWarning($"{kvp.Key}: {kvp.Value.CurrentMin} → {kvp.Value.Latest}");
                 }
                 _console.WriteTable(table);
             }
@@ -290,7 +272,6 @@ internal class OutdatedService {
                     }
                     if (HasVersionUpdate(latest, usage.Item.EffectiveVersion)) map[packageId] = (latest, usage.Item.EffectiveVersion);
                 }
-                //else if (!usage.FromProps) {
                 else {
                     if (!projectUpdates.TryGetValue(usage.ProjectPath, out var pmap)) {
                         pmap = new Dictionary<string, (string,string?,VersionReason)>(StringComparer.OrdinalIgnoreCase);
@@ -306,8 +287,6 @@ internal class OutdatedService {
             }
         }
 
-        //////////
-        ///
         {
            
             foreach (var kvp in propsUpdates.OrderBy(kvp => kvp.Key)) {
@@ -388,7 +367,6 @@ internal class OutdatedService {
             }
         }
 
-        ///////////////////////////////////////////
         if (updatePackages) {
             _console.WriteInfo("\nUpdating packages to latest versions...");
 
@@ -444,7 +422,7 @@ internal class OutdatedService {
             await doc.SaveAsync(writer, cancellationToken);
         }
         catch (Exception ex) {
-            _console.WriteError($"Failed to update {propsPath}: {ex.Message}");
+            _console.WriteError($"Failed to update {propsPath}: {ex.FormatMessage()}");
         }
     }
 
@@ -493,7 +471,7 @@ internal class OutdatedService {
             await doc.SaveAsync(writer, cancellationToken);
         }
         catch (Exception ex) {
-            _console.WriteError($"Failed to update {projectPath}: {ex.Message}");
+            _console.WriteError($"Failed to update {projectPath}: {ex.FormatMessage()}");
         }
     }
 
@@ -622,12 +600,9 @@ internal class OutdatedService {
             return string.Equals(x.Id, y.Id, StringComparison.OrdinalIgnoreCase)
                 && string.Equals(x.Version, y.Version, StringComparison.OrdinalIgnoreCase)
                 && string.Equals(x.ProjectPath, y.ProjectPath, StringComparison.OrdinalIgnoreCase)
-                &&
-                    //string.Equals(x.TargetFramework, y.TargetFramework, StringComparison.OrdinalIgnoreCase)
-                    //&& ((x.TargetFrameworks == null && y.TargetFrameworks == null) ||
+                && ((x.TargetFrameworks is null && y.TargetFrameworks is null) ||
                     (x.TargetFrameworks != null && y.TargetFrameworks != null &&
-                     x.TargetFrameworks.SequenceEqual(y.TargetFrameworks, StringComparer.OrdinalIgnoreCase))
-                //)
+                     x.TargetFrameworks.SequenceEqual(y.TargetFrameworks, StringComparer.OrdinalIgnoreCase)))
                 && string.Equals(x.PropsPath, y.PropsPath, StringComparison.OrdinalIgnoreCase)
                 && x.FromProps == y.FromProps;
         }
@@ -638,7 +613,6 @@ internal class OutdatedService {
             hash = hash * 23 + (obj.Id?.ToLowerInvariant().GetHashCode() ?? 0);
             hash = hash * 23 + (obj.Version?.ToLowerInvariant().GetHashCode() ?? 0);
             hash = hash * 23 + (obj.ProjectPath?.ToLowerInvariant().GetHashCode() ?? 0);
-            //hash = hash * 23 + (obj.TargetFramework?.ToLowerInvariant().GetHashCode() ?? 0);
             if (obj.TargetFrameworks != null) {
                 foreach (var tfm in obj.TargetFrameworks) {
                     hash = hash * 23 + (tfm?.ToLowerInvariant().GetHashCode() ?? 0);

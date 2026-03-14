@@ -2,6 +2,15 @@ using Spectre.Console;
 
 namespace bld.Infrastructure;
 
+internal static class ExceptionExtensions {
+    /// <summary>
+    /// Returns only the first line of an exception message, stripping inner exception
+    /// stack traces that some exception types (e.g. SolutionException) embed in Message.
+    /// </summary>
+    internal static string FormatMessage(this Exception ex) =>
+        ex.Message.Split('\n', 2)[0].TrimEnd('\r');
+}
+
 /// <summary>
 /// Abstraction for console output using Spectre.Console
 /// </summary>

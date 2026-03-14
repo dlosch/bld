@@ -13,7 +13,6 @@ namespace bld.Services;
 /// </summary>
 internal class NugetAnalysisApplication {
     private readonly IConsoleOutput _console;
-    private readonly List<Err> _errors = new();
     private bool _isInitialized = false;
 
     public NugetAnalysisApplication(IConsoleOutput console) {
@@ -52,7 +51,7 @@ internal class NugetAnalysisApplication {
                 _console.WriteDebug($"Trusted patterns: {whitelistBlacklistRules.TrustedPatterns.Count}");
             }
             catch (Exception ex) {
-                _console.WriteError($"Failed to parse whitelist/blacklist file: {ex.Message}");
+                _console.WriteError($"Failed to parse whitelist/blacklist file: {ex.FormatMessage()}");
                 return;
             }
         }
@@ -106,7 +105,7 @@ internal class NugetAnalysisApplication {
                         }
                     }
                     catch (Exception ex) {
-                        _console.WriteError($"Failed to analyze project {projCfg.Path}: {ex.Message}");
+                        _console.WriteError($"Failed to analyze project {projCfg.Path}: {ex.FormatMessage()}");
                     }
                 });
             });
@@ -131,10 +130,6 @@ internal class NugetAnalysisApplication {
         finally {
             stopwatch.Stop();
             _console.WriteInfo($"Analysis completed in {stopwatch.Elapsed:mm\\:ss\\.fff}");
-
-            if (_errors.Count > 0) {
-                _console.WriteError($"Analysis completed with {_errors.Count} error(s).");
-            }
         }
     }
 
@@ -182,11 +177,12 @@ internal class NugetAnalysisApplication {
         AddCategorySection(content, "Known Trusted Packages", analysis.TrustedThirdPartyPackages);
         AddCategorySection(content, "Other Packages", analysis.OtherPackages);
 
-        var panel = new Panel(new Markup(string.Join("\n", content)))
-            .Header($"[bold blue]{Markup.Escape(analysis.ProjectName ?? "")}[/]")
-            .Border(BoxBorder.Rounded);
-
-        AnsiConsole.Write(panel);
+        var table = new Table().Border(TableBorder.Rounded)
+            .Title($"[bold blue]{Markup.Escape(analysis.ProjectName ?? "")}[/]")
+            .AddColumn(new TableColumn("Details").LeftAligned())
+            .HideHeaders();
+        table.AddRow(new Markup(string.Join("\n", content)));
+        _console.WriteTable(table);
     }
 
     private void AddCategorySection(List<string> content, string categoryName, IEnumerable<NugetPackageInfo> packages) {
@@ -264,11 +260,12 @@ internal class NugetAnalysisApplication {
         AddAggregateCategorySection(content, "Known Trusted Packages", trustedPackages, showProjects);
         AddAggregateCategorySection(content, "Other Packages", otherPackages, showProjects);
 
-        var panel = new Panel(new Markup(string.Join("\n", content)))
-            .Header("[bold blue]Aggregated Package View[/]")
-            .Border(BoxBorder.Rounded);
-
-        AnsiConsole.Write(panel);
+        var table = new Table().Border(TableBorder.Rounded)
+            .Title("[bold blue]Aggregated Package View[/]")
+            .AddColumn(new TableColumn("Details").LeftAligned())
+            .HideHeaders();
+        table.AddRow(new Markup(string.Join("\n", content)));
+        _console.WriteTable(table);
 
         // Summary
         var totalPackages = allPackages.Count;

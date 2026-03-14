@@ -10,7 +10,6 @@ using System.Collections.Concurrent;
 using System.Net.Http.Json;
 using System.Runtime.CompilerServices;
 using System.Text.Json.Serialization;
-using System.Threading;
 using System.Xml;
 using System.Xml.Linq;
 
@@ -428,7 +427,7 @@ internal class TfmService : IDisposable {
             return null;
         }
         catch (Exception ex) {
-            _console.WriteWarning($"Failed to analyze {projectPath}: {ex.Message}");
+            _console.WriteWarning($"Failed to analyze {projectPath}: {ex.FormatMessage()}");
             return null;
         }
     }
@@ -459,7 +458,7 @@ internal class TfmService : IDisposable {
             await doc.SaveAsync(writer, cancellationToken);
         }
         catch (Exception ex) {
-            _console.WriteError($"Failed to update {projectPath}: {ex.Message}");
+            _console.WriteError($"Failed to update {projectPath}: {ex.FormatMessage()}");
         }
     }
     private async Task UpdateProjectTargetFrameworksAsync(ProjectMigrationInfo project, string toTfm, ISet<string> eolTfms, CancellationToken cancellationToken) {
@@ -507,7 +506,7 @@ internal class TfmService : IDisposable {
             _console.WriteInfo($"✓ Updated {Path.GetFileName(project.ProjectPath)} TargetFrameworks");
         }
         catch (Exception ex) {
-            _console.WriteError($"Failed to update {project.ProjectPath}: {ex.Message}");
+            _console.WriteError($"Failed to update {project.ProjectPath}: {ex.FormatMessage()}");
         }
     }
 
@@ -546,7 +545,7 @@ internal class TfmService : IDisposable {
                 }
             }
             catch (Exception ex) {
-                _console.WriteWarning($"Failed to check compatibility for {package.Id}: {ex.Message}");
+                _console.WriteWarning($"Failed to check compatibility for {package.Id}: {ex.FormatMessage()}");
             }
         }
 
@@ -585,7 +584,7 @@ internal class TfmService : IDisposable {
             await doc.SaveAsync(writer, cancellationToken);
         }
         catch (Exception ex) {
-            _console.WriteError($"Failed to update {projectPath}: {ex.Message}");
+            _console.WriteError($"Failed to update {projectPath}: {ex.FormatMessage()}");
         }
     }
 
@@ -612,7 +611,7 @@ internal class TfmService : IDisposable {
             }
         }
         catch (Exception ex) {
-            _console.WriteWarning($"Failed to extract package references from {projectPath}: {ex.Message}");
+            _console.WriteWarning($"Failed to extract package references from {projectPath}: {ex.FormatMessage()}");
         }
 
         return packageReferences;
@@ -683,7 +682,7 @@ internal class TfmService : IDisposable {
             return eolTfms;
         }
         catch (Exception ex) {
-            _console.WriteWarning($"Failed to load .NET release metadata: {ex.Message}");
+            _console.WriteWarning($"Failed to load .NET release metadata: {ex.FormatMessage()}");
             return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         }
     }

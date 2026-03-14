@@ -46,13 +46,12 @@ internal sealed class CleanCommand : BaseCommand {
         Add(_concurrencyOption);
 
         Add(_deleteOption);
+        Add(_confirmLevelOption);
 
         Add(_rootArgument);
     }
 
     protected override async Task<int> ExecuteAsync(ParseResult parseResult, CancellationToken cancellationToken) {
-        var errors = new List<string>();
-
         var options = new CleaningOptions {
             OutputFile = parseResult.GetValue(_outputFileOption),
             Delete = parseResult.GetValue(_deleteOption),
@@ -84,7 +83,7 @@ internal sealed class CleanCommand : BaseCommand {
 
             );
         await app.InitAsync(options);
-        await app.RunAsync(new[] { rootPath }, options);
+        await app.RunAsync(new[] { rootPath }, options, cancellationToken);
 
         return 0;
     }

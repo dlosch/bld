@@ -14,7 +14,7 @@ internal static class DirExt {
                 return true;
             }
             catch (Exception xcptn) {
-                log?.WriteError($"Deletion of directory {dirInfo.FullName} failed with: {xcptn.Message}.", xcptn);
+                log?.WriteError($"Deletion of directory {dirInfo.FullName} failed with: {xcptn.FormatMessage()}", xcptn);
                 return false;
             }
         }
@@ -29,10 +29,10 @@ internal static class DirExt {
                 }
                 catch (Exception xcptn) {
                     hasError = true;
-                    log?.WriteDebug($"Deletion of file {file.FullName} failed with: {xcptn.Message}.");
+                    log?.WriteDebug($"Deletion of file {file.FullName} failed with: {xcptn.FormatMessage()}");
                 }
             }
-            return hasError;
+            return !hasError;
         }
     }
 
@@ -106,9 +106,6 @@ internal static class DirExt {
         return Path.GetFullPath(intermediate);
     }
 
-    internal static bool HasSubDir(this DirectoryInfo dir, string subdir) {
-        return dir.GetDirectories().Any(x => 0 == string.Compare("obj", x.Name, StringComparison.OrdinalIgnoreCase));
-    }
     internal static bool OnlyHasSubDirsOrSubset(this DirectoryInfo dir, bool checkForFiles = true, params string[] subdirs) {
         if (checkForFiles && dir.GetFiles().Any()) return false;
 

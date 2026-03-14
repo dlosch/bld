@@ -41,7 +41,7 @@ internal record class Dir(
         switch (Path.GetExtension(projectFileAbsPath).ToLowerInvariant()) {
             case ".csproj": return ProjectType.Csproj;
             case ".fsproj": return ProjectType.Fsproj;
-            case ".vbproj": return ProjectType.CsprojLegacy;
+            case ".vbproj": return ProjectType.Vbproj;
             case ".sqlproj": return ProjectType.Sqlproj;
             case ".vcxproj": return ProjectType.Vcxproj;
             default: return ProjectType.Unknown;

@@ -16,18 +16,15 @@ internal class CleaningApplication(IConsoleOutput _console, Func<IConsoleOutput,
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     public Task InitAsync(CleaningOptions options) {
-        //_console = new SpectreConsoleOutput(options.LogLevel);
         // this must be called before any other MSBuild Type is loaded.
-        // JIT might change that behavior
         MSBuildService.RegisterMSBuildDefaults(_console, options);
         _isInitialized = true;
         return Task.CompletedTask;
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    public async Task RunAsync(string[] rootPaths, CleaningOptions options) {
+    public async Task RunAsync(string[] rootPaths, CleaningOptions options, CancellationToken cancellationToken = default) {
         if (!_isInitialized) {
-            //await InitAsync(options);
             throw new InvalidOperationException("Application not initialized. Call InitAsync first.");
         }
 
@@ -93,7 +90,6 @@ internal class CleaningApplication(IConsoleOutput _console, Func<IConsoleOutput,
 
             errorSink.WriteTo();
 
-            //await markDeleteProcessor.DumpDirs();
             var res = markDeleteProcessor.GetResult();
             await markDeleteStatsProcessor.ProcessAsync(res);
         }
