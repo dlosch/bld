@@ -109,6 +109,9 @@ internal abstract class BaseCommand : Command {
         return Path.GetFullPath(rootPath);
     }
 
+    protected bool HasExplicitRoot(ParseResult parseResult) =>
+        !string.IsNullOrWhiteSpace(parseResult.GetValue(_rootArgument) ?? parseResult.GetValue(_rootOption));
+
     protected static string? TryResolveVSToolsPath(out string? vsRoot) {
         vsRoot = default;
         // Try to resolve VSToolsPath from environment variables or other means

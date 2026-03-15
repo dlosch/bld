@@ -22,7 +22,7 @@ internal sealed class MarkDeleteProcessor : IProjectProcessor {
         _options = options;
         _errorSink = errorSink;
 
-        _enumerateFiles = new EnumerationOptions { MatchType = MatchType.Simple, MaxRecursionDepth = 10 /*options.Depth*/, RecurseSubdirectories = true, ReturnSpecialDirectories = false, IgnoreInaccessible = false };
+        _enumerateFiles = new EnumerationOptions { MatchType = MatchType.Simple, MaxRecursionDepth = 10 /*options.Depth*/, RecurseSubdirectories = true, ReturnSpecialDirectories = false, IgnoreInaccessible = true };
     }
 
     public async Task ProcessAsync(ProjCfg cfg, ProjectInfo info) {

@@ -83,7 +83,7 @@ internal sealed class ProjParser(IConsoleOutput Output, ErrorSink ErrorSink, Cle
                     project.TfmOrTfmsSafe(),
                     usesCpm,
                     (usesCpm ?? false)
-                        ? project.Imports.FirstOrDefault(imp => string.Equals(Path.GetFileName(imp.ImportedProject.FullPath), "Directory.Packages.props", StringComparison.OrdinalIgnoreCase)).ImportedProject?.FullPath
+                        ? project.Imports.FirstOrDefault(imp => string.Equals(Path.GetFileName(imp.ImportedProject?.FullPath), "Directory.Packages.props", StringComparison.OrdinalIgnoreCase)).ImportedProject?.FullPath
                         : default,
                         // todo this pukes if a single package reference include is included more than once 
                         // dotnet build picks the first not the highest or lowest and warns only
@@ -153,8 +153,8 @@ internal sealed class ProjParser(IConsoleOutput Output, ErrorSink ErrorSink, Cle
                 Configuration = configuration,
                 Platform = Safe(project.GetPropertyValue("Platform")),
                 OutDir = SafeDir(project.GetPropertyValue("OutDir")),
-                BaseOutputPath = Safe(project.GetPropertyValue("BaseOutputPath")),
-                IntermediateOutputPath = Safe(project.GetPropertyValue("BaseIntermediateOutputPath")),
+                BaseOutputPath = SafeDir(project.GetPropertyValue("BaseOutputPath")),
+                IntermediateOutputPath = SafeDir(project.GetPropertyValue("BaseIntermediateOutputPath")),
                 PackageOutputPath = Safe(project.GetPropertyValue("PackageOutputPath")),
                 PackageId = Safe(project.GetPropertyValue("PackageId")),
                 Properties = propertyNames.ToDictionary(p => p, p => project.GetPropertyValue(p)),

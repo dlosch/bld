@@ -21,6 +21,9 @@ internal class OutdatedService {
         _options = options;
     }
 
+    internal static IReadOnlyList<string> SelectCompatibleTargetFrameworks(bool skipTfmCheck, PackageInfoContainer packageReferences) =>
+        skipTfmCheck ? Array.Empty<string>() : packageReferences.Tfms.ToList();
+
     [MethodImpl(MethodImplOptions.NoInlining)]
     public async Task<int> CheckOutdatedPackagesAsync(string rootPath, bool updatePackages, bool skipTfmCheck, bool includePrerelease, CancellationToken cancellationToken) {
         MSBuildService.RegisterMSBuildDefaults(_console, _options);
@@ -127,7 +130,7 @@ internal class OutdatedService {
             var request = new PackageVersionRequest {
                 PackageId = packageReference.Key,
                 AllowPrerelease = includePrerelease,
-                CompatibleTargetFrameworks = packageReference.Value.Tfms.ToList() //  [packageReference.Value.Tfm]
+                CompatibleTargetFrameworks = SelectCompatibleTargetFrameworks(skipTfmCheck, packageReference.Value)
             };
 
             var result = await NugetMetadataService.GetLatestVersionWithFrameworkCheckAsync(client, options, _console, request);
@@ -434,7 +437,7 @@ internal class OutdatedService {
             }
 
             var packageRefElements = doc.Descendants("PackageReference")
-                .Where(e => e.Attribute("Include")?.Value == packageId);
+                .Where(e => string.Equals(e.Attribute("Include")?.Value, packageId, StringComparison.OrdinalIgnoreCase));
 
             foreach (var element in packageRefElements) {
                 if (VersionReason.VersionOverrideProj == newVersion.reason) {

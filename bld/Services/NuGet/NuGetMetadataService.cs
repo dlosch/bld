@@ -167,10 +167,6 @@ retry:
                             Dependencies = dependencyGroups
                         };
                     }
-                    else if (!allowPrerelease) {
-                        allowPrerelease = true;
-                        goto retry;
-                    }
                 }
             }
 

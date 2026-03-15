@@ -155,6 +155,16 @@ public class CommandSafetyTests {
         Assert.NotNull(forceOption);
     }
 
+    [Fact]
+    public async Task CleanCommand_ForceWithoutExplicitRoot_FailsFast() {
+        var console = new TestConsole();
+        var command = new CleanCommand(console);
+
+        var exitCode = await command.Parse(["--force"]).InvokeAsync();
+
+        Assert.Equal(1, exitCode);
+    }
+
     #endregion
 
     #region Stats Command Safety (Read-Only)

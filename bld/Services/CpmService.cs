@@ -10,6 +10,8 @@ using System.Xml.Linq;
 namespace bld.Services;
 
 internal class CpmService {
+    internal readonly record struct PackageReferenceVersion(string PackageId, string Version, bool IsVersionOverride);
+
     private readonly IConsoleOutput _console;
     private readonly CleaningOptions _options;
 
@@ -68,7 +70,14 @@ internal class CpmService {
                     projectFiles.Add(projectPath);
 
                     var packageRefs = await ExtractPackageReferencesAsync(projectPath, cancellationToken);
-                    foreach (var (packageId, version) in packageRefs) {
+                    foreach (var packageRef in packageRefs) {
+                        if (packageRef.IsVersionOverride) {
+                            _console.WriteVerbose($"Skipping centralization for {packageRef.PackageId} in {Path.GetFileName(projectPath)} because VersionOverride is project-specific.");
+                            continue;
+                        }
+
+                        var packageId = packageRef.PackageId;
+                        var version = packageRef.Version;
                         allPackageReferences.AddOrUpdate(packageId, version, (id, existingVersion) => {
                             if (CompareVersions(version, existingVersion) > 0) {
                                 _console.WriteVerbose($"Updated {id} from {existingVersion} to {version}");
@@ -101,6 +110,21 @@ internal class CpmService {
         foreach (var solution in solutionData) {
             _console.WriteInfo($"\nProcessing solution: {Path.GetFileName(solution.SolutionPath)}");
             _console.WriteLine($"Found {solution.PackageReferences.Count} unique package references across {solution.ProjectFiles.Count} projects");
+
+            var cpmPropsFiles = FindDirectoryPackagesPropsPaths(solution.ProjectFiles, solution.SolutionDirectory);
+            if (solution.PackageReferences.Count == 0) {
+                if (cpmPropsFiles.Count > 0) {
+                    _console.WriteInfo("Projects already use Central Package Management.");
+                    _console.WriteLine("Detected Directory.Packages.props files:");
+                    foreach (var propsPath in cpmPropsFiles) {
+                        _console.WriteLine($"  {propsPath}");
+                    }
+                }
+                else {
+                    _console.WriteInfo("No versioned PackageReference entries found; nothing to centralize.");
+                }
+                continue;
+            }
 
             var directoryPackagesPath = Path.Combine(solution.SolutionDirectory, "Directory.Packages.props");
 
@@ -137,22 +161,90 @@ internal class CpmService {
         }
     }
 
-    private async Task<List<(string PackageId, string Version)>> ExtractPackageReferencesAsync(string projectPath, CancellationToken cancellationToken) {
-        var packageReferences = new List<(string, string)>();
+    internal static IReadOnlyList<PackageReferenceVersion> ReadPackageReferences(XDocument doc) {
+        var packageReferences = new List<PackageReferenceVersion>();
+
+        foreach (var element in doc.Descendants("PackageReference")) {
+            var packageId = element.Attribute("Include")?.Value;
+            if (string.IsNullOrWhiteSpace(packageId)) {
+                continue;
+            }
+
+            var versionOverride = FirstNonEmpty(
+                element.Attribute("VersionOverride")?.Value,
+                element.Element("VersionOverride")?.Value);
+            if (!string.IsNullOrWhiteSpace(versionOverride)) {
+                packageReferences.Add(new PackageReferenceVersion(packageId, versionOverride, true));
+                continue;
+            }
+
+            var version = FirstNonEmpty(
+                element.Attribute("Version")?.Value,
+                element.Element("Version")?.Value);
+
+            if (!string.IsNullOrWhiteSpace(version)) {
+                packageReferences.Add(new PackageReferenceVersion(packageId, version, false));
+            }
+        }
+
+        return packageReferences;
+    }
+
+    internal static bool RemoveCentralizableVersionDeclarations(XDocument doc) {
+        var modified = false;
+
+        foreach (var element in doc.Descendants("PackageReference")) {
+            var versionAttr = element.Attribute("Version");
+            if (versionAttr != null) {
+                versionAttr.Remove();
+                modified = true;
+            }
+
+            var versionElements = element.Elements("Version").ToList();
+            foreach (var versionElement in versionElements) {
+                versionElement.Remove();
+                modified = true;
+            }
+        }
+
+        return modified;
+    }
+
+    internal static IReadOnlyList<string> FindDirectoryPackagesPropsPaths(IEnumerable<string> projectFiles, string solutionDirectory) {
+        var propsFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var projectFile in projectFiles.Where(path => !string.IsNullOrWhiteSpace(path) && File.Exists(path))) {
+            var currentDir = Path.GetDirectoryName(projectFile);
+            while (!string.IsNullOrWhiteSpace(currentDir)) {
+                var candidate = Path.Combine(currentDir, "Directory.Packages.props");
+                if (File.Exists(candidate)) {
+                    propsFiles.Add(Path.GetFullPath(candidate));
+                    break;
+                }
+
+                var parent = Path.GetDirectoryName(currentDir);
+                if (string.IsNullOrWhiteSpace(parent) || string.Equals(parent, currentDir, StringComparison.OrdinalIgnoreCase)) {
+                    break;
+                }
+                currentDir = parent;
+            }
+        }
+
+        var solutionPropsPath = Path.Combine(solutionDirectory, "Directory.Packages.props");
+        if (File.Exists(solutionPropsPath)) {
+            propsFiles.Add(Path.GetFullPath(solutionPropsPath));
+        }
+
+        return propsFiles.OrderBy(path => path, StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
+    private async Task<List<PackageReferenceVersion>> ExtractPackageReferencesAsync(string projectPath, CancellationToken cancellationToken) {
+        var packageReferences = new List<PackageReferenceVersion>();
 
         try {
             using var stream = File.OpenRead(projectPath);
             var doc = await XDocument.LoadAsync(stream, LoadOptions.None, cancellationToken);
-            var packageRefElements = doc.Descendants("PackageReference");
-
-            foreach (var element in packageRefElements) {
-                var includeAttr = element.Attribute("Include");
-                var versionAttr = element.Attribute("Version");
-
-                if (includeAttr?.Value != null && versionAttr?.Value != null) {
-                    packageReferences.Add((includeAttr.Value, versionAttr.Value));
-                }
-            }
+            packageReferences.AddRange(ReadPackageReferences(doc));
         }
         catch (Exception ex) {
             _console.WriteWarning($"Failed to parse project file {projectPath}: {ex.FormatMessage()}");
@@ -195,16 +287,7 @@ internal class CpmService {
                 doc = await XDocument.LoadAsync(readStream, LoadOptions.None, cancellationToken);
             }
 
-            var packageRefElements = doc.Descendants("PackageReference");
-            var modified = false;
-
-            foreach (var element in packageRefElements) {
-                var versionAttr = element.Attribute("Version");
-                if (versionAttr != null) {
-                    versionAttr.Remove();
-                    modified = true;
-                }
-            }
+            var modified = RemoveCentralizableVersionDeclarations(doc);
 
             if (modified) {
                 using var writeStream = new FileStream(projectPath, FileMode.Create, FileAccess.Write);
@@ -221,6 +304,9 @@ internal class CpmService {
             _console.WriteError($"Failed to update project file {projectPath}: {ex.FormatMessage()}");
         }
     }
+
+    private static string? FirstNonEmpty(params string?[] values) =>
+        values.FirstOrDefault(v => !string.IsNullOrWhiteSpace(v));
 
     private static int CompareVersions(string version1, string version2) {
         try {

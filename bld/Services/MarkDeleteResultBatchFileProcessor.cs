@@ -15,7 +15,7 @@ internal class MarkDeleteResultBatchFileProcessor : IMarkDeleteResultProcessor {
         _errorSink = errorSink;
         _options = options;
 
-        _enumerateFiles = new EnumerationOptions { MatchType = MatchType.Simple, MaxRecursionDepth = 10 /*options.Depth*/, RecurseSubdirectories = true, ReturnSpecialDirectories = false, IgnoreInaccessible = false };
+        _enumerateFiles = new EnumerationOptions { MatchType = MatchType.Simple, MaxRecursionDepth = 10 /*options.Depth*/, RecurseSubdirectories = true, ReturnSpecialDirectories = false, IgnoreInaccessible = true };
     }
 
     public Task ProcessAsync(MarkDeleteResult result) {

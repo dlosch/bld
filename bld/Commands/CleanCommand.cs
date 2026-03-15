@@ -90,6 +90,11 @@ internal sealed class CleanCommand : BaseCommand {
         }
         base.Output = new SpectreConsoleOutput(options.LogLevel);
 
+        if (options.Force && !HasExplicitRoot(parseResult)) {
+            Output.WriteError("--force requires an explicit root path via --root/-r or positional root argument.");
+            return 1;
+        }
+
         var rootPath = GetRootPath(parseResult);
 
         var app = new CleaningApplication(base.Output
