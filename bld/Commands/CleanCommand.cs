@@ -27,12 +27,28 @@ internal sealed class CleanCommand : BaseCommand {
         DefaultValueFactory = _ => ConfirmLevel.Directory
     };
 
+    private readonly Option<bool> _nonCurrentOption = new Option<bool>("--non-current", "--noncurrent", "-nc") {
+        Description = "Only clean directories for non-current target frameworks.",
+        DefaultValueFactory = _ => false
+    };
+
+    private readonly Option<bool> _objOption = new Option<bool>("--obj", "-obj") {
+        Description = "Also clean BaseIntermediateOutputPath (obj folder).",
+        DefaultValueFactory = _ => false
+    };
+
+    private readonly Option<bool> _keepAssetsOption = new Option<bool>("--keep-assets") {
+        Description = "When cleaning obj, preserve NuGet restore artifacts (project.assets.json etc.) and only delete build output subdirectories.",
+        DefaultValueFactory = _ => false
+    };
+
     public CleanCommand(IConsoleOutput console) : base("clean", "Cleans solution / project build output (bin/obj etc.)", console) {
         Add(_rootOption);
         Add(_depthOption);
 
         Add(_nonCurrentOption);
         Add(_objOption);
+        Add(_keepAssetsOption);
 
         Add(_logLevelOption);
 
@@ -57,7 +73,7 @@ internal sealed class CleanCommand : BaseCommand {
             Delete = parseResult.GetValue(_deleteOption),
             CleanOnlyNonCurrentTfms = parseResult.GetValue(_nonCurrentOption),
             CleanObjDirectory = parseResult.GetValue(_objOption),
-            CleanNupkgFiles = parseResult.GetValue(_nupkgOption),
+            KeepRestoreArtifacts = parseResult.GetValue(_keepAssetsOption),
             Force = parseResult.GetValue(_forceOption),
             LogLevel = parseResult.GetValue(_logLevelOption),
             Depth = parseResult.GetValue(_depthOption),

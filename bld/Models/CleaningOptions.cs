@@ -8,7 +8,7 @@ internal record CleaningOptions {
 
     public bool CleanOnlyNonCurrentTfms { get; init; } = false;
     public bool CleanObjDirectory { get; init; } = true;
-    public bool CleanNupkgFiles { get; init; } = false;
+    public bool KeepRestoreArtifacts { get; init; } = false;
     public bool Force { get; init; } = false;
     public LogLevel LogLevel { get; init; } = LogLevel.Warning;
     public int Depth { get; init; } = 4;

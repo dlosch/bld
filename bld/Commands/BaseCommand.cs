@@ -22,15 +22,6 @@ internal abstract class BaseCommand : Command {
         DefaultValueFactory = _ => false,
     };
 
-    protected readonly Option<bool> _nonCurrentOption = new Option<bool>("--non-current", "--noncurrent", "-nc") {
-        Description = "Only clean directories for non-current target frameworks.",
-        DefaultValueFactory = _ => false
-    };
-
-    protected readonly Option<bool> _objOption = new Option<bool>("--obj", "-obj") {
-        Description = "Also clean BaseIntermediateOutputPath (obj folder).",
-        DefaultValueFactory = _ => false
-    };
 
     private static bool ValidatePathExists(string? path) {
         return path is not null && (File.Exists(path) || Directory.Exists(path));
@@ -81,10 +72,6 @@ internal abstract class BaseCommand : Command {
         DefaultValueFactory = _ => false
     };
 
-    protected readonly Option<bool> _nupkgOption = new Option<bool>("--nupkg") {
-        Description = "(Currently implicit via CleanAll) Also delete produced .nupkg artifacts.",
-        DefaultValueFactory = _ => false
-    };
 
     protected readonly Option<bool> _parallelOption = new Option<bool>("--parallel") {
         Description = "Use parallel processing for project evaluation.",

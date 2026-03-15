@@ -219,7 +219,16 @@ internal sealed class MarkDeleteProcessor : IProjectProcessor {
 
                     Stats BaseIntermediateOutputDirDelete(string absPath, DirType dirType, Dir dir) {
                         if (!_options.CleanObjDirectory) return default;
-                        if (Directory.Exists(absPath)) {
+                        if (!Directory.Exists(absPath)) return default;
+
+                        if (_options.KeepRestoreArtifacts) {
+                            // Only mark subdirectories (build output like Debug/net8.0),
+                            // preserving root-level files (project.assets.json, *.nuget.* etc.)
+                            foreach (var subDir in new DirectoryInfo(absPath).EnumerateDirectories()) {
+                                _deleteDirs.GetOrAdd(subDir.FullName, _ => new ConcurrentBag<Dir>()).Add(dir);
+                            }
+                        }
+                        else {
                             _deleteDirs.GetOrAdd(absPath, _ => new ConcurrentBag<Dir>()).Add(dir);
                         }
                         return default;
