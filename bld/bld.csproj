@@ -45,10 +45,10 @@
     <PackageProjectUrl>https://github.com/dlosch/bld</PackageProjectUrl>
     <PackageId>dotnet-bld</PackageId>
     <PackageVersion>$(Version)</PackageVersion>
-    <Authors>D. Losch</Authors>
+    <Authors>D. Losch / cloudsiders</Authors>
     <Copyright>Copyright © Daniel Losch</Copyright>
     <Description>Tool to clean build output folders for msbuild, dotnet build</Description>
-    <PackageTags>tool msbuild clean purge nuget</PackageTags>
+    <PackageTags>tool msbuild clean purge nuget docker rimraf container</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
