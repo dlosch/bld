@@ -16,10 +16,12 @@ namespace bld.Tests;
 /// </summary>
 public class CommandSafetyTests {
     private class TestConsole : IConsoleOutput {
+        public List<string> LineMessages { get; } = new();
         public List<string> InfoMessages { get; } = new();
         public List<string> WarningMessages { get; } = new();
         public List<string> ErrorMessages { get; } = new();
 
+        public void WriteLine(string message) => LineMessages.Add(message);
         public void WriteInfo(string message) => InfoMessages.Add(message);
         public void WriteWarning(string message) => WarningMessages.Add(message);
         public void WriteError(string message, Exception? exception = default) => ErrorMessages.Add(message);

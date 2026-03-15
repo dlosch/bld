@@ -14,12 +14,15 @@ internal class SpectreConsoleOutput : IConsoleOutput {
         _logLevel = logLevel;
     }
 
-    public void WriteInfo(string message) {
-        if (_logLevel <= LogLevel.Info) {
-            AnsiConsole.MarkupLine($"[blue]INF:[/] {Markup.Escape(message)}");
-        }
+    public void WriteLine(string message) {
+        AnsiConsole.MarkupLine(Markup.Escape(message));
     }
 
+    public void WriteInfo(string message) {
+        if (_logLevel <= LogLevel.Info) {
+            AnsiConsole.MarkupLine($"[dim]info:[/] {Markup.Escape(message)}");
+        }
+    }
 
     public void WriteOutput(string caption, string? message) {
         if (message is { }) AnsiConsole.MarkupLine($"{caption}:\r\n{Markup.Escape(message)}\r\n");
@@ -28,25 +31,25 @@ internal class SpectreConsoleOutput : IConsoleOutput {
 
     public void WriteWarning(string message) {
         if (_logLevel <= LogLevel.Warning) {
-            AnsiConsole.MarkupLine($"[yellow]WRN:[/] {Markup.Escape(message)}");
+            AnsiConsole.MarkupLine($"[yellow]warning:[/] {Markup.Escape(message)}");
         }
     }
 
     public void WriteError(string message, Exception? exception = default) {
         if (_logLevel <= LogLevel.Error) {
-            AnsiConsole.MarkupLine($"[red]ERR:[/] {Markup.Escape(message)}");
+            AnsiConsole.MarkupLine($"[red]error:[/] {Markup.Escape(message)}");
         }
     }
 
     public void WriteDebug(string message) {
         if (_logLevel <= LogLevel.Debug) {
-            AnsiConsole.MarkupLine($"[grey]DBG:[/] {Markup.Escape(message)}");
+            AnsiConsole.MarkupLine($"[dim]debug:[/] {Markup.Escape(message)}");
         }
     }
 
     public void WriteVerbose(string message) {
         if (_logLevel <= LogLevel.Verbose) {
-            AnsiConsole.MarkupLine($"[grey]VER:[/] {Markup.Escape(message)}");
+            AnsiConsole.MarkupLine($"[dim]verbose:[/] {Markup.Escape(message)}");
         }
     }
 

@@ -12,6 +12,7 @@ public class ConsoleOutputTests {
     private class RecordingConsole : IConsoleOutput {
         public List<(string Level, string Message)> Messages { get; } = new();
 
+        public void WriteLine(string message) => Messages.Add(("Line", message));
         public void WriteInfo(string message) => Messages.Add(("Info", message));
         public void WriteWarning(string message) => Messages.Add(("Warning", message));
         public void WriteError(string message, Exception? exception = default) => Messages.Add(("Error", message));

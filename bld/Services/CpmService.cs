@@ -96,11 +96,11 @@ internal class CpmService {
             return;
         }
 
-        _console.WriteInfo($"Found {solutionData.Count} solution(s) to process");
+        _console.WriteLine($"Found {solutionData.Count} solution(s) to process");
 
         foreach (var solution in solutionData) {
             _console.WriteInfo($"\nProcessing solution: {Path.GetFileName(solution.SolutionPath)}");
-            _console.WriteInfo($"Found {solution.PackageReferences.Count} unique package references across {solution.ProjectFiles.Count} projects");
+            _console.WriteLine($"Found {solution.PackageReferences.Count} unique package references across {solution.ProjectFiles.Count} projects");
 
             var directoryPackagesPath = Path.Combine(solution.SolutionDirectory, "Directory.Packages.props");
 
@@ -113,7 +113,7 @@ internal class CpmService {
             if (applyChanges) {
                 // Create Directory.Packages.props
                 await CreateDirectoryPackagesPropsAsync(directoryPackagesPath, solution.PackageReferences, cancellationToken);
-                _console.WriteInfo($"Created Directory.Packages.props with {solution.PackageReferences.Count} package versions");
+                _console.WriteLine($"Created Directory.Packages.props with {solution.PackageReferences.Count} package versions");
 
                 // Update all project files to remove versions
                 foreach (var projectPath in solution.ProjectFiles) {
@@ -121,18 +121,18 @@ internal class CpmService {
                     _console.WriteVerbose($"Updated project file: {Path.GetFileName(projectPath)}");
                 }
 
-                _console.WriteInfo($"Updated {solution.ProjectFiles.Count} project files to use central package management");
+                _console.WriteLine($"Updated {solution.ProjectFiles.Count} project files to use central package management");
             }
             else {
-                _console.WriteInfo("Dry run - showing what would be created:");
-                _console.WriteInfo($"Directory.Packages.props would be created at: {directoryPackagesPath}");
-                _console.WriteInfo("Package versions that would be centralized:");
+                _console.WriteLine("Dry run - showing what would be created:");
+                _console.WriteLine($"Directory.Packages.props would be created at: {directoryPackagesPath}");
+                _console.WriteLine("Package versions that would be centralized:");
 
                 foreach (var (packageId, version) in solution.PackageReferences.OrderBy(x => x.Key)) {
-                    _console.WriteInfo($"  {packageId} = {version}");
+                    _console.WriteLine($"  {packageId} = {version}");
                 }
 
-                _console.WriteInfo($"\n{solution.ProjectFiles.Count} project files would be updated to remove version attributes");
+                _console.WriteLine($"\n{solution.ProjectFiles.Count} project files would be updated to remove version attributes");
             }
         }
     }

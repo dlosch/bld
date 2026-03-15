@@ -72,11 +72,11 @@ internal sealed class CleanCommand : BaseCommand {
             options.VSToolsPath = TryResolveVSToolsPath(out var vsRoot);
             options.VSRootPath = vsRoot;
         }
-        base.Console = new SpectreConsoleOutput(options.LogLevel);
+        base.Output = new SpectreConsoleOutput(options.LogLevel);
 
         var rootPath = GetRootPath(parseResult);
 
-        var app = new CleaningApplication(base.Console
+        var app = new CleaningApplication(base.Output
             , (a, b, c) => options.Delete
               ? new MarkDeleteResultDeleteProcessor(a, b, c)
              : new MarkDeleteResultBatchFileProcessor(a, b, c)

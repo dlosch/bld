@@ -106,11 +106,11 @@ internal class TfmService : IDisposable {
         }
 
         if (projectsToMigrate.Count == 0) {
-            _console.WriteInfo($"No projects to migrate found.");
+            _console.WriteLine($"No projects to migrate found.");
             return 0;
         }
 
-        _console.WriteInfo($"Found {projectsToMigrate.Count} projects to migrate from {fromTfmsDisplay} to {toTfm}");
+        _console.WriteLine($"Found {projectsToMigrate.Count} projects to migrate from {fromTfmsDisplay} to {toTfm}");
 
         if (applyChanges) {
             // Step 1: Update target frameworks
@@ -120,7 +120,7 @@ internal class TfmService : IDisposable {
                 }
                 else {
                     await UpdateProjectTargetFrameworkAsync(project.ProjectPath, project.CurrentTfm, toTfm, eolTfms, cancellationToken);
-                    _console.WriteInfo($"Updated {Path.GetFileName(project.ProjectPath)} to {toTfm}");
+                    _console.WriteLine($"Updated {Path.GetFileName(project.ProjectPath)} to {toTfm}");
                 }
             }
 
@@ -138,7 +138,7 @@ internal class TfmService : IDisposable {
                 foreach (var issue in compatibilityIssues) {
                     _console.WriteWarning($"  {issue.PackageId} {issue.CurrentVersion} in {Path.GetFileName(issue.ProjectPath)}");
                     if (!string.IsNullOrEmpty(issue.RecommendedVersion)) {
-                        _console.WriteInfo($"    → Recommended: {issue.RecommendedVersion}");
+                        _console.WriteLine($"    → Recommended: {issue.RecommendedVersion}");
                     }
                     else {
                         _console.WriteError($"    → No compatible version found for {toTfm}");
@@ -149,19 +149,19 @@ internal class TfmService : IDisposable {
                 var updatedPackages = 0;
                 foreach (var issue in compatibilityIssues.Where(i => !string.IsNullOrEmpty(i.RecommendedVersion))) {
                     await UpdatePackageVersionInProjectAsync(issue.ProjectPath, issue.PackageId, issue.RecommendedVersion!, cancellationToken);
-                    _console.WriteInfo($"Updated {issue.PackageId} to {issue.RecommendedVersion} in {Path.GetFileName(issue.ProjectPath)}");
+                    _console.WriteLine($"Updated {issue.PackageId} to {issue.RecommendedVersion} in {Path.GetFileName(issue.ProjectPath)}");
                     updatedPackages++;
                 }
 
                 if (updatedPackages > 0) {
-                    _console.WriteInfo($"Updated {updatedPackages} packages for {toTfm} compatibility");
+                    _console.WriteLine($"Updated {updatedPackages} packages for {toTfm} compatibility");
                 }
             }
             else {
-                _console.WriteInfo("All packages are compatible with the new target framework");
+                _console.WriteLine("All packages are compatible with the new target framework");
             }
 
-            _console.WriteInfo($"Migration complete! Migrated {projectsToMigrate.Count} projects to {toTfm}");
+            _console.WriteLine($"Migration complete! Migrated {projectsToMigrate.Count} projects to {toTfm}");
         }
         else {
             var actualMigrated = projectsToMigrate.Where(project => {
@@ -176,11 +176,11 @@ internal class TfmService : IDisposable {
             }).ToList();
 
             if (actualMigrated.Count == 0) {
-                _console.WriteInfo("Dry run - no projects require target framework changes.");
+                _console.WriteLine("Dry run - no projects require target framework changes.");
                 return 0;
             }
 
-            _console.WriteInfo("Dry run - showing what would be migrated:");
+            _console.WriteLine("Dry run - showing what would be migrated:");
 
             var uniqueProjects = actualMigrated
                 .GroupBy(p => p.ProjectPath)
@@ -247,7 +247,7 @@ internal class TfmService : IDisposable {
 
                 _console.WriteTable(table);
             }
-            _console.WriteInfo("\nUse --apply to perform the migration.");
+            _console.WriteLine("\nUse --apply to perform the migration.");
         }
 
         return 0;
@@ -479,15 +479,15 @@ internal class TfmService : IDisposable {
 
             var newTargetFrameworksValue = string.Join(";", newTfms);
 
-            _console.WriteInfo($"\nProject: {Path.GetFileName(project.ProjectPath)}");
-            _console.WriteInfo($"Current TargetFrameworks: {string.Join("; ", currentTfms)}");
-            _console.WriteInfo($"New TargetFrameworks: {string.Join("; ", newTfms)}");
+            _console.WriteLine($"\nProject: {Path.GetFileName(project.ProjectPath)}");
+            _console.WriteLine($"Current TargetFrameworks: {string.Join("; ", currentTfms)}");
+            _console.WriteLine($"New TargetFrameworks: {string.Join("; ", newTfms)}");
 
             // Prompt for confirmation
             bool confirmed = _console.Confirm("Apply this change?", false);
 
             if (!confirmed) {
-                _console.WriteInfo($"Cancelled update for {Path.GetFileName(project.ProjectPath)}");
+                _console.WriteLine($"Cancelled update for {Path.GetFileName(project.ProjectPath)}");
                 return;
             }
 
@@ -503,7 +503,7 @@ internal class TfmService : IDisposable {
             });
             await doc.SaveAsync(writer, cancellationToken);
 
-            _console.WriteInfo($"✓ Updated {Path.GetFileName(project.ProjectPath)} TargetFrameworks");
+            _console.WriteLine($"✓ Updated {Path.GetFileName(project.ProjectPath)} TargetFrameworks");
         }
         catch (Exception ex) {
             _console.WriteError($"Failed to update {project.ProjectPath}: {ex.FormatMessage()}");

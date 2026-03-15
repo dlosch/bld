@@ -20,7 +20,6 @@ internal class ErrorSink(IConsoleOutput console) {
 
     internal void WriteTo() {
         if (_errors.IsEmpty) {
-            console.WriteInfo("No errors.");
             return;
         }
         var table = new Table().Border(TableBorder.Rounded);

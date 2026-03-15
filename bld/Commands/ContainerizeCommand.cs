@@ -39,7 +39,7 @@ internal sealed class ContainerizeCommand : BaseCommand {
 
     protected override async Task<int> ExecuteAsync(ParseResult parseResult, CancellationToken cancellationToken) {
         var logLevel = parseResult.GetValue(_logLevelOption);
-        base.Console = new Services.SpectreConsoleOutput(logLevel);
+        base.Output = new Services.SpectreConsoleOutput(logLevel);
 
         var rootPath = GetRootPath(parseResult);
 
@@ -66,12 +66,12 @@ internal sealed class ContainerizeCommand : BaseCommand {
                 options.VSRootPath = vsRoot;
             }
 
-            Services.MSBuildService.RegisterMSBuildDefaults(Console, options);
+            Services.MSBuildService.RegisterMSBuildDefaults(Output, options);
         }
 
-        Console.WriteInfo($"Scanning: {rootPath}");
-        Console.WriteInfo($"Search depth: {depth}");
-        Console.WriteInfo("");
+        Output.WriteInfo($"Scanning: {rootPath}");
+        Output.WriteInfo($"Search depth: {depth}");
+        Output.WriteLine("");
 
         bool foundAny = false;
 
@@ -114,45 +114,45 @@ internal sealed class ContainerizeCommand : BaseCommand {
                         });
 
                     MarkdownTableFormatter.Write(
-                        Console,
+                        Output,
                         ".NET container projects (markdown)",
                         new[] { "Project", "Path", "PublishProfile", "ContainerBaseImage", "ContainerImage", "ContainerFamily", "ContainerRegistry", "SDKContainerSupport" },
                         rows);
                 }
                 else {
-                    Console.WriteInfo($"Found {containerProjects.Count} .NET Container Project(s):");
-                    Console.WriteInfo("");
+                    Output.WriteLine($"Found {containerProjects.Count} .NET Container Project(s):");
+                    Output.WriteLine("");
 
                     foreach (var project in containerProjects) {
                         var relativePath = Path.GetRelativePath(rootPath, project.ProjectPath);
-                        Console.WriteInfo($"  • {project.ProjectName} ({relativePath})");
+                        Output.WriteLine($"  • {project.ProjectName} ({relativePath})");
 
                         if (!listOnly) {
                             if (project.PublishProfile != null) {
-                                Console.WriteInfo($"    Publish Profile: {project.PublishProfile}");
+                                Output.WriteLine($"    Publish Profile: {project.PublishProfile}");
                             }
                             
                             if (project.EnableSdkContainerSupport) {
-                                Console.WriteInfo($"    SDK Container Support: Enabled");
+                                Output.WriteLine($"    SDK Container Support: Enabled");
                             }
 
                             if (project.ContainerBaseImage != null) {
-                                Console.WriteInfo($"    Container Base Image: {project.ContainerBaseImage}");
+                                Output.WriteLine($"    Container Base Image: {project.ContainerBaseImage}");
                             }
                             
                             if (project.ContainerImage != null) {
-                                Console.WriteInfo($"    Container Image: {project.ContainerImage}");
+                                Output.WriteLine($"    Container Image: {project.ContainerImage}");
                             }
                             
                             if (project.ContainerFamily != null) {
-                                Console.WriteInfo($"    Container Family: {project.ContainerFamily}");
+                                Output.WriteLine($"    Container Family: {project.ContainerFamily}");
                             }
 
                             if (project.ContainerRegistry != null) {
-                                Console.WriteInfo($"    Container Registry: {project.ContainerRegistry}");
+                                Output.WriteLine($"    Container Registry: {project.ContainerRegistry}");
                             }
 
-                            Console.WriteInfo("");
+                            Output.WriteLine("");
                         }
                     }
                 }
@@ -172,7 +172,7 @@ internal sealed class ContainerizeCommand : BaseCommand {
                             .Select(dockerfile => (IReadOnlyList<string?>)new[] {
                                 Path.GetRelativePath(rootPath, dockerfile)
                             });
-                        MarkdownTableFormatter.Write(Console, "Dockerfiles (markdown)", new[] { "Dockerfile" }, rows);
+                        MarkdownTableFormatter.Write(Output, "Dockerfiles (markdown)", new[] { "Dockerfile" }, rows);
                     }
                     else {
                         var rows = new List<IReadOnlyList<string?>>();
@@ -190,48 +190,48 @@ internal sealed class ContainerizeCommand : BaseCommand {
                         }
 
                         MarkdownTableFormatter.Write(
-                            Console,
+                            Output,
                             "Dockerfiles (markdown)",
                             new[] { "Dockerfile", "Base Images", "Build Stages", "Exposed Ports", "Working Directory", "Entry Point", "CMD" },
                             rows);
                     }
                 }
                 else {
-                    Console.WriteInfo($"Found {dockerfiles.Count} Dockerfile(s):");
-                    Console.WriteInfo("");
+                    Output.WriteLine($"Found {dockerfiles.Count} Dockerfile(s):");
+                    Output.WriteLine("");
 
                     foreach (var dockerfile in dockerfiles) {
                         var relativePath = Path.GetRelativePath(rootPath, dockerfile);
-                        Console.WriteInfo($"  • {relativePath}");
-                        
+                        Output.WriteLine($"  • {relativePath}");
+
                         if (!listOnly) {
                             var info = await DockerfileParser.ParseAsync(dockerfile);
-                            
+
                             if (info.BaseImages.Any()) {
-                                Console.WriteInfo($"    Base Images: {string.Join(", ", info.BaseImages)}");
+                                Output.WriteLine($"    Base Images: {string.Join(", ", info.BaseImages)}");
                             }
-                            
+
                             if (info.Stages.Any()) {
-                                Console.WriteInfo($"    Build Stages: {string.Join(", ", info.Stages)}");
+                                Output.WriteLine($"    Build Stages: {string.Join(", ", info.Stages)}");
                             }
-                            
+
                             if (info.ExposedPorts.Any()) {
-                                Console.WriteInfo($"    Exposed Ports: {string.Join(", ", info.ExposedPorts)}");
+                                Output.WriteLine($"    Exposed Ports: {string.Join(", ", info.ExposedPorts)}");
                             }
-                            
+
                             if (!string.IsNullOrEmpty(info.WorkDir)) {
-                                Console.WriteInfo($"    Working Directory: {info.WorkDir}");
+                                Output.WriteLine($"    Working Directory: {info.WorkDir}");
                             }
-                            
+
                             if (!string.IsNullOrEmpty(info.EntryPoint)) {
-                                Console.WriteInfo($"    Entry Point: {info.EntryPoint}");
+                                Output.WriteLine($"    Entry Point: {info.EntryPoint}");
                             }
-                            
+
                             if (!string.IsNullOrEmpty(info.Cmd)) {
-                                Console.WriteInfo($"    CMD: {info.Cmd}");
+                                Output.WriteLine($"    CMD: {info.Cmd}");
                             }
                             
-                            Console.WriteInfo("");
+                            Output.WriteLine("");
                         }
                     }
                 }
@@ -239,7 +239,7 @@ internal sealed class ContainerizeCommand : BaseCommand {
         }
 
         if (!foundAny) {
-            Console.WriteWarning("No Dockerfiles or container projects found.");
+            Output.WriteWarning("No Dockerfiles or container projects found.");
         }
 
         return 0;

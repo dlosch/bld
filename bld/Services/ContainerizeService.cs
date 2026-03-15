@@ -54,7 +54,7 @@ internal class ContainerizeService {
             }
         }
 
-        _console.WriteInfo($"Found {projectsWithDockerfiles.Count} projects with Dockerfiles");
+        _console.WriteLine($"Found {projectsWithDockerfiles.Count} projects with Dockerfiles");
 
         foreach (var (project, dockerfilePath) in projectsWithDockerfiles) {
             await ProcessProjectDockerfileAsync(project, dockerfilePath, applyChanges, cancellationToken);
@@ -82,21 +82,21 @@ internal class ContainerizeService {
             var containerProperties = ParseDockerfile(dockerfileContent);
 
             if (containerProperties.Any()) {
-                _console.WriteInfo($"  Found {containerProperties.Count} container properties to convert");
+                _console.WriteLine($"  Found {containerProperties.Count} container properties to convert");
 
                 if (applyChanges) {
                     await ApplyContainerPropertiesToProjectAsync(project.ProjectPath, containerProperties, cancellationToken);
-                    _console.WriteInfo($"  Updated project file with container properties");
+                    _console.WriteLine($"  Updated project file with container properties");
                 }
                 else {
-                    _console.WriteInfo("  Container properties that would be added:");
+                    _console.WriteLine("  Container properties that would be added:");
                     foreach (var prop in containerProperties) {
-                        _console.WriteInfo($"    {prop.Key} = {prop.Value}");
+                        _console.WriteLine($"    {prop.Key} = {prop.Value}");
                     }
                 }
             }
             else {
-                _console.WriteInfo("  No convertible container properties found");
+                _console.WriteLine("  No convertible container properties found");
             }
         }
         catch (Exception ex) {

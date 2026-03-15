@@ -15,6 +15,9 @@ internal static class ExceptionExtensions {
 /// Abstraction for console output using Spectre.Console
 /// </summary>
 internal interface IConsoleOutput {
+    /// <summary>Always-visible output line — use for command results and user-facing data.</summary>
+    void WriteLine(string message);
+    /// <summary>Informational log message — only shown when log level is Info or lower.</summary>
     void WriteInfo(string message);
     void WriteWarning(string message);
     void WriteError(string message, Exception? exception = default);

@@ -30,7 +30,7 @@ internal class MarkDeleteResultBatchFileProcessor : IMarkDeleteResultProcessor {
         }
 
         if (!result.Directories.Any()) {
-            _console.WriteInfo("No directories marked for deletion.");
+            _console.WriteLine("No directories marked for deletion.");
             return Task.CompletedTask;
         }
 
@@ -63,7 +63,7 @@ internal class MarkDeleteResultBatchFileProcessor : IMarkDeleteResultProcessor {
         }
 
         if (totalFiles == 0 && totalBytes == 0) {
-            _console.WriteInfo("No files found in marked directories.");
+            _console.WriteLine("No files found in marked directories.");
         }
         else {
             // Summary row

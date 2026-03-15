@@ -47,26 +47,26 @@ internal sealed class CpmCommand : BaseCommand {
             options.VSToolsPath = TryResolveVSToolsPath(out var vsRoot);
             options.VSRootPath = vsRoot;
         }
-        base.Console = new SpectreConsoleOutput(options.LogLevel);
+        base.Output = new SpectreConsoleOutput(options.LogLevel);
 
         var rootPath = GetRootPath(parseResult);
 
         var apply = parseResult.GetValue(_applyOption);
         var overwrite = parseResult.GetValue(_overwriteOption);
 
-        Console.WriteInfo($"Converting projects to Central Package Management in: {rootPath}");
-        Console.WriteInfo($"Mode: {(apply ? "Apply changes" : "Dry run")}");
-        Console.WriteInfo($"Overwrite existing Directory.Packages.props: {overwrite}");
+        Output.WriteInfo($"Converting projects to Central Package Management in: {rootPath}");
+        Output.WriteInfo($"Mode: {(apply ? "Apply changes" : "Dry run")}");
+        Output.WriteInfo($"Overwrite existing Directory.Packages.props: {overwrite}");
 
         try {
-            var cpmService = new CpmService(Console, options);
+            var cpmService = new CpmService(Output, options);
             await cpmService.ConvertToCentralPackageManagementAsync(rootPath, apply, overwrite, cancellationToken);
 
-            Console.WriteInfo("Central Package Management conversion completed successfully.");
+            Output.WriteLine("Central Package Management conversion completed successfully.");
             return 0;
         }
         catch (Exception ex) {
-            Console.WriteError($"Error converting to Central Package Management: {ex.FormatMessage()}");
+            Output.WriteError($"Error converting to Central Package Management: {ex.FormatMessage()}");
             return 1;
         }
     }

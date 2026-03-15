@@ -6,7 +6,7 @@ using System.CommandLine.Parsing;
 namespace bld.Commands;
 
 internal abstract class BaseCommand : Command {
-    protected IConsoleOutput Console { get; set; }
+    protected IConsoleOutput Output { get; set; }
 
     protected virtual Task<int> ExecuteAsync(ParseResult parseResult, CancellationToken cancellationToken) {
         return Task.FromResult(0);
@@ -73,7 +73,7 @@ internal abstract class BaseCommand : Command {
 
     protected readonly Option<LogLevel> _logLevelOption = new Option<LogLevel>("--log", "-v", "--verbosity") {
         Description = "Log verbosity (Debug, Verbose, Info, Warning, Error).",
-        DefaultValueFactory = _ => LogLevel.Info
+        DefaultValueFactory = _ => LogLevel.Warning
     };
 
     protected readonly Option<bool> _markdownOption = new Option<bool>("--markdown", "-md") {
@@ -104,7 +104,7 @@ internal abstract class BaseCommand : Command {
     };
 
     protected BaseCommand(string name, string? description, IConsoleOutput console) : base(name, description) {
-        Console = console;
+        Output = console;
 
         Add(_markdownOption);
 

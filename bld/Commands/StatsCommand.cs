@@ -44,11 +44,11 @@ internal sealed class StatsCommand : BaseCommand {
             options.VSToolsPath = TryResolveVSToolsPath(out var vsRoot);
             options.VSRootPath = vsRoot;
         }
-        base.Console = new SpectreConsoleOutput(options.LogLevel);
+        base.Output = new SpectreConsoleOutput(options.LogLevel);
 
         var rootPath = GetRootPath(parseResult);
 
-        var app = new CleaningApplication(base.Console, (a, b, c) => new MarkDeleteResultStatsProcessor(a, b, c));
+        var app = new CleaningApplication(base.Output, (a, b, c) => new MarkDeleteResultStatsProcessor(a, b, c));
         await app.InitAsync(options);
         await app.RunAsync(new[] { rootPath }, options, cancellationToken);
 

@@ -150,7 +150,7 @@ internal class NugetAnalysisApplication {
             return;
         }
 
-        _console.WriteInfo($"Found {analyses.Count} project(s) with NuGet packages:");
+        _console.WriteLine($"Found {analyses.Count} project(s) with NuGet packages:");
 
         foreach (var analysis in analyses.OrderBy(a => a.ProjectName)) {
             DisplayProjectAnalysis(analysis, categorizer);
@@ -161,8 +161,8 @@ internal class NugetAnalysisApplication {
         var uniquePackages = analyses.SelectMany(a => a.Packages).Select(p => p.Name).Distinct().Count();
 
         _console.WriteRule("[bold green]Summary[/]");
-        _console.WriteInfo($"Total packages across all projects: {totalPackages}");
-        _console.WriteInfo($"Unique packages: {uniquePackages}");
+        _console.WriteLine($"Total packages across all projects: {totalPackages}");
+        _console.WriteLine($"Unique packages: {uniquePackages}");
     }
 
     private void DisplayProjectAnalysis(ProjectNugetAnalysis analysis, NugetPackageCategorizer categorizer) {
@@ -221,8 +221,8 @@ internal class NugetAnalysisApplication {
             return;
         }
 
-        _console.WriteInfo($"Found {analyses.Count} project(s) with NuGet packages (aggregate view):");
-        _console.WriteInfo("");
+        _console.WriteLine($"Found {analyses.Count} project(s) with NuGet packages (aggregate view):");
+        _console.WriteLine("");
 
         // Group packages by name across all projects
         var allPackages = analyses
@@ -272,8 +272,8 @@ internal class NugetAnalysisApplication {
         var uniquePackages = packageGroups.Count;
 
         _console.WriteRule("[bold green]Summary[/]");
-        _console.WriteInfo($"Total package references across all projects: {totalPackages}");
-        _console.WriteInfo($"Unique packages: {uniquePackages}");
+        _console.WriteLine($"Total package references across all projects: {totalPackages}");
+        _console.WriteLine($"Unique packages: {uniquePackages}");
     }
 
     private void AddAggregateCategorySection(List<string> content, string categoryName, List<AggregatedPackage> packages, bool showProjects) {

@@ -7,6 +7,7 @@ namespace bld.Tests;
 
 public class ProjCfgCacheTests {
     private class DummyConsole : IConsoleOutput {
+        public void WriteLine(string message) { }
         public void WriteInfo(string message) { }
         public void WriteWarning(string message) { }
         public void WriteError(string message, Exception? exception = default) { }

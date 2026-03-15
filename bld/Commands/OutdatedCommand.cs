@@ -54,7 +54,7 @@ internal sealed class OutdatedCommand : BaseCommand {
             options.VSRootPath = vsRoot;
         }
 
-        base.Console = new SpectreConsoleOutput(options.LogLevel);
+        base.Output = new SpectreConsoleOutput(options.LogLevel);
 
         var rootValue = GetRootPath(parseResult);
 
@@ -62,7 +62,7 @@ internal sealed class OutdatedCommand : BaseCommand {
         var skipTfmCheck = parseResult.GetValue(_skipTfmCheckOption);
         var includePrerelease = parseResult.GetValue(_prereleaseOption);
 
-        var service = new OutdatedService(Console, options);
+        var service = new OutdatedService(Output, options);
         return await service.CheckOutdatedPackagesAsync(rootValue, applyUpdates, skipTfmCheck, includePrerelease, cancellationToken);
     }
 }

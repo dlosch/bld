@@ -21,7 +21,7 @@ internal record class ProjectPackageReferenceInfo(
 }
 internal record class ProjectPackage(string PackageId, string? Version);
 
-internal sealed class ProjParser(IConsoleOutput Console, ErrorSink ErrorSink, CleaningOptions Options) {
+internal sealed class ProjParser(IConsoleOutput Output, ErrorSink ErrorSink, CleaningOptions Options) {
 
 
     private Dictionary<string, string> _globalProperties = default!;
@@ -55,7 +55,7 @@ internal sealed class ProjParser(IConsoleOutput Console, ErrorSink ErrorSink, Cl
     }
 
     internal ProjectPackageReferenceInfo? GetPackageReferences(ProjCfg proj) {
-        Console.WriteDebug($"Loading project {proj.Path} [{proj.Configuration}]...");
+        Output.WriteDebug($"Loading project {proj.Path} [{proj.Configuration}]...");
         string projectPath = proj.Path;
         string? configuration = proj.Configuration;
 
@@ -104,7 +104,7 @@ internal sealed class ProjParser(IConsoleOutput Console, ErrorSink ErrorSink, Cl
             }
             catch (Exception xcptn) {
                 ErrorSink.AddError($"Failed to load project.", exception: xcptn, config: proj);
-                Console.WriteError($"{projectPath} could not be parsed: {xcptn.FormatMessage()}");
+                Output.WriteError($"{projectPath} could not be parsed: {xcptn.FormatMessage()}");
                 return default;
             }
 
@@ -139,7 +139,7 @@ internal sealed class ProjParser(IConsoleOutput Console, ErrorSink ErrorSink, Cl
             }
             catch (Exception xcptn) {
                 ErrorSink.AddError($"Failed to load project.", exception: xcptn, config: proj);
-                Console.WriteError($"{projectPath} could not be parsed: {xcptn.FormatMessage()}");
+                Output.WriteError($"{projectPath} could not be parsed: {xcptn.FormatMessage()}");
                 return default;
             }
 

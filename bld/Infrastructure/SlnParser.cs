@@ -10,7 +10,7 @@ internal enum ProcessingType {
     Directory
 }
 
-internal sealed class SlnParser(IConsoleOutput Console, ErrorSink ErrorSink) {
+internal sealed class SlnParser(IConsoleOutput Output, ErrorSink ErrorSink) {
 
     public async IAsyncEnumerable<ProjCfg> ParseSolution(string slnPath, IFileSystem? fileSystem = default, bool createDefaultDebugConfiguration = true) {
         if (SlnScanner.IsProjectFile(slnPath)) {
@@ -29,7 +29,7 @@ internal sealed class SlnParser(IConsoleOutput Console, ErrorSink ErrorSink) {
         }
         catch (Exception xcptn) {
             ErrorSink.AddError($"Failed to parse solution file.", exception: xcptn, sln: sln);
-            Console.WriteError($"{slnPath} could not be parsed: {xcptn.FormatMessage()}");
+            Output.WriteError($"{slnPath} could not be parsed: {xcptn.FormatMessage()}");
             yield break;
         }
 

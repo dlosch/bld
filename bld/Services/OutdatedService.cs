@@ -105,11 +105,11 @@ internal class OutdatedService {
         }
 
         if (allPackageReferences.Count == 0) {
-            _console.WriteInfo("No package references found.");
+            _console.WriteLine("No package references found.");
             return 0;
         }
 
-        _console.WriteInfo($"Found {allPackageReferences.Count} unique packages across {cache.Count} projects");
+        _console.WriteLine($"Found {allPackageReferences.Count} unique packages across {cache.Count} projects");
 
         var latestPerPackage = new Dictionary<string, NuGetVersion>(StringComparer.OrdinalIgnoreCase);
         var outdatedPerPackage = new ConcurrentDictionary<string, (NuGetVersion CurrentMin, NuGetVersion Latest)>(StringComparer.OrdinalIgnoreCase);
@@ -198,7 +198,7 @@ internal class OutdatedService {
         });
 
         if (outdatedPerPackage.Count == 0) {
-            _console.WriteInfo("All packages are up to date!");
+            _console.WriteLine("All packages are up to date!");
             stopwatch.Stop();
             _console.WriteInfo($"Total elapsed time: {stopwatch.Elapsed}");
             errorSink.WriteTo();
@@ -214,7 +214,7 @@ internal class OutdatedService {
             .Max();
 
         {
-            _console.WriteInfo($"\nFound {outdatedPerPackage.Count} packages with available updates:");
+            _console.WriteLine($"\nFound {outdatedPerPackage.Count} packages with available updates:");
             if (_options.MarkdownOutput) {
                 var rows = outdatedPerPackage
                     .OrderBy(k => k.Key)
@@ -373,14 +373,14 @@ internal class OutdatedService {
             // Update all props files in one pass per file
             foreach (var (propsPath, updates) in propsUpdates) {
                 await UpdatePropsFileAsync(propsPath, updates, cancellationToken);
-                _console.WriteInfo($"Updated {updates.Count} package(s) in {propsPath}");
+                _console.WriteLine($"Updated {updates.Count} package(s) in {propsPath}");
             }
 
             // Update project files
             foreach (var (projPath, updates) in projectUpdates) {
                 foreach (var (pkg, v) in updates) {
                     await UpdatePackageVersionAsync(projPath, pkg, v, cancellationToken);
-                    _console.WriteInfo($"Updated {pkg} to {v} in {Path.GetFileName(projPath)}");
+                    _console.WriteLine($"Updated {pkg} to {v} in {Path.GetFileName(projPath)}");
                 }
             }
         }

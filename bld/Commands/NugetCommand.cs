@@ -54,14 +54,14 @@ internal sealed class NugetCommand : BaseCommand {
             options.VSRootPath = vsRoot;
         }
 
-        base.Console = new SpectreConsoleOutput(options.LogLevel);
+        base.Output = new SpectreConsoleOutput(options.LogLevel);
         var whitelistBlacklistFile = parseResult.GetValue(_whitelistBlacklistFileOption);
         var aggregate = parseResult.GetValue(_aggregateOption);
         var showProjects = parseResult.GetValue(_showProjectsOption);
 
         var rootPath = GetRootPath(parseResult);
 
-        var app = new NugetAnalysisApplication(base.Console);
+        var app = new NugetAnalysisApplication(base.Output);
         await app.InitAsync(options);
         await app.RunAsync(new[] { rootPath }, options, whitelistBlacklistFile, aggregate, showProjects, options.MarkdownOutput);
 

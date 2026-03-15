@@ -53,7 +53,7 @@ internal sealed class TfmCommand : BaseCommand {
             options.VSRootPath = vsRoot;
         }
 
-        base.Console = new SpectreConsoleOutput(options.LogLevel);
+        base.Output = new SpectreConsoleOutput(options.LogLevel);
 
         var rootPath = GetRootPath(parseResult);
 
@@ -65,10 +65,10 @@ internal sealed class TfmCommand : BaseCommand {
         if (string.IsNullOrEmpty(to)) {
             to = await DetectHighestSdkVersionAsync();
             if (string.IsNullOrEmpty(to)) {
-                Console.WriteError("Could not auto-detect highest SDK version. Please specify --to parameter.");
+                Output.WriteError("Could not auto-detect highest SDK version. Please specify --to parameter.");
                 return 1;
             }
-            Console.WriteInfo($"Auto-detected target framework: {to}");
+            Output.WriteInfo($"Auto-detected target framework: {to}");
         }
 
         // Auto-detect --from if not specified
@@ -76,25 +76,25 @@ internal sealed class TfmCommand : BaseCommand {
         if (string.IsNullOrEmpty(from)) {
             from = await DetectSourceFrameworksAsync(rootPath);
             if (string.IsNullOrEmpty(from)) {
-                Console.WriteError("Could not auto-detect source framework. Projects have multiple TargetFrameworks or no consistent TargetFramework. Please specify --from parameter.");
+                Output.WriteError("Could not auto-detect source framework. Projects have multiple TargetFrameworks or no consistent TargetFramework. Please specify --from parameter.");
                 return 1;
             }
             fromTfms = from.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
-            Console.WriteInfo($"Auto-detected source framework(s): {from}");
+            Output.WriteInfo($"Auto-detected source framework(s): {from}");
         }
         else {
             fromTfms = from.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
         }
 
-        Console.WriteInfo($"Migrating projects from {string.Join(", ", fromTfms)} to {to} in: {rootPath}");
-        Console.WriteInfo($"Mode: {(apply ? "Apply changes" : "Dry run")}");
+        Output.WriteInfo($"Migrating projects from {string.Join(", ", fromTfms)} to {to} in: {rootPath}");
+        Output.WriteInfo($"Mode: {(apply ? "Apply changes" : "Dry run")}");
 
         try {
-            using var tfmService = new TfmService(Console, options);
+            using var tfmService = new TfmService(Output, options);
             return await tfmService.MigrateTargetFrameworkAsync(rootPath, fromTfms, to, apply, cancellationToken);
         }
         catch (Exception ex) {
-            Console.WriteError($"Error migrating target frameworks: {ex.FormatMessage()}");
+            Output.WriteError($"Error migrating target frameworks: {ex.FormatMessage()}");
             return 1;
         }
     }
@@ -103,13 +103,13 @@ internal sealed class TfmCommand : BaseCommand {
         try {
             // Initialize MSBuild first for SlnScanner/SlnParser
             var tempOptions = new CleaningOptions();
-            MSBuildInitializer.Initialize(Console, tempOptions);
+            MSBuildInitializer.Initialize(Output, tempOptions);
 
-            var errorSink = new ErrorSink(Console);
-            var projParser = new ProjParser(Console, errorSink, tempOptions);
+            var errorSink = new ErrorSink(Output);
+            var projParser = new ProjParser(Output, errorSink, tempOptions);
 
             var targetFrameworks = new List<string>();
-            var cache = new ProjCfgCache(Console);
+            var cache = new ProjCfgCache(Output);
 
             // Check if the root path is a direct .csproj file
             if (File.Exists(rootPath) && Path.GetExtension(rootPath).Equals(".csproj", StringComparison.OrdinalIgnoreCase)) {
@@ -119,7 +119,7 @@ internal sealed class TfmCommand : BaseCommand {
                     var projectInfo = projParser.LoadProject(projCfg, Array.Empty<string>());
 
                     if (projectInfo == null) {
-                        Console.WriteVerbose($"Could not load project {rootPath}");
+                        Output.WriteVerbose($"Could not load project {rootPath}");
                         return null;
                     }
 
@@ -127,7 +127,7 @@ internal sealed class TfmCommand : BaseCommand {
                     if (!string.IsNullOrEmpty(projectInfo.TargetFramework)) {
                         // Skip if it contains variables (variables that weren't resolved would still contain $())
                         if (projectInfo.TargetFramework.Contains("$(") && projectInfo.TargetFramework.Contains(")")) {
-                            Console.WriteVerbose($"Skipping {Path.GetFileName(rootPath)} - TargetFramework contains unresolved variable: {projectInfo.TargetFramework}");
+                            Output.WriteVerbose($"Skipping {Path.GetFileName(rootPath)} - TargetFramework contains unresolved variable: {projectInfo.TargetFramework}");
                             return null;
                         }
                         // Filter to only .NET (Core) frameworks
@@ -139,7 +139,7 @@ internal sealed class TfmCommand : BaseCommand {
                     else if (projectInfo.TargetFrameworks.Count > 0) {
                         // Collect all .NET (Core) frameworks from TargetFrameworks
                         var tfmsValue = string.Join(";", projectInfo.TargetFrameworks);
-                        Console.WriteVerbose($"Project {Path.GetFileName(rootPath)} has multiple TargetFrameworks: {tfmsValue}");
+                        Output.WriteVerbose($"Project {Path.GetFileName(rootPath)} has multiple TargetFrameworks: {tfmsValue}");
                         var dotnetCoreFrameworks = projectInfo.TargetFrameworks
                             .Select(f => f.Trim())
                             .Where(IsDotNetCoreFramework)
@@ -152,14 +152,14 @@ internal sealed class TfmCommand : BaseCommand {
                     }
                 }
                 catch (Exception ex) {
-                    Console.WriteVerbose($"Could not read {rootPath}: {ex.FormatMessage()}");
+                    Output.WriteVerbose($"Could not read {rootPath}: {ex.FormatMessage()}");
                     return null;
                 }
             }
             else {
                 // Use the existing solution-based logic
                 var slnScanner = new SlnScanner(tempOptions, errorSink);
-                var slnParser = new SlnParser(Console, errorSink);
+                var slnParser = new SlnParser(Output, errorSink);
 
                 await foreach (var slnPath in slnScanner.Enumerate(rootPath)) {
                     await foreach (var projCfg in slnParser.ParseSolution(slnPath)) {
@@ -173,7 +173,7 @@ internal sealed class TfmCommand : BaseCommand {
                             var projectInfo = projParser.LoadProject(projForLoading, Array.Empty<string>());
 
                             if (projectInfo == null) {
-                                Console.WriteVerbose($"Could not load project {projCfg.Path}");
+                                Output.WriteVerbose($"Could not load project {projCfg.Path}");
                                 continue;
                             }
 
@@ -182,7 +182,7 @@ internal sealed class TfmCommand : BaseCommand {
                                 // Skip if it contains variables (variables are already evaluated by MSBuild)
                                 // But check if the result looks like a variable that wasn't resolved
                                 if (projectInfo.TargetFramework.Contains("$(") && projectInfo.TargetFramework.Contains(")")) {
-                                    Console.WriteVerbose($"Skipping {Path.GetFileName(projCfg.Path)} - TargetFramework contains unresolved variable: {projectInfo.TargetFramework}");
+                                    Output.WriteVerbose($"Skipping {Path.GetFileName(projCfg.Path)} - TargetFramework contains unresolved variable: {projectInfo.TargetFramework}");
                                     continue;
                                 }
                                 targetFrameworks.Add(projectInfo.TargetFramework.Trim());
@@ -190,12 +190,12 @@ internal sealed class TfmCommand : BaseCommand {
                             else if (projectInfo.TargetFrameworks.Count > 0) {
                                 // Collect all frameworks from TargetFrameworks for auto-detection
                                 var tfmsValue = string.Join(";", projectInfo.TargetFrameworks);
-                                Console.WriteVerbose($"Project {Path.GetFileName(projCfg.Path)} has multiple TargetFrameworks: {tfmsValue}");
+                                Output.WriteVerbose($"Project {Path.GetFileName(projCfg.Path)} has multiple TargetFrameworks: {tfmsValue}");
                                 targetFrameworks.AddRange(projectInfo.TargetFrameworks.Select(f => f.Trim()));
                             }
                         }
                         catch (Exception ex) {
-                            Console.WriteVerbose($"Could not read {projCfg.Path}: {ex.FormatMessage()}");
+                            Output.WriteVerbose($"Could not read {projCfg.Path}: {ex.FormatMessage()}");
                         }
                     }
                 }
@@ -208,14 +208,14 @@ internal sealed class TfmCommand : BaseCommand {
                 var dotnetCoreFrameworks = targetFrameworks.Where(IsDotNetCoreFramework).Distinct().ToList();
                 
                 if (dotnetCoreFrameworks.Count == 0) {
-                    Console.WriteVerbose($"No .NET (Core) frameworks found. Found: {string.Join(", ", targetFrameworks.Distinct())}");
+                    Output.WriteVerbose($"No .NET (Core) frameworks found. Found: {string.Join(", ", targetFrameworks.Distinct())}");
                     return null;
                 }
 
                 // Return all .NET (Core) frameworks found (can be multiple)
                 var distinctAllFrameworks = targetFrameworks.Distinct().ToList();
                 if (distinctAllFrameworks.Count > dotnetCoreFrameworks.Count) {
-                    Console.WriteVerbose($"Auto-detected source framework(s): {string.Join(", ", dotnetCoreFrameworks)} (ignoring non-.NET frameworks like netstandard)");
+                    Output.WriteVerbose($"Auto-detected source framework(s): {string.Join(", ", dotnetCoreFrameworks)} (ignoring non-.NET frameworks like netstandard)");
                 }
                 
                 // Return comma-separated list of frameworks
@@ -225,7 +225,7 @@ internal sealed class TfmCommand : BaseCommand {
             return null;
         }
         catch (Exception ex) {
-            Console.WriteVerbose($"Error detecting source framework: {ex.FormatMessage()}");
+            Output.WriteVerbose($"Error detecting source framework: {ex.FormatMessage()}");
             return null;
         }
     }
@@ -249,7 +249,7 @@ internal sealed class TfmCommand : BaseCommand {
             await process.WaitForExitAsync();
 
             if (process.ExitCode != 0) {
-                Console.WriteVerbose("Failed to list installed SDKs");
+                Output.WriteVerbose("Failed to list installed SDKs");
                 return null;
             }
 
@@ -274,7 +274,7 @@ internal sealed class TfmCommand : BaseCommand {
             return highest != null ? $"net{highest.Major}.{highest.Minor}" : null;
         }
         catch (Exception ex) {
-            Console.WriteVerbose($"Error detecting SDK versions: {ex.FormatMessage()}");
+            Output.WriteVerbose($"Error detecting SDK versions: {ex.FormatMessage()}");
             return null;
         }
     }

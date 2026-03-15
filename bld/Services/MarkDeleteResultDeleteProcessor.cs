@@ -14,7 +14,7 @@ internal class MarkDeleteResultDeleteProcessor : IMarkDeleteResultProcessor {
 
     public Task ProcessAsync(MarkDeleteResult result) {
         if (!result.Directories.Any()) {
-            _console.WriteInfo("No directories marked for deletion.");
+            _console.WriteLine("No directories marked for deletion.");
             return Task.CompletedTask;
         }
 
@@ -23,17 +23,17 @@ internal class MarkDeleteResultDeleteProcessor : IMarkDeleteResultProcessor {
             if (path is null) continue;
             if (!path.Exists) continue;
 
-            if (_console.Confirm($"Delete directory {path.FullName} and all its contents?", _options.Force)) {
+            if (_options.Force || _console.Confirm($"Delete directory {path.FullName} and all its contents?")) {
                 try {
                     path.Delete(true);
-                    _console.WriteInfo($"Deleted directory {path.FullName}.");
+                    _console.WriteLine($"Deleted {path.FullName}");
                 }
                 catch (Exception ex) {
                     _console.WriteError($"Failed to delete directory {path.FullName}: {ex.FormatMessage()}");
                 }
             }
             else {
-                _console.WriteInfo($"Skipped deletion of directory {path.FullName}.");
+                _console.WriteLine($"Skipped deletion of directory {path.FullName}.");
             }
         }
 
