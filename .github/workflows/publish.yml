@@ -23,10 +23,10 @@ jobs:
       run: dotnet restore
 
     - name: Build project
-      run: dotnet build --configuration Release --no-restore
+      run: dotnet build bld/bld.csproj --configuration Release --no-restore
 
     - name: Pack project
-      run: dotnet pack --configuration Release --no-build --output ./nupkg
+      run: dotnet pack bld/bld.csproj --configuration Release --no-build --output ./nupkg
       # If you want to use the GitHub Release tag as the version, you can pass it like this:
       # run: dotnet pack --configuration Release -p:Version=${{ github.event.release.tag_name }} --output ./nupkg
 
