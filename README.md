@@ -1,4 +1,6 @@
-﻿# bld
+# bld
+
+Published as a .NET tool on NuGet.org: https://www.nuget.org/packages/dotnet-bld
 
 `bld` is a utility for working with .NET/MSBuild project files and solutions. It does rely on the Microsoft Build system (Microsoft.Build and NuGet assemblies) for proper property evaluation of msbuild project files (*.csproj ...). It is intentionally small and focuses on repository hygiene:
 - Clean build output safely.
@@ -10,6 +12,8 @@
 - Scan for Docker base image references.
 
 This is especially handy when working with agentic coding tools or large repos where TFMs, CPM, package references, and build outputs can drift.
+
+> Note on NuGet target framework display: the package is built for both `net8.0` and `net10.0` (`<TargetFrameworks>net8.0;net10.0</TargetFrameworks>` in `bld/bld.csproj`). Depending on NuGet UI/client behavior, it may only show one framework even though both tool folders are included in the `.nupkg`.
 
 ## Microsoft.Build & Visual Studio integration
 

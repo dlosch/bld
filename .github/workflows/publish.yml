@@ -30,5 +30,11 @@ jobs:
       # If you want to use the GitHub Release tag as the version, you can pass it like this:
       # run: dotnet pack --configuration Release -p:Version=${{ github.event.release.tag_name }} --output ./nupkg
 
+    - name: Upload nupkg artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: nupkg
+        path: ./nupkg/*.nupkg
+
     - name: Push to NuGet
       run: dotnet nuget push ./nupkg/*.nupkg --api-key ${{ secrets.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate
