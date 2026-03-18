@@ -1,7 +1,20 @@
 # bld
 
-Published as a .NET tool on NuGet.org: https://www.nuget.org/packages/dotnet-bld
+## dotnet tool available on nuget.org
+The code is published as a .NET tool on NuGet.org: https://www.nuget.org/packages/dotnet-bld
 
+### Installation
+
+```
+dotnet tool install --global dotnet-bld
+```
+
+### Run
+```
+dotnet bld
+```
+
+# bld
 `bld` is a utility for working with .NET/MSBuild project files and solutions. It does rely on the Microsoft Build system (Microsoft.Build and NuGet assemblies) for proper property evaluation of msbuild project files (*.csproj ...). It is intentionally small and focuses on repository hygiene:
 - Clean build output safely.
 - Inspect cleaning statistics without touching the disk.
