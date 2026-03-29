@@ -1,31 +1,12 @@
 using bld.Infrastructure;
 using bld.Models;
 using bld.Services;
-using Spectre.Console;
 using System.Reflection;
 using System.Xml.Linq;
 
 namespace bld.Tests;
 
 public class OutdatedServiceTests {
-    private sealed class TestConsole : IConsoleOutput {
-        public void WriteLine(string message) { }
-        public void WriteInfo(string message) { }
-        public void WriteWarning(string message) { }
-        public void WriteError(string message, Exception? exception = default) { }
-        public void WriteDebug(string message) { }
-        public void WriteVerbose(string message) { }
-        public void WriteTable(Table table) { }
-        public void WriteRule(string title) { }
-        public bool Confirm(string message, bool defaultValue = false) => defaultValue;
-        public T Prompt<T>(SelectionPrompt<T> prompt) where T : notnull => default!;
-        public void StartProgress(string description, Action<ProgressContext> action) { }
-        public Task StartProgressAsync(string description, Func<ProgressContext, Task> action) => Task.CompletedTask;
-        public Task StartStatusAsync(string description, Func<StatusContext, Task> action) => Task.CompletedTask;
-        public void WriteException(Exception exception) { }
-        public void WriteOutput(string caption, string? content = default) { }
-        public void WriteHeader(string caption, string? additionaltext = default) { }
-    }
 
     [Fact]
     public void SelectCompatibleTargetFrameworks_RespectsSkipFlag() {

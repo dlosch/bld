@@ -1,41 +1,16 @@
 using bld.Infrastructure;
 using bld.Models;
 using bld.Commands;
-using Spectre.Console;
 using System.Reflection;
 
 namespace bld.Tests;
 
 /// <summary>
 /// Tests for TfmService and related TFM functionality.
-/// Note: Some tests use reflection to access private methods. This is acceptable 
+/// Note: Some tests use reflection to access private methods. This is acceptable
 /// for testing internal implementation details without changing the public API.
 /// </summary>
 public class TfmServiceTests {
-    private class TestConsole : IConsoleOutput {
-        public List<string> LineMessages { get; } = new();
-        public List<string> InfoMessages { get; } = new();
-        public List<string> WarningMessages { get; } = new();
-        public List<string> ErrorMessages { get; } = new();
-        public List<string> VerboseMessages { get; } = new();
-
-        public void WriteLine(string message) => LineMessages.Add(message);
-        public void WriteInfo(string message) => InfoMessages.Add(message);
-        public void WriteWarning(string message) => WarningMessages.Add(message);
-        public void WriteError(string message, Exception? exception = default) => ErrorMessages.Add(message);
-        public void WriteDebug(string message) { }
-        public void WriteVerbose(string message) => VerboseMessages.Add(message);
-        public void WriteTable(Table table) { }
-        public void WriteRule(string title) { }
-        public bool Confirm(string message, bool defaultValue = false) => defaultValue;
-        public T Prompt<T>(SelectionPrompt<T> prompt) where T : notnull => default!;
-        public void StartProgress(string description, Action<ProgressContext> action) => action(null!);
-        public Task StartProgressAsync(string description, Func<ProgressContext, Task> action) => action(null!);
-        public Task StartStatusAsync(string description, Func<StatusContext, Task> action) => action(null!);
-        public void WriteException(Exception exception) { }
-        public void WriteOutput(string caption, string? content = default) { }
-        public void WriteHeader(string caption, string? additionaltext = default) { }
-    }
 
     #region IsDotNetCoreFramework Tests
 
