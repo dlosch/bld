@@ -417,7 +417,7 @@ internal class OutdatedService {
 
             using var writeStream = File.Create(propsPath);
             using var writer = XmlWriter.Create(writeStream, new XmlWriterSettings {
-                Indent = true,
+                Indent = false,
                 OmitXmlDeclaration = true,
                 Encoding = System.Text.Encoding.UTF8,
                 Async = true
@@ -466,7 +466,7 @@ internal class OutdatedService {
 
             using var writeStream = File.Create(projectPath);
             using var writer = XmlWriter.Create(writeStream, new XmlWriterSettings {
-                Indent = true,
+                Indent = false,
                 OmitXmlDeclaration = true,
                 Encoding = System.Text.Encoding.UTF8,
                 Async = true
@@ -612,16 +612,17 @@ internal class OutdatedService {
 
         public int GetHashCode(PackageInfo obj) {
             if (obj is null) return 0;
+            var ci = StringComparer.OrdinalIgnoreCase;
             int hash = 17;
-            hash = hash * 23 + (obj.Id?.ToLowerInvariant().GetHashCode() ?? 0);
-            hash = hash * 23 + (obj.Version?.ToLowerInvariant().GetHashCode() ?? 0);
-            hash = hash * 23 + (obj.ProjectPath?.ToLowerInvariant().GetHashCode() ?? 0);
+            hash = hash * 23 + (obj.Id is not null ? ci.GetHashCode(obj.Id) : 0);
+            hash = hash * 23 + (obj.Version is not null ? ci.GetHashCode(obj.Version) : 0);
+            hash = hash * 23 + (obj.ProjectPath is not null ? ci.GetHashCode(obj.ProjectPath) : 0);
             if (obj.TargetFrameworks != null) {
                 foreach (var tfm in obj.TargetFrameworks) {
-                    hash = hash * 23 + (tfm?.ToLowerInvariant().GetHashCode() ?? 0);
+                    hash = hash * 23 + (tfm is not null ? ci.GetHashCode(tfm) : 0);
                 }
             }
-            hash = hash * 23 + (obj.PropsPath?.ToLowerInvariant().GetHashCode() ?? 0);
+            hash = hash * 23 + (obj.PropsPath is not null ? ci.GetHashCode(obj.PropsPath) : 0);
             hash = hash * 23 + obj.FromProps.GetHashCode();
             return hash;
         }
