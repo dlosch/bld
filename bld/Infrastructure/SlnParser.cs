@@ -22,10 +22,10 @@ internal sealed class SlnParser(IConsoleOutput Output, ErrorSink ErrorSink) {
             yield break;
         }
 
-        var solution = default(SolutionFile);
+        var parseResult = default(SlnFileHelper.SlnParseResult);
         var sln = new Sln(slnPath);
         try {
-            solution = SolutionFile.Parse(slnPath);
+            parseResult = SlnFileHelper.ParseWithFilter(slnPath);
         }
         catch (Exception xcptn) {
             ErrorSink.AddError($"Failed to parse solution file.", exception: xcptn, sln: sln);
@@ -33,7 +33,7 @@ internal sealed class SlnParser(IConsoleOutput Output, ErrorSink ErrorSink) {
             yield break;
         }
 
-        foreach (var project in solution.ProjectsInOrder.Where(p => File.Exists(p.AbsolutePath) && p.ProjectType == SolutionProjectType.KnownToBeMSBuildFormat)) {
+        foreach (var project in SlnFileHelper.EnumerateIncludedMSBuildProjects(parseResult).Where(p => File.Exists(p.AbsolutePath))) {
             var fullyQualifiedPath = fileSystem?.FullyQualifyPath(project.AbsolutePath) ?? project.AbsolutePath;
 
             var queryPlatform = false;

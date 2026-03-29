@@ -6,7 +6,7 @@ using System.Collections.Concurrent;
 namespace bld.Infrastructure;
 
 internal sealed class ProjectEnumerator(IFileSystem FileSystem) {
-    public IEnumerable<ProjectInfo?> EnumerateEvaluatedProjects(IEnumerable<string> paths, CleaningOptions options) {
+    public IEnumerable<ProjectInfo?> EnumerateEvaluatedProjects(IEnumerable<string> paths, CleaningOptions options, IConsoleOutput? output = null) {
         var visitedInputs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var projects = new ConcurrentDictionary<string, byte>(StringComparer.OrdinalIgnoreCase);
         var results = new ConcurrentBag<ProjectInfo?>();
@@ -84,19 +84,21 @@ internal sealed class ProjectEnumerator(IFileSystem FileSystem) {
             try { return action(); } catch { return Array.Empty<string>(); }
         }
 
-        static IEnumerable<string> ParseSolutionProjects(string slnPath) {
-            var list = new List<string>();
+        IEnumerable<string> ParseSolutionProjects(string slnPath) {
+            IEnumerable<ProjectInSolution> includedProjects;
             try {
-                var sln = SolutionFile.Parse(slnPath);
-                foreach (var p in sln.ProjectsInOrder) {
-                    if (p.ProjectType != SolutionProjectType.KnownToBeMSBuildFormat) continue;
-                    var ext = Path.GetExtension(p.AbsolutePath);
-                    if (!IsProjExt(ext)) continue;
-                    if (File.Exists(p.AbsolutePath)) list.Add(p.AbsolutePath);
-                }
+                includedProjects = SlnFileHelper.EnumerateIncludedMSBuildProjects(slnPath).ToArray();
             }
-            catch { }
-            return list;
+            catch (Exception ex) {
+                output?.WriteVerbose($"Failed to parse solution '{slnPath}': {ex.FormatMessage()}");
+                yield break;
+            }
+
+            foreach (var p in includedProjects) {
+                var ext = Path.GetExtension(p.AbsolutePath);
+                if (!IsProjExt(ext)) continue;
+                if (File.Exists(p.AbsolutePath)) yield return p.AbsolutePath;
+            }
         }
 
         static Dictionary<string, string> BuildGlobalProperties(CleaningOptions opts) {
