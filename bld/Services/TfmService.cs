@@ -71,7 +71,7 @@ internal class TfmService : IDisposable {
             var cache = new ProjCfgCache(_console);
 
             var parallelOptions = new ParallelOptions {
-                MaxDegreeOfParallelism = _options.Parallel ? _options.MaxDegreeOfParallelism : 1
+                MaxDegreeOfParallelism = _options.MaxDegreeOfParallelism
             };
 
             var allSlns = new ConcurrentBag<string>();

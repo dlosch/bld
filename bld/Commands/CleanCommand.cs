@@ -58,7 +58,6 @@ internal sealed class CleanCommand : BaseCommand {
         Add(_vsToolsPath);
         Add(_noResolveVsToolsPath);
 
-        Add(_parallelOption);
         Add(_concurrencyOption);
 
         Add(_deleteOption);
@@ -80,7 +79,6 @@ internal sealed class CleanCommand : BaseCommand {
             VSToolsPath = parseResult.GetValue(_vsToolsPath),
             NoResolveVSToolsPath = parseResult.GetValue(_noResolveVsToolsPath),
             ConfirmLevel = parseResult.GetValue(_confirmLevelOption),
-            Parallel = parseResult.GetValue(_parallelOption),
             MaxDegreeOfParallelism = parseResult.GetValue(_concurrencyOption),
         };
 

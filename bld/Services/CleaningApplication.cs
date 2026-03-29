@@ -44,7 +44,7 @@ internal class CleaningApplication(IConsoleOutput _console, Func<IConsoleOutput,
         var stopwatch = Stopwatch.StartNew();
 
         var parallelOptions = new ParallelOptions {
-            MaxDegreeOfParallelism = options.Parallel ? options.MaxDegreeOfParallelism : 1
+            MaxDegreeOfParallelism = options.MaxDegreeOfParallelism
         };
 
         try {

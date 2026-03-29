@@ -45,7 +45,7 @@ internal class OutdatedService {
         var allPackageReferences = new ConcurrentDictionary<string, PackageInfoContainer>(StringComparer.OrdinalIgnoreCase);
 
         var parallelOptions = new ParallelOptions {
-            MaxDegreeOfParallelism = _options.Parallel ? _options.MaxDegreeOfParallelism : 1
+            MaxDegreeOfParallelism = _options.MaxDegreeOfParallelism
         };
 
         try {

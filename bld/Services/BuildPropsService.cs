@@ -68,7 +68,7 @@ internal class BuildPropsService {
         var globalProperties = BuildGlobalProperties(_options);
 
         var parallelOptions = new ParallelOptions {
-            MaxDegreeOfParallelism = _options.Parallel ? _options.MaxDegreeOfParallelism : 1,
+            MaxDegreeOfParallelism = _options.MaxDegreeOfParallelism,
             CancellationToken = cancellationToken
         };
         var filterSet = filterProperties is { Length: > 0 }

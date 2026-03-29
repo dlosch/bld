@@ -22,7 +22,6 @@ internal record CleaningOptions {
     public bool NoResolveVSToolsPath { get; internal set; } = false;
     public ConfirmLevel? ConfirmLevel { get; internal set; }
 
-    public bool Parallel { get; init; } = true;
     public int MaxDegreeOfParallelism { get; init; } = Environment.ProcessorCount >> 1;
     public bool MarkdownOutput { get; init; } = false;
 

@@ -73,13 +73,8 @@ internal abstract class BaseCommand : Command {
     };
 
 
-    protected readonly Option<bool> _parallelOption = new Option<bool>("--parallel") {
-        Description = "Use parallel processing for project evaluation.",
-        DefaultValueFactory = _ => true
-    };
-
     protected readonly Option<int> _concurrencyOption = new Option<int>("--concurrency") {
-        Description = "Degree of parallelism for project evaluation.",
+        Description = "Degree of parallelism for project evaluation. Use 1 for sequential processing.",
         DefaultValueFactory = _ => Environment.ProcessorCount >> 1
     };
 

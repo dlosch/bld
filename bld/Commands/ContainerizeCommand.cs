@@ -32,7 +32,6 @@ internal sealed class ContainerizeCommand : BaseCommand {
         Add(_allOption);
         Add(_vsToolsPath);
         Add(_noResolveVsToolsPath);
-        Add(_parallelOption);
         Add(_concurrencyOption);
         Add(_rootArgument);
     }

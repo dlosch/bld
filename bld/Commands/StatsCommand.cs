@@ -35,7 +35,6 @@ internal sealed class StatsCommand : BaseCommand {
         Add(_vsToolsPath);
         Add(_noResolveVsToolsPath);
 
-        Add(_parallelOption);
         Add(_concurrencyOption);
 
         Add(_rootArgument);
@@ -51,7 +50,6 @@ internal sealed class StatsCommand : BaseCommand {
             Depth = parseResult.GetValue(_depthOption),
             VSToolsPath = parseResult.GetValue(_vsToolsPath),
             NoResolveVSToolsPath = parseResult.GetValue(_noResolveVsToolsPath),
-            Parallel = parseResult.GetValue(_parallelOption),
             MaxDegreeOfParallelism = parseResult.GetValue(_concurrencyOption),
             MarkdownOutput = parseResult.GetValue(_markdownOption),
         };
