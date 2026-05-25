@@ -75,6 +75,10 @@ internal class SpectreConsoleOutput : IConsoleOutput {
         return AnsiConsole.Prompt(prompt);
     }
 
+    public List<T> MultiPrompt<T>(MultiSelectionPrompt<T> prompt) where T : notnull {
+        return AnsiConsole.Prompt(prompt);
+    }
+
     public void StartProgress(string description, Action<ProgressContext> action) {
         AnsiConsole.Progress()
             .Start(ctx => action(ctx));

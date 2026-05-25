@@ -1,6 +1,5 @@
 using bld.Infrastructure;
 using bld.Commands;
-using Spectre.Console;
 using System.Reflection;
 
 namespace bld.Tests;
@@ -8,36 +7,13 @@ namespace bld.Tests;
 /// <summary>
 /// Tests to validate that beta commands have proper dry-run/safe behavior.
 /// All commands that modify files should require explicit --apply or --delete flags.
-/// 
+///
 /// Note: These tests use reflection to verify that commands have the required options.
 /// While reflection-based tests are more tightly coupled to implementation, they ensure
 /// that the safety mechanisms (--apply, --delete flags) exist and are properly configured.
 /// This is important for publishing quality assurance.
 /// </summary>
 public class CommandSafetyTests {
-    private class TestConsole : IConsoleOutput {
-        public List<string> LineMessages { get; } = new();
-        public List<string> InfoMessages { get; } = new();
-        public List<string> WarningMessages { get; } = new();
-        public List<string> ErrorMessages { get; } = new();
-
-        public void WriteLine(string message) => LineMessages.Add(message);
-        public void WriteInfo(string message) => InfoMessages.Add(message);
-        public void WriteWarning(string message) => WarningMessages.Add(message);
-        public void WriteError(string message, Exception? exception = default) => ErrorMessages.Add(message);
-        public void WriteDebug(string message) { }
-        public void WriteVerbose(string message) { }
-        public void WriteTable(Table table) { }
-        public void WriteRule(string title) { }
-        public bool Confirm(string message, bool defaultValue = false) => defaultValue;
-        public T Prompt<T>(SelectionPrompt<T> prompt) where T : notnull => default!;
-        public void StartProgress(string description, Action<ProgressContext> action) { }
-        public Task StartProgressAsync(string description, Func<ProgressContext, Task> action) => Task.CompletedTask;
-        public Task StartStatusAsync(string description, Func<StatusContext, Task> action) => Task.CompletedTask;
-        public void WriteException(Exception exception) { }
-        public void WriteOutput(string caption, string? content = default) { }
-        public void WriteHeader(string caption, string? additionaltext = default) { }
-    }
 
     #region TFM Command Safety
 

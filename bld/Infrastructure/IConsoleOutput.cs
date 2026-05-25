@@ -29,6 +29,7 @@ internal interface IConsoleOutput {
 
     bool Confirm(string message, bool defaultValue = false);
     T Prompt<T>(SelectionPrompt<T> prompt) where T : notnull;
+    List<T> MultiPrompt<T>(MultiSelectionPrompt<T> prompt) where T : notnull;
 
     void StartProgress(string description, Action<ProgressContext> action);
     Task StartProgressAsync(string description, Func<ProgressContext, Task> action);

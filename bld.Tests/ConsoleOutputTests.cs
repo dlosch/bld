@@ -1,7 +1,6 @@
 using bld.Infrastructure;
 using bld.Services;
 using bld.Models;
-using Spectre.Console;
 
 namespace bld.Tests;
 
@@ -9,26 +8,6 @@ namespace bld.Tests;
 /// Tests for console output behavior and logging consistency.
 /// </summary>
 public class ConsoleOutputTests {
-    private class RecordingConsole : IConsoleOutput {
-        public List<(string Level, string Message)> Messages { get; } = new();
-
-        public void WriteLine(string message) => Messages.Add(("Line", message));
-        public void WriteInfo(string message) => Messages.Add(("Info", message));
-        public void WriteWarning(string message) => Messages.Add(("Warning", message));
-        public void WriteError(string message, Exception? exception = default) => Messages.Add(("Error", message));
-        public void WriteDebug(string message) => Messages.Add(("Debug", message));
-        public void WriteVerbose(string message) => Messages.Add(("Verbose", message));
-        public void WriteTable(Table table) { }
-        public void WriteRule(string title) => Messages.Add(("Rule", title));
-        public bool Confirm(string message, bool defaultValue = false) => defaultValue;
-        public T Prompt<T>(SelectionPrompt<T> prompt) where T : notnull => default!;
-        public void StartProgress(string description, Action<ProgressContext> action) { }
-        public Task StartProgressAsync(string description, Func<ProgressContext, Task> action) => Task.CompletedTask;
-        public Task StartStatusAsync(string description, Func<StatusContext, Task> action) => Task.CompletedTask;
-        public void WriteException(Exception exception) => Messages.Add(("Exception", exception.Message));
-        public void WriteOutput(string caption, string? content = default) => Messages.Add(("Output", caption));
-        public void WriteHeader(string caption, string? additionaltext = default) => Messages.Add(("Header", caption));
-    }
 
     [Fact]
     public void SpectreConsoleOutput_RespectsLogLevel_Info() {
@@ -65,7 +44,7 @@ public class ConsoleOutputTests {
 
     [Fact]
     public void RecordingConsole_CapturesAllMessageTypes() {
-        var console = new RecordingConsole();
+        var console = new TestConsole();
 
         console.WriteInfo("info message");
         console.WriteWarning("warning message");
@@ -83,7 +62,7 @@ public class ConsoleOutputTests {
 
     [Fact]
     public void ErrorSink_AccumulatesErrors() {
-        var console = new RecordingConsole();
+        var console = new TestConsole();
         var errorSink = new ErrorSink(console);
 
         errorSink.AddError("Test error 1");
