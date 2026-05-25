@@ -24,8 +24,82 @@ internal class OutdatedService {
     internal static IReadOnlyList<string> SelectCompatibleTargetFrameworks(bool skipTfmCheck, PackageInfoContainer packageReferences) =>
         skipTfmCheck ? Array.Empty<string>() : packageReferences.Tfms.ToList();
 
+    internal static bool IsSolutionFile(string path) {
+        var ext = Path.GetExtension(path);
+        return ext.Equals(".sln", StringComparison.OrdinalIgnoreCase)
+            || ext.Equals(".slnx", StringComparison.OrdinalIgnoreCase)
+            || ext.Equals(".slnf", StringComparison.OrdinalIgnoreCase);
+    }
+
+    internal enum ConflictChoice { IncludeDep, SkipPicker, AcceptRisk }
+
+    // Pure helper: given the user's initial acceptance set, iterates until stable resolving
+    // conflicts where an accepted package needs a higher version of a skipped package than what's
+    // currently pinned. Returns the final accepted set (a mutated copy of the input).
+    internal static HashSet<string> ResolveInteractivePicks(
+        IEnumerable<string> initialAccepted,
+        IReadOnlyDictionary<string, (NuGetVersion CurrentMin, NuGetVersion Latest)> outdated,
+        IReadOnlyDictionary<string, PackageVersionResult> metadata,
+        Func<string, NuGetVersion, string, string, NuGetVersion, ConflictChoice> askConflict) {
+
+        var accepted = new HashSet<string>(initialAccepted, StringComparer.OrdinalIgnoreCase);
+
+        bool changed;
+        do {
+            changed = false;
+            foreach (var pickerId in accepted.ToList()) {
+                if (!accepted.Contains(pickerId)) continue; // removed mid-loop
+                if (!outdated.ContainsKey(pickerId)) continue; // caller passed an id we don't track
+                if (!metadata.TryGetValue(pickerId, out var meta) || meta?.Dependencies is null) continue;
+
+                // Union dependencies across all TFM groups, keeping the strictest range per id.
+                // Guard against nulls: NuGet catalog JSON can contain "dependencies": null on a
+                // group, which System.Text.Json deserializes to a null property even with a `= []` default.
+                var depRanges = new Dictionary<string, (string Raw, VersionRange Range)>(StringComparer.OrdinalIgnoreCase);
+                foreach (var dg in meta.Dependencies.Values) {
+                    if (dg?.Dependencies is null) continue;
+                    foreach (var dep in dg.Dependencies) {
+                        if (dep is null || string.IsNullOrEmpty(dep.PackageId) || string.IsNullOrEmpty(dep.Range)) continue;
+                        if (!VersionRange.TryParse(dep.Range, out var range)) continue;
+                        if (depRanges.TryGetValue(dep.PackageId, out var existing)) {
+                            if (range.MinVersion is { } newMin && existing.Range.MinVersion is { } oldMin && newMin > oldMin) {
+                                depRanges[dep.PackageId] = (dep.Range, range);
+                            }
+                        }
+                        else {
+                            depRanges[dep.PackageId] = (dep.Range, range);
+                        }
+                    }
+                }
+
+                foreach (var (depId, dep) in depRanges) {
+                    if (!outdated.TryGetValue(depId, out var depVersions)) continue; // unknown to us
+                    if (accepted.Contains(depId)) continue; // will be updated
+                    if (dep.Range.Satisfies(depVersions.CurrentMin)) continue; // skip is safe
+
+                    var choice = askConflict(pickerId, outdated[pickerId].Latest, depId, dep.Raw, depVersions.CurrentMin);
+                    switch (choice) {
+                        case ConflictChoice.IncludeDep:
+                            accepted.Add(depId);
+                            changed = true;
+                            break;
+                        case ConflictChoice.SkipPicker:
+                            accepted.Remove(pickerId);
+                            changed = true;
+                            break;
+                        case ConflictChoice.AcceptRisk:
+                            break;
+                    }
+                    if (!accepted.Contains(pickerId)) break; // picker dropped — stop checking its other deps
+                }
+            }
+        } while (changed);
+
+        return accepted;
+    }
+
     [MethodImpl(MethodImplOptions.NoInlining)]
-    public async Task<int> CheckOutdatedPackagesAsync(string rootPath, bool updatePackages, bool skipTfmCheck, bool includePrerelease, CancellationToken cancellationToken) {
+    public async Task<int> CheckOutdatedPackagesAsync(string rootPath, bool updatePackages, bool skipTfmCheck, bool includePrerelease, bool listOrphans, bool commentOrphans, bool interactive, CancellationToken cancellationToken) {
         MSBuildService.RegisterMSBuildDefaults(_console, _options);
 
         _console.WriteRule("[bold blue]bld outdated (BETA)[/]");
@@ -44,6 +118,17 @@ internal class OutdatedService {
 
         var allPackageReferences = new ConcurrentDictionary<string, PackageInfoContainer>(StringComparer.OrdinalIgnoreCase);
 
+        // CPM file path -> (PackageId -> Version). Used to detect orphan entries (declared in
+        // Directory.Packages.props but with no PackageReference anywhere in scope).
+        var cpmFileEntries = new ConcurrentDictionary<string, ConcurrentDictionary<string, string?>>(StringComparer.OrdinalIgnoreCase);
+        // Union of TFMs across all in-scope projects, used to constrain orphan version lookups.
+        var allTfms = new ConcurrentDictionary<string, byte>(StringComparer.OrdinalIgnoreCase);
+
+        // True when at least one solution file (.sln/.slnx/.slnf) was discovered. Required to allow
+        // --comment-orphans, because individual project inputs cannot see all consumers of the CPM
+        // file and commenting an entry could break unseen projects.
+        var isSolutionMode = false;
+
         var parallelOptions = new ParallelOptions {
             MaxDegreeOfParallelism = _options.MaxDegreeOfParallelism
         };
@@ -54,6 +139,7 @@ internal class OutdatedService {
             var allSlns = new ConcurrentBag<string>();
             await foreach (var sln in slnScanner.Enumerate(rootPath)) {
                 allSlns.Add(sln);
+                if (IsSolutionFile(sln)) isSolutionMode = true;
             }
 
             var allProjCfgs = new ConcurrentBag<ProjCfg>();
@@ -64,6 +150,24 @@ internal class OutdatedService {
                     }
                 }
             });
+
+            // Walk ProjectReferences transitively so a single csproj input (or a slnx that omits a
+            // referenced project) still picks up packages from projects it depends on.
+            var visitedProjectPaths = new HashSet<string>(allProjCfgs.Select(p => p.Path), StringComparer.OrdinalIgnoreCase);
+            var refQueue = new Queue<string>(visitedProjectPaths);
+            while (refQueue.Count > 0) {
+                var path = refQueue.Dequeue();
+                foreach (var refPath in projParser.GetProjectReferences(path)) {
+                    if (visitedProjectPaths.Add(refPath)) {
+                        refQueue.Enqueue(refPath);
+                        var newCfg = new ProjCfg(new Proj(refPath, null), "Release", null);
+                        if (cache.Add(newCfg)) {
+                            allProjCfgs.Add(newCfg);
+                            _console.WriteDebug($"Discovered ProjectReference target: {refPath}");
+                        }
+                    }
+                }
+            }
 
             await _console.StartStatusAsync($"Analyzing {allProjCfgs.Count} project configurations...", async ctx => {
                 var count = 0;
@@ -78,19 +182,52 @@ internal class OutdatedService {
 
                     var refs = projParser.GetPackageReferences(projCfg);
 
+                    if (refs is not null) {
+                        if (refs.TargetFrameworks is { Length: > 0 }) {
+                            foreach (var tfm in refs.TargetFrameworks) allTfms.TryAdd(tfm, 0);
+                        }
+                        if ((refs.UseCpm ?? false) && refs.PackageVersions is { Count: > 0 }) {
+                            // Attribute each PackageVersion to the actual file where it was declared,
+                            // so split CPM setups (Directory.Packages.props + imported props) report and
+                            // edit the correct file on --apply / --comment-orphans.
+                            var unattributed = 0;
+                            foreach (var (id, entry) in refs.PackageVersions) {
+                                var sourceFile = entry.SourceFile ?? refs.CpmFile;
+                                if (string.IsNullOrEmpty(sourceFile)) {
+                                    unattributed++;
+                                    continue;
+                                }
+                                var dict = cpmFileEntries.GetOrAdd(sourceFile, _ => new ConcurrentDictionary<string, string?>(StringComparer.OrdinalIgnoreCase));
+                                dict[id] = entry.Version;
+                            }
+                            if (unattributed > 0) {
+                                _console.WriteWarning($"{projCfg.Path}: {unattributed} PackageVersion entries could not be attributed to a source file and will be skipped for orphan detection.");
+                            }
+                        }
+                    }
+
                     if (refs?.PackageReferences is null || !refs.PackageReferences.Any()) {
                         _console.WriteDebug($"No references in {projCfg.Path}");
                         return;
                     }
 
-                    var exnm = refs.PackageReferences.Select(re => new PackageInfo {
-                        Id = re.Key,
-                        FromProps = refs.UseCpm ?? false,
-                        TargetFramework = refs.TargetFramework,
-                        TargetFrameworks = refs.TargetFrameworks,
-                        ProjectPath = refs.Proj.Path,
-                        PropsPath = refs.CpmFile,
-                        Item = re.Value
+                    var exnm = refs.PackageReferences.Select(re => {
+                        // Point each PackageReference at the actual file that declares its PackageVersion,
+                        // not just the project's primary CPM file. Falls back to CpmFile when no entry is
+                        // tracked (e.g., VersionOverride-only refs).
+                        string? propsPath = refs.CpmFile;
+                        if (refs.PackageVersions is not null && refs.PackageVersions.TryGetValue(re.Key, out var entry)) {
+                            propsPath = entry.SourceFile ?? refs.CpmFile;
+                        }
+                        return new PackageInfo {
+                            Id = re.Key,
+                            FromProps = refs.UseCpm ?? false,
+                            TargetFramework = refs.TargetFramework,
+                            TargetFrameworks = refs.TargetFrameworks,
+                            ProjectPath = refs.Proj.Path,
+                            PropsPath = propsPath,
+                            Item = re.Value
+                        };
                     });
 
                     var bad = exnm.Where(e => string.IsNullOrEmpty(e.Version)).ToList();
@@ -116,6 +253,9 @@ internal class OutdatedService {
 
         var latestPerPackage = new Dictionary<string, NuGetVersion>(StringComparer.OrdinalIgnoreCase);
         var outdatedPerPackage = new ConcurrentDictionary<string, (NuGetVersion CurrentMin, NuGetVersion Latest)>(StringComparer.OrdinalIgnoreCase);
+        // NuGet metadata (with dependency manifest) cached per outdated package so the interactive
+        // mode can detect transitive conflicts without re-querying NuGet.
+        var packageMetadata = new ConcurrentDictionary<string, PackageVersionResult>(StringComparer.OrdinalIgnoreCase);
 
         var options = new NugetMetadataOptions { MaxParallelRequests = parallelOptions.MaxDegreeOfParallelism /* configure */ };
         using var client = NugetMetadataService.CreateHttpClient(options);
@@ -139,12 +279,16 @@ internal class OutdatedService {
                 return;
             }
 
-            var currentMin = packageReference.Value
-                .Select(u => NuGetVersion.TryParse(u.Version, out var v) ? v : null)
-                .Where(v => v is not null)!
-                .Min()!;
-
             try {
+                var parsedVersions = packageReference.Value
+                    .Select(u => NuGetVersion.TryParse(u.Version, out var v) ? v : null)
+                    .Where(v => v is not null)
+                    .ToList();
+                if (parsedVersions.Count == 0) {
+                    _console.WriteWarning($"No parseable versions found for {packageReference.Key}; skipping.");
+                    return;
+                }
+                var currentMin = parsedVersions.Min()!;
                 var targetVer = default(string?);
                 if (request.CompatibleTargetFrameworks is { } && request.CompatibleTargetFrameworks.Count > 1) {
                     foreach (var item in request.CompatibleTargetFrameworksTyped) {
@@ -194,13 +338,105 @@ internal class OutdatedService {
                         return (minCurrent, maxLatest);
                     }
                 );
+                packageMetadata[packageReference.Key] = result;
             }
             catch (Exception xcptn) {
                 _console.WriteWarning($"Failed to parse version for {packageReference.Key}: {packageReference.Value.Tfm} {string.Join(',', result?.TargetFrameworkVersions?.Select(x => x.Key.GetShortFolderName()) ?? Array.Empty<string>())} {xcptn.FormatMessage()}");
             }
         });
 
-        if (outdatedPerPackage.Count == 0) {
+        // Orphan CPM entries: PackageVersion items declared in a Directory.Packages.props but with
+        // no matching PackageReference anywhere in scope. Detection is opt-in via --orphaned (list
+        // only) or --comment-orphans (comment them out on --apply, sln/slnx only — see the apply
+        // step below). The map is keyed by cpm file -> packageId -> (current, latest).
+        var orphansToComment = new ConcurrentDictionary<string, ConcurrentDictionary<string, (string current, string latest)>>(StringComparer.OrdinalIgnoreCase);
+        if (commentOrphans && !isSolutionMode) {
+            _console.WriteWarning("--comment-orphans requested but input is not a solution (.sln/.slnx/.slnf). Orphans will only be listed, not commented out.");
+        }
+        var detectOrphans = listOrphans || commentOrphans;
+        if (detectOrphans) {
+            var orphanCandidates = new List<(string CpmFile, string PackageId, string? CurrentVersion)>();
+            foreach (var (cpmFile, entries) in cpmFileEntries) {
+                foreach (var (id, version) in entries) {
+                    if (!allPackageReferences.ContainsKey(id)) {
+                        orphanCandidates.Add((cpmFile, id, version));
+                    }
+                }
+            }
+
+            if (orphanCandidates.Count > 0) {
+                var tfmList = skipTfmCheck ? Array.Empty<string>() : allTfms.Keys.ToArray();
+                await Parallel.ForEachAsync(orphanCandidates, parallelOptions, async (orphan, ct) => {
+                    var request = new PackageVersionRequest {
+                        PackageId = orphan.PackageId,
+                        AllowPrerelease = includePrerelease,
+                        CompatibleTargetFrameworks = tfmList
+                    };
+                    var result = await NugetMetadataService.GetLatestVersionWithFrameworkCheckAsync(client, options, _console, request);
+                    if (result?.TargetFrameworkVersions is null || result.TargetFrameworkVersions.Count == 0) {
+                        _console.WriteDebug($"No NuGet metadata for orphan {orphan.PackageId} in {orphan.CpmFile}");
+                        return;
+                    }
+                    var latestStr = result.TargetFrameworkVersions.Values.First();
+                    if (!NuGetVersion.TryParse(latestStr, out var latestVer)) return;
+                    if (string.IsNullOrEmpty(orphan.CurrentVersion) || !NuGetVersion.TryParse(orphan.CurrentVersion, out var currentVer)) {
+                        return;
+                    }
+                    if (latestVer > currentVer) {
+                        var dict = orphansToComment.GetOrAdd(orphan.CpmFile, _ => new ConcurrentDictionary<string, (string, string)>(StringComparer.OrdinalIgnoreCase));
+                        dict[orphan.PackageId] = (currentVer.ToString(), latestVer.ToString());
+                    }
+                });
+            }
+        }
+
+        var willCommentOrphans = commentOrphans && isSolutionMode;
+
+        if (interactive && outdatedPerPackage.Count > 0) {
+            _console.WriteRule("[bold yellow]Interactive update selection[/]");
+
+            var sortedIds = outdatedPerPackage.Keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase).ToArray();
+            var maxIdWidth = sortedIds.Max(id => id.Length);
+            var prompt = new MultiSelectionPrompt<string>()
+                .Title($"Select packages to update ({sortedIds.Length} outdated, all pre-selected):")
+                .PageSize(Math.Min(20, Math.Max(5, sortedIds.Length)))
+                .MoreChoicesText("[grey](move up/down to see more)[/]")
+                .InstructionsText("[grey](press [blue]<space>[/] to toggle, [green]<enter>[/] to confirm)[/]")
+                .UseConverter(id => {
+                    var v = outdatedPerPackage[id];
+                    return $"{id.PadRight(maxIdWidth)}  {v.CurrentMin} -> {v.Latest}";
+                });
+
+            foreach (var id in sortedIds) {
+                prompt.AddChoice(id);
+                prompt.Select(id);
+            }
+
+            var initial = _console.MultiPrompt(prompt);
+
+            var picks = ResolveInteractivePicks(
+                initial,
+                outdatedPerPackage,
+                packageMetadata,
+                (pickerId, pickerLatest, depId, depRange, depCurrent) => {
+                    _console.WriteWarning(
+                        $"{pickerId} {pickerLatest} requires {depId} {depRange}, but {depId} was skipped at {depCurrent}.");
+                    if (_console.Confirm($"  Include {depId} update too?", defaultValue: true)) return ConflictChoice.IncludeDep;
+                    if (_console.Confirm($"  Skip {pickerId} as well?", defaultValue: false)) return ConflictChoice.SkipPicker;
+                    return ConflictChoice.AcceptRisk;
+                });
+
+            var dropped = 0;
+            foreach (var id in outdatedPerPackage.Keys.ToList()) {
+                if (!picks.Contains(id)) {
+                    outdatedPerPackage.TryRemove(id, out _);
+                    dropped++;
+                }
+            }
+            _console.WriteInfo($"Interactive selection: {picks.Count} package(s) selected, {dropped} skipped.");
+        }
+
+        if (outdatedPerPackage.Count == 0 && orphansToComment.IsEmpty) {
             _console.WriteLine("All packages are up to date!");
             stopwatch.Stop();
             _console.WriteInfo($"Total elapsed time: {stopwatch.Elapsed}");
@@ -209,14 +445,18 @@ internal class OutdatedService {
         }
 
         int maxMajorLength = outdatedPerPackage.Values
-            .SelectMany(v => new[] { 
-                v.CurrentMin?.Major.ToString().Length ?? 0, 
-                v.Latest?.Major.ToString().Length ?? 0 
+            .SelectMany(v => new[] {
+                v.CurrentMin?.Major.ToString().Length ?? 0,
+                v.Latest?.Major.ToString().Length ?? 0
             })
+            .Concat(orphansToComment.Values.SelectMany(d => d.Values).SelectMany(v => new[] {
+                NuGetVersion.TryParse(v.current, out var c) ? c.Major.ToString().Length : 0,
+                NuGetVersion.TryParse(v.latest, out var l) ? l.Major.ToString().Length : 0
+            }))
             .DefaultIfEmpty(0)
             .Max();
 
-        {
+        if (outdatedPerPackage.Count > 0) {
             _console.WriteLine($"\nFound {outdatedPerPackage.Count} packages with available updates:");
             if (_options.MarkdownOutput) {
                 var rows = outdatedPerPackage
@@ -244,6 +484,16 @@ internal class OutdatedService {
                 }
                 _console.WriteTable(table);
             }
+        }
+
+        if (!orphansToComment.IsEmpty) {
+            var totalOrphans = orphansToComment.Values.Sum(d => d.Count);
+            var actionHint = willCommentOrphans
+                ? "These will be commented out on --apply to prevent stale pins from breaking restore."
+                : commentOrphans
+                    ? "Listing only — --comment-orphans was set but requires a solution input to comment out."
+                    : "Listing only — pass --comment-orphans (with a solution input) to comment them out on --apply.";
+            _console.WriteLine($"\nFound {totalOrphans} orphan PackageVersion entry(ies) in Directory.Packages.props with no matching PackageReference and a newer version on NuGet. {actionHint}");
         }
 
         // Prepare batch updates: props file -> (package -> version) and project -> (package -> version)
@@ -291,7 +541,7 @@ internal class OutdatedService {
         }
 
         {
-           
+
             foreach (var kvp in propsUpdates.OrderBy(kvp => kvp.Key)) {
                 if (!kvp.Value.Any()) continue;
 
@@ -318,6 +568,42 @@ internal class OutdatedService {
                             Markup.Escape(item.Key ?? ""),
                             FormatVersion(item.Value.current, maxMajorLength),
                             GetFormattedVersion(item.Value.current, item.Value.target, maxMajorLength)
+                        );
+                    }
+
+                    _console.WriteTable(table);
+                }
+            }
+
+            foreach (var kvp in orphansToComment.OrderBy(kvp => kvp.Key)) {
+                if (kvp.Value.IsEmpty) continue;
+
+                var headerDescription = willCommentOrphans
+                    ? "Orphan PackageVersion entries (no PackageReference uses them). Commented out on --apply."
+                    : "Orphan PackageVersion entries (no PackageReference uses them). Report only.";
+                _console.WriteHeader($"{kvp.Key}", headerDescription);
+                if (_options.MarkdownOutput) {
+                    var rows = kvp.Value
+                        .OrderBy(kvp2 => kvp2.Key)
+                        .Select(item => (IReadOnlyList<string?>)new[] {
+                            item.Key,
+                            item.Value.current,
+                            item.Value.latest
+                        });
+
+                    MarkdownTableFormatter.Write(_console, "CPM orphan entries (markdown)", new[] { "Package", "Current", "Latest" }, rows);
+                }
+                else {
+                    var table = new Table().Border(TableBorder.Rounded);
+                    table.AddColumn(new TableColumn("Package").LeftAligned());
+                    table.AddColumn(new TableColumn("current").LeftAligned());
+                    table.AddColumn(new TableColumn("latest").LeftAligned());
+
+                    foreach (var item in kvp.Value.OrderBy(kvp2 => kvp2.Key)) {
+                        table.AddRow(
+                            Markup.Escape(item.Key ?? ""),
+                            FormatVersion(item.Value.current, maxMajorLength),
+                            GetFormattedVersion(item.Value.current, item.Value.latest, maxMajorLength)
                         );
                     }
 
@@ -373,10 +659,26 @@ internal class OutdatedService {
         if (updatePackages) {
             _console.WriteInfo("\nUpdating packages to latest versions...");
 
-            // Update all props files in one pass per file
-            foreach (var (propsPath, updates) in propsUpdates) {
-                await UpdatePropsFileAsync(propsPath, updates, cancellationToken);
-                _console.WriteLine($"Updated {updates.Count} package(s) in {propsPath}");
+            // Build the set of all CPM files needing changes (updates and/or orphan comments).
+            var cpmPaths = new HashSet<string>(propsUpdates.Keys, StringComparer.OrdinalIgnoreCase);
+            if (willCommentOrphans) {
+                foreach (var path in orphansToComment.Keys) cpmPaths.Add(path);
+            }
+
+            foreach (var propsPath in cpmPaths) {
+                var updates = propsUpdates.TryGetValue(propsPath, out var u)
+                    ? u
+                    : (IReadOnlyDictionary<string, (string target, string? current)>)new Dictionary<string, (string, string?)>();
+                var commentOut = (willCommentOrphans && orphansToComment.TryGetValue(propsPath, out var c))
+                    ? (IReadOnlyCollection<string>)c.Keys.ToArray()
+                    : Array.Empty<string>();
+                await UpdatePropsFileAsync(propsPath, updates, commentOut, cancellationToken);
+                if (commentOut.Count > 0) {
+                    _console.WriteLine($"Updated {updates.Count} package(s), commented out {commentOut.Count} orphan(s) in {propsPath}");
+                }
+                else {
+                    _console.WriteLine($"Updated {updates.Count} package(s) in {propsPath}");
+                }
             }
 
             // Update project files
@@ -398,17 +700,35 @@ internal class OutdatedService {
         return 0;
     }
 
-    private async Task UpdatePropsFileAsync(string propsPath, IReadOnlyDictionary<string, (string target, string? current)> updates, CancellationToken cancellationToken) {
+    internal async Task UpdatePropsFileAsync(
+        string propsPath,
+        IReadOnlyDictionary<string, (string target, string? current)> updates,
+        IReadOnlyCollection<string> commentOut,
+        CancellationToken cancellationToken) {
         try {
             XDocument doc;
             using (var readStream = File.OpenRead(propsPath)) {
                 doc = await XDocument.LoadAsync(readStream, LoadOptions.PreserveWhitespace, cancellationToken);
             }
 
-            var packageVersionElements = doc.Descendants("PackageVersion");
+            var commentSet = commentOut is HashSet<string> hs && hs.Comparer == StringComparer.OrdinalIgnoreCase
+                ? hs
+                : new HashSet<string>(commentOut, StringComparer.OrdinalIgnoreCase);
+
+            // Materialize to a list because we mutate the tree (ReplaceWith on comment-outs).
+            var packageVersionElements = doc.Descendants("PackageVersion").ToList();
             foreach (var element in packageVersionElements) {
                 var include = element.Attribute("Include")?.Value;
                 if (include is null) continue;
+
+                if (commentSet.Contains(include)) {
+                    var serialized = element.ToString(SaveOptions.DisableFormatting);
+                    // "--" is illegal inside XML comments; pad it so the resulting comment parses.
+                    var body = " " + serialized.Replace("--", "- -") + " ";
+                    element.ReplaceWith(new XComment(body));
+                    continue;
+                }
+
                 if (updates.TryGetValue(include, out var newVersion)) {
                     var versionAttr = element.Attribute("Version");
                     if (versionAttr != null) versionAttr.Value = newVersion.target;

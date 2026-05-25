@@ -10,13 +10,15 @@ internal record class Pkg(string Id, string? Version, string? VersionOverride = 
     public string EffectiveVersion => VersionOverride ?? Version ?? CpmVersion ?? string.Empty;
 };
 
+internal record class PackageVersionEntry(string? Version, string? SourceFile);
+
 internal record class ProjectPackageReferenceInfo(
         ProjCfg Proj,
         string[] TargetFrameworks,
         bool? UseCpm,
         string? CpmFile,
         Dictionary<string, Pkg> PackageReferences,
-        Dictionary<string, string?>? PackageVersions) {
+        Dictionary<string, PackageVersionEntry>? PackageVersions) {
     public string TargetFramework => TargetFrameworks.First();
 }
 internal record class ProjectPackage(string PackageId, string? Version);
@@ -70,22 +72,48 @@ internal sealed class ProjParser(IConsoleOutput Output, ErrorSink ErrorSink, Cle
                 project = new Project(projectPath, properties, null, projectCollection);
                 var usesCpm = SafeBool(project.GetPropertyValue("ManagePackageVersionsCentrally"));
 
-                var versions = usesCpm ?? false ?
-                    project.GetItems("PackageVersion")?
+                var packageVersionItems = usesCpm ?? false
+                    ? project.GetItems("PackageVersion")
+                    : null;
+
+                var versions = packageVersionItems is null
+                    ? null
+                    : packageVersionItems
                         .DistinctBy(pr => pr.Xml.Include, StringComparer.OrdinalIgnoreCase)
                         .ToDictionary(
                                 pr => pr.Xml.Include
-                                , pr => pr.Metadata?.FirstOrDefault(meta => meta.Name == "Version")?.EvaluatedValue
-                                , StringComparer.OrdinalIgnoreCase)
-                    : default;
+                                , pr => new PackageVersionEntry(
+                                    pr.Metadata?.FirstOrDefault(meta => meta.Name == "Version")?.EvaluatedValue,
+                                    pr.Xml?.ContainingProject?.FullPath)
+                                , StringComparer.OrdinalIgnoreCase);
+
+                // Determine the CPM file path. Prefer the actual file that declares the
+                // PackageVersion items (works for non-standard CPM filenames or files imported
+                // outside the standard auto-import chain). Fall back to the "Directory.Packages.props"
+                // import lookup, then to null when no source can be determined.
+                string? cpmFile = null;
+                if (usesCpm ?? false) {
+                    if (packageVersionItems is not null) {
+                        cpmFile = packageVersionItems
+                            .Select(pv => pv.Xml?.ContainingProject?.FullPath)
+                            .Where(p => !string.IsNullOrEmpty(p))
+                            .GroupBy(p => p, StringComparer.OrdinalIgnoreCase)
+                            .OrderByDescending(g => g.Count())
+                            .Select(g => g.Key)
+                            .FirstOrDefault();
+                    }
+                    if (string.IsNullOrEmpty(cpmFile)) {
+                        cpmFile = project.Imports
+                            .FirstOrDefault(imp => string.Equals(Path.GetFileName(imp.ImportedProject?.FullPath), "Directory.Packages.props", StringComparison.OrdinalIgnoreCase))
+                            .ImportedProject?.FullPath;
+                    }
+                }
 
                 var retVal = new ProjectPackageReferenceInfo(proj,
                     project.TfmOrTfmsSafe(),
                     usesCpm,
-                    (usesCpm ?? false)
-                        ? project.Imports.FirstOrDefault(imp => string.Equals(Path.GetFileName(imp.ImportedProject?.FullPath), "Directory.Packages.props", StringComparison.OrdinalIgnoreCase)).ImportedProject?.FullPath
-                        : default,
-                        // todo this pukes if a single package reference include is included more than once 
+                    cpmFile,
+                        // todo this pukes if a single package reference include is included more than once
                         // dotnet build picks the first not the highest or lowest and warns only
                         project.GetItems("PackageReference")
                                 .DistinctBy(pr => pr.Xml.Include, StringComparer.OrdinalIgnoreCase)
@@ -94,7 +122,7 @@ internal sealed class ProjParser(IConsoleOutput Output, ErrorSink ErrorSink, Cle
                                     new Pkg(pr.Xml.Include
                                         , pr.Metadata?.FirstOrDefault(meta => meta.Name == "Version")?.EvaluatedValue
                                         , pr.Metadata?.FirstOrDefault(meta => meta.Name == "VersionOverride")?.EvaluatedValue
-                                        , versions?.GetValueOrDefault(pr.Xml.Include)
+                                        , versions?.GetValueOrDefault(pr.Xml.Include)?.Version
                                         )
                                     , StringComparer.OrdinalIgnoreCase)
                                 ,
@@ -108,6 +136,26 @@ internal sealed class ProjParser(IConsoleOutput Output, ErrorSink ErrorSink, Cle
                 return default;
             }
 
+        }
+    }
+
+    internal IReadOnlyList<string> GetProjectReferences(string projectPath) {
+        using var projectCollection = new ProjectCollection();
+        try {
+            var project = new Project(projectPath, GlobalProperties, null, projectCollection);
+            var projDir = Path.GetDirectoryName(projectPath) ?? string.Empty;
+            return project.GetItems("ProjectReference")
+                .Select(pr => pr.EvaluatedInclude)
+                .Where(rel => !string.IsNullOrWhiteSpace(rel))
+                .Select(rel => Path.IsPathRooted(rel) ? rel : Path.GetFullPath(Path.Combine(projDir, rel)))
+                .Where(File.Exists)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+        }
+        catch (Exception xcptn) {
+            ErrorSink.AddError($"Failed to evaluate ProjectReferences for {projectPath}.", exception: xcptn);
+            Output.WriteDebug($"{projectPath} could not be parsed for ProjectReferences: {xcptn.FormatMessage()}");
+            return Array.Empty<string>();
         }
     }
 

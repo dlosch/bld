@@ -26,6 +26,7 @@ internal sealed class TestConsole : IConsoleOutput {
     public void WriteRule(string title) { Log("Rule", title); }
     public bool Confirm(string message, bool defaultValue = false) => defaultValue;
     public T Prompt<T>(SelectionPrompt<T> prompt) where T : notnull => default!;
+    public List<T> MultiPrompt<T>(MultiSelectionPrompt<T> prompt) where T : notnull => new();
     public void StartProgress(string description, Action<ProgressContext> action) => action(null!);
     public Task StartProgressAsync(string description, Func<ProgressContext, Task> action) => action(null!);
     public Task StartStatusAsync(string description, Func<StatusContext, Task> action) => action(null!);
