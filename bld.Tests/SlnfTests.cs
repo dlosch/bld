@@ -251,8 +251,13 @@ public class SlnfTests(ITestOutputHelper Output) {
             var projects = new List<string>();
             var enumerable = parser.ParseSolution(slnfPath);
             var enumerator = enumerable.GetAsyncEnumerator();
-            while (enumerator.MoveNextAsync().AsTask().GetAwaiter().GetResult()) {
-                projects.Add(enumerator.Current.Path);
+            try {
+                while (enumerator.MoveNextAsync().AsTask().GetAwaiter().GetResult()) {
+                    projects.Add(enumerator.Current.Path);
+                }
+            }
+            finally {
+                enumerator.DisposeAsync().AsTask().GetAwaiter().GetResult();
             }
 
             Output.WriteLine($"SlnParser yielded {projects.Count} project path(s):");
