@@ -139,15 +139,20 @@ internal sealed class ProjParser(IConsoleOutput Output, ErrorSink ErrorSink, Cle
         }
     }
 
-    internal IReadOnlyList<string> GetProjectReferences(string projectPath) {
+    internal IReadOnlyList<string> GetProjectReferences(string projectPath, string? configuration = null, string? platform = null) {
         using var projectCollection = new ProjectCollection();
         try {
-            var project = new Project(projectPath, GlobalProperties, null, projectCollection);
+            var properties = new Dictionary<string, string>(GlobalProperties);
+            if (!string.IsNullOrEmpty(configuration)) properties["Configuration"] = configuration;
+            if (!string.IsNullOrEmpty(platform)) properties["Platform"] = platform;
+            var project = new Project(projectPath, properties, null, projectCollection);
             var projDir = Path.GetDirectoryName(projectPath) ?? string.Empty;
+            // Path.Combine returns rel unchanged when rooted; GetFullPath normalizes either way
+            // so paths containing '..' dedupe correctly via OrdinalIgnoreCase.
             return project.GetItems("ProjectReference")
                 .Select(pr => pr.EvaluatedInclude)
                 .Where(rel => !string.IsNullOrWhiteSpace(rel))
-                .Select(rel => Path.IsPathRooted(rel) ? rel : Path.GetFullPath(Path.Combine(projDir, rel)))
+                .Select(rel => Path.GetFullPath(Path.Combine(projDir, rel)))
                 .Where(File.Exists)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToArray();

@@ -152,18 +152,20 @@ internal class OutdatedService {
             });
 
             // Walk ProjectReferences transitively so a single csproj input (or a slnx that omits a
-            // referenced project) still picks up packages from projects it depends on.
+            // referenced project) still picks up packages from projects it depends on. Children
+            // inherit Configuration/Platform from the parent so config/platform-conditional
+            // <ProjectReference> items evaluate the same way `dotnet build` would resolve them.
             var visitedProjectPaths = new HashSet<string>(allProjCfgs.Select(p => p.Path), StringComparer.OrdinalIgnoreCase);
-            var refQueue = new Queue<string>(visitedProjectPaths);
+            var refQueue = new Queue<ProjCfg>(allProjCfgs);
             while (refQueue.Count > 0) {
-                var path = refQueue.Dequeue();
-                foreach (var refPath in projParser.GetProjectReferences(path)) {
+                var parent = refQueue.Dequeue();
+                foreach (var refPath in projParser.GetProjectReferences(parent.Path, parent.Configuration, parent.Platform)) {
                     if (visitedProjectPaths.Add(refPath)) {
-                        refQueue.Enqueue(refPath);
-                        var newCfg = new ProjCfg(new Proj(refPath, null), "Release", null);
+                        var newCfg = new ProjCfg(new Proj(refPath, null), parent.Configuration, parent.Platform);
+                        refQueue.Enqueue(newCfg);
                         if (cache.Add(newCfg)) {
                             allProjCfgs.Add(newCfg);
-                            _console.WriteDebug($"Discovered ProjectReference target: {refPath}");
+                            _console.WriteDebug($"Discovered ProjectReference target: {refPath} [{parent.Configuration}|{parent.Platform}]");
                         }
                     }
                 }

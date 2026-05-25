@@ -6,7 +6,7 @@ All notable changes to this project are documented in this file.
 
 ### Changes
 - remove net8.0 target
-- extend `outdated` command: --orhphaned and --interactive
+- extend `outdated` command: --orphaned and --interactive
 - fix System.Text.Json load error by preloading
 
 ## [0.2.32] - 2026-03-29
