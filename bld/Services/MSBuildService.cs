@@ -2,6 +2,7 @@ using bld.Infrastructure;
 using bld.Models;
 using Microsoft.Build.Evaluation;
 using Microsoft.Build.Locator;
+using System.Runtime.CompilerServices;
 
 namespace bld.Services;
 /// <summary>
@@ -16,8 +17,23 @@ internal class MSBuildService : IMSBuildService, IDisposable {
         _console = console;
     }
 
+    // MSBuildLocator.Register* installs an AssemblyLoadContext resolver that maps
+    // assembly loads to the dotnet SDK directory. The SDK ships its own
+    // System.Text.Json (and friends), which can be older than what this app links
+    // against. If S.T.J is first touched *after* the resolver is active, the
+    // resolver wins and we end up with a version mismatch. Force-load the
+    // suspects here so they're already resolved by the normal probe path.
+    // Kept NoInlining so the JIT can't pull these loads into a caller frame that
+    // also references Microsoft.Build.* types.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void PreloadAssembliesBeforeMSBuildLocator() {
+        _ = typeof(System.Text.Json.JsonSerializer).Assembly;
+        _ = typeof(System.IO.Pipelines.PipeReader).Assembly;
+        _ = typeof(System.Text.Encodings.Web.HtmlEncoder).Assembly;
+    }
 
     public static void RegisterMSBuildDefaults(IConsoleOutput? console, CleaningOptions cleaningOptions) {
+        PreloadAssembliesBeforeMSBuildLocator();
         lock (_lockObject) {
             if (!_isRegistered) {
                 try {
