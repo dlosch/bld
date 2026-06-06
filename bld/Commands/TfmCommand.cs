@@ -21,12 +21,18 @@ internal sealed class TfmCommand : BaseCommand {
         DefaultValueFactory = _ => false
     };
 
+    private readonly Option<bool> _updatePackagesOption = new Option<bool>("--update-packages") {
+        Description = "With --apply, also bump PackageReferences to their latest stable version. Note: this is a latest-version bump, not a framework-compatibility check.",
+        DefaultValueFactory = _ => false
+    };
+
     public TfmCommand(IConsoleOutput console) : base("tfm", "Migrate TargetFramework/TargetFrameworks between versions.", console) {
         Add(_rootOption);
         Add(_depthOption);
         Add(_fromOption);
         Add(_toOption);
         Add(_applyOption);
+        Add(_updatePackagesOption);
         Add(_logLevelOption);
         Add(_vsToolsPath);
         Add(_noResolveVsToolsPath);
@@ -58,6 +64,7 @@ internal sealed class TfmCommand : BaseCommand {
         var from = parseResult.GetValue(_fromOption);
         var to = parseResult.GetValue(_toOption);
         var apply = parseResult.GetValue(_applyOption);
+        var updatePackages = parseResult.GetValue(_updatePackagesOption);
 
         // Auto-detect highest SDK version if --to is not specified
         if (string.IsNullOrEmpty(to)) {
@@ -89,7 +96,7 @@ internal sealed class TfmCommand : BaseCommand {
 
         try {
             using var tfmService = new TfmService(Output, options);
-            return await tfmService.MigrateTargetFrameworkAsync(rootPath, fromTfms, to, apply, cancellationToken);
+            return await tfmService.MigrateTargetFrameworkAsync(rootPath, fromTfms, to, apply, updatePackages, cancellationToken);
         }
         catch (Exception ex) {
             Output.WriteError($"Error migrating target frameworks: {ex.FormatMessage()}");

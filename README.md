@@ -26,7 +26,7 @@ dotnet bld
 
 This is especially handy when working with agentic coding tools or large repos where TFMs, CPM, package references, and build outputs can drift.
 
-> Note on NuGet target framework display: the package is built for both `net8.0` and `net10.0` (`<TargetFrameworks>net8.0;net10.0</TargetFrameworks>` in `bld/bld.csproj`). Depending on NuGet UI/client behavior, it may only show one framework even though both tool folders are included in the `.nupkg`.
+> Note on the target framework: the tool targets `net10.0` (`<TargetFramework>net10.0</TargetFramework>` in `bld/bld.csproj`) and sets `<RollForward>Major</RollForward>`, so it also runs on newer runtimes. (Earlier 0.2.x builds multi-targeted `net8.0;net10.0`; `net8.0` support was dropped.)
 
 ## Microsoft.Build & Visual Studio integration
 
@@ -93,6 +93,7 @@ Use `--delete` only after you have reviewed the generated script or statistics.
 | `cpm` | Beta | Convert a solution to Central Package Management. |
 | `outdated` | Beta | Check (and optionally update) NuGet packages to newer versions. |
 | `containerize` | Beta | Discover Dockerfiles and projects using SDK container build properties. |
+| `build-props` | Beta | Trace `Directory.Build.props` files and MSBuild property provenance across projects. |
 
 Commands marked **Beta** may change behavior, arguments, or output formatting.
 
@@ -100,9 +101,11 @@ Commands marked **Beta** may change behavior, arguments, or output formatting.
 
 All commands accept the following shared options unless stated otherwise:
 
-- `--root`, `-r`, or trailing argument — Directory or `.sln` to scan. Defaults to the current working directory.
-- `--depth`, `-d` — Directory recursion depth when `--root` is a folder. Default: `3`.
-- `--log`, `-v`, `--verbosity` — `Debug`, `Verbose`, `Info`, `Warning`, or `Error`. Default: `Info`.
+- `--root`, `-r`, or trailing argument — Directory, `.sln`/`.slnx`/`.slnf`, or project file to scan. Defaults to the current working directory.
+- `--depth`, `-d` — Directory recursion depth when `--root` is a folder. Default: `3` (max `32`).
+- `--log`, `-v`, `--verbosity` — `Debug`, `Verbose`, `Info`, `Warning`, or `Error`. Default: `Warning`.
+- `--concurrency` — Degree of parallelism for project evaluation; use `1` for sequential. Default: `max(1, processorCount / 2)`.
+- `--markdown`, `-md` — Emit markdown table output where supported. Default: `false`.
 - `--vstoolspath`, `-vs` — Explicit `VSToolsPath` for MSBuild evaluation.
 - `--novstoolspath`, `-novs` — Skip automatic `VSToolsPath` resolution.
 
@@ -115,10 +118,12 @@ Purpose: enumerate build output, report what would be deleted, and either emit a
 **Options**
 - `--non-current`, `--noncurrent`, `-nc` — Restrict deletion to target-framework-specific directories *not* listed in the project’s current TFMs. Default: `false`.
 - `--obj`, `-obj` — Include `obj` / `BaseIntermediateOutputPath` directories. Default: `false` (bin-only).
+- `--keep-assets` — When cleaning `obj`, preserve NuGet restore artifacts (`project.assets.json`, etc.) and only delete build-output subdirectories. Default: `false`.
 - `--output-file`, `-o` — Where to write the deletion script (`clean.cmd` or `clean.sh` by default depending on OS).
 - `--delete` — Execute deletions instead of just generating scripts. Default: `false` (dry-run).
-- `--force` — Skip confirmation prompts (requires explicit `--root` to avoid accidental repo-wide deletes).
-- Global options (`--root`, `--depth`, `--log`, `--vstoolspath`, `--novstoolspath`) apply.
+- `--force` — Skip confirmation prompts (requires explicit `--root` to avoid accidental repo-wide deletes). In non-interactive contexts (CI / piped stdin) a missing confirmation is treated as "no" (skip), so `--force` is required to actually delete unattended.
+- `--confirm` — Intended confirmation granularity for `--delete` (`None`, `Sln`, `Project`, `Directory`; default `Directory`). *Note: not yet wired up — currently only `--force` affects prompting.*
+- Global options (`--root`, `--depth`, `--log`, `--concurrency`, `--vstoolspath`, `--novstoolspath`) apply.
 
 **Behavior**
 1. Resolves the root (directory or solution) and recursion depth, then resolves `VSToolsPath` unless `--novstoolspath` is set.
@@ -142,7 +147,8 @@ Purpose: compute what *would* be cleaned and show totals without generating scri
 **Options**
 - `--non-current`, `--noncurrent`, `-nc` — Only report TFM directories that no longer match current project TFMs. Default: `false`.
 - `--obj`, `-obj` — Include `obj` directories in the statistics. Default: `false`.
-- Shares all global options (`--root`, `--depth`, `--log`, `--vstoolspath`, `--novstoolspath`).
+- `--keep-assets` — With `--obj`, preserve NuGet restore artifacts and only count build-output subdirectories. Default: `false`.
+- Shares all global options (`--root`, `--depth`, `--log`, `--concurrency`, `--markdown`, `--vstoolspath`, `--novstoolspath`).
 
 **Behavior**
 1. Uses the same discovery and safety logic as `clean` but never writes files or deletes anything.
@@ -164,8 +170,8 @@ bld stats --root MySolution.sln --non-current
 Helpful when your favorite agent creates your shiny new project but adds a lot of strange nuget package references. Or even your co-worker.
 
 ### tfm
-- What it does: migrates target frameworks (e.g., `net6.0` → `net8.0`) and can update package versions for compatibility.
-- How it works: scans solutions/projects, infers current TFMs, optionally auto-detects target TFM, evaluates compatibility via NuGet, and applies changes when `--apply` is set.
+- What it does: migrates target frameworks (e.g., `net6.0` → `net8.0`). With `--update-packages` it can also bump `PackageReference` versions to the latest stable release.
+- How it works: scans solutions/projects, infers current TFMs, optionally auto-detects target TFM, and rewrites the TFM when `--apply` is set. `--update-packages` is a latest-stable-version bump, not a framework-compatibility check.
 
 Helpful when your favorite agent creates your shiny new project targeting a old version of .NET.
 
@@ -182,18 +188,22 @@ Helpful when your favorite agent creates your shiny new project targeting a old 
 - What it does: finds Dockerfiles and SDK-style projects using container build properties.
 - How it works: scans the repo (or specific root) and reports Dockerfile paths, project names, or both depending on `--list`, `--projects`, or `--all`.
 
+### build-props
+- What it does: shows where MSBuild properties come from across your projects and lists imported `Directory.Build.props` files.
+- How it works: evaluates each project and reports property provenance; `--list` shows just the props-file import tree, `--properties` filters to specific properties, and `--no-overridden` hides shadowed values.
+
 ## Beta Commands
 
 ### nuget (BETA)
 
 - `--whitelist-blacklist-file`, `--wbf` — Path to categorization rules.
-- `--aggregate`, `--agg` — Collapse results across projects. Default: `false`.
+- `--aggregate`, `--agg` — Collapse results across projects (aggregate view). Default: `true`. Pass `--aggregate false` for the per-project view.
 - `--show-projects`, `--sp` — When aggregating, list referencing projects. Default: `true`.
 
 Example:
 
 ```powershell
-bld nuget --root C:\src\MyRepo --aggregate
+bld nuget --root C:\src\MyRepo --aggregate false
 ```
 
 ### tfm (BETA)
@@ -201,6 +211,7 @@ bld nuget --root C:\src\MyRepo --aggregate
 - `--from` — Comma-separated source TFMs (auto-detected when possible).
 - `--to` — Target TFM (auto-detected from installed SDKs when omitted).
 - `--apply` — Persist changes instead of a dry-run.
+- `--update-packages` — With `--apply`, also bump `PackageReference`s to their latest stable version. This is a latest-version bump, not a framework-compatibility check, so it is off by default.
 
 Example:
 
@@ -226,6 +237,9 @@ bld cpm --root MySolution.sln --apply --overwrite
 - `--apply` — Update packages in-place. Default: dry-run/report only.
 - `--skip-tfm-check` — Ignore target framework compatibility checks.
 - `--prerelease`, `--pre` — Consider prerelease package versions.
+- `--orphaned` — List `PackageVersion` entries in `Directory.Packages.props` that have no matching `PackageReference` and have a newer version on NuGet. Report-only; works for project or solution input.
+- `--comment-orphans` — With `--apply`, comment out outdated orphan entries. Only honored for solution input (`.sln`/`.slnx`/`.slnf`), since a single project can't see all CPM consumers. Implies `--orphaned`.
+- `--interactive`, `-i` — Prompt yes/no per outdated package before applying; surfaces dependency version conflicts when you skip a needed package. Implies `--apply`.
 
 Example:
 
@@ -243,6 +257,18 @@ Example:
 
 ```powershell
 bld containerize --root C:\src\MyRepo --all --depth 5
+```
+
+### build-props (BETA)
+
+- `--list`, `-l` — Only list imported `Directory.Build.props` files as a tree, without property contents. Default: `false`.
+- `--properties` — Comma-separated properties to trace (e.g. `TargetFramework,Nullable`); when set, only these are shown.
+- `--no-overridden` — Hide properties that originate from `Directory.Build.props` but are overridden later in evaluation. Default: `false`.
+
+Example:
+
+```powershell
+bld build-props --root C:\src\MyRepo --properties TargetFramework,LangVersion
 ```
 
 ## Typical Workflows

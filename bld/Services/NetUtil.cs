@@ -1,3 +1,5 @@
+using System.Text.RegularExpressions;
+
 namespace bld.Services;
 
 /// <summary>
@@ -21,10 +23,21 @@ internal class NetUtil {
     }
 
     internal bool IsTfmName(string name, StringComparison defaultComparison) {
-        if (defaultComparison == StringComparison.OrdinalIgnoreCase)
-            return _validTfms.Contains(name);
-        return ValidTfms.Any(x => 0 == string.Compare(name, x, defaultComparison));
+        if (string.IsNullOrEmpty(name)) return false;
+
+        // Exact match against the known monikers (netstandard*, netcoreapp*, legacy net4x, net11 = FW 1.1, net5.0..net10.0).
+        var exact = defaultComparison == StringComparison.OrdinalIgnoreCase
+            ? _validTfms.Contains(name)
+            : ValidTfms.Any(x => 0 == string.Compare(name, x, defaultComparison));
+        if (exact) return true;
+
+        // Recognize platform/RID-qualified TFMs (net8.0-windows, net8.0-windows10.0.19041.0, net10.0-android, ...)
+        // by their base TFM, and future .NET monikers (net11.0, net12.0, ...) not present in the static list.
+        var baseName = name.Split('-', 2)[0];
+        return _modernDotNetTfm.IsMatch(baseName);
     }
+
+    private static readonly Regex _modernDotNetTfm = new(@"^net\d+\.\d+$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private readonly string[] ValidTfms = new string[] {
         "netcoreapp1.0",

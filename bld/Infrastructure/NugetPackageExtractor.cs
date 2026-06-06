@@ -21,14 +21,6 @@ internal sealed class NugetPackageExtractor {
     }
 
     /// <summary>
-    /// Extracts NuGet package references from a project
-    /// </summary>
-    public IReadOnlyList<NugetPackageInfo> ExtractPackageReferences(ProjCfg projCfg, Dictionary<string, string> globalProperties) {
-        var (packages, _) = AnalyzeProjectInternal(projCfg, globalProperties);
-        return packages.AsReadOnly();
-    }
-
-    /// <summary>
     /// Loads central package versions from Directory.Packages.props
     /// </summary>
     private Dictionary<string, string> LoadCentralPackageVersions(string projectPath, ProjectCollection projectCollection, Dictionary<string, string> properties) {

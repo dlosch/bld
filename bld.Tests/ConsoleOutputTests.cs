@@ -43,6 +43,23 @@ public class ConsoleOutputTests {
     }
 
     [Fact]
+    public void Confirm_NonInteractiveInput_ReturnsDefaultInsteadOfThrowing() {
+        // Only meaningful when stdin is non-interactive (CI / piped) — which is exactly where
+        // `clean --delete` and the batch-overwrite prompt used to crash.
+        if (!Console.IsInputRedirected) {
+            return;
+        }
+
+        var console = new SpectreConsoleOutput(LogLevel.Warning);
+
+        // Regression: AnsiConsole.Confirm throws ("Failed to read input in non-interactive mode")
+        // when stdin is redirected. Confirm must instead return the supplied default so deletion
+        // is skipped (default false) rather than aborting the whole run with a stack trace.
+        Assert.False(console.Confirm("Delete everything?", defaultValue: false));
+        Assert.True(console.Confirm("Keep going?", defaultValue: true));
+    }
+
+    [Fact]
     public void RecordingConsole_CapturesAllMessageTypes() {
         var console = new TestConsole();
 

@@ -40,6 +40,4 @@ internal record ProjectProperties {
     public string? ProjectName => this["ProjectName"];
     public string? TargetFramework => this["TargetFramework"];
     public string? TargetFrameworks => this["TargetFrameworks"];
-
-    public static ProjectProperties Empty => new();
 }

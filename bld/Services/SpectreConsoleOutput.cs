@@ -68,6 +68,13 @@ internal class SpectreConsoleOutput : IConsoleOutput {
     }
 
     public bool Confirm(string message, bool defaultValue = false) {
+        // In non-interactive contexts (CI, piped/redirected stdin) AnsiConsole.Confirm throws while
+        // trying to read input. Fall back to the supplied default so callers (e.g. clean --delete,
+        // the batch-file overwrite prompt) skip safely instead of crashing with a stack trace.
+        if (Console.IsInputRedirected || !AnsiConsole.Profile.Capabilities.Interactive) {
+            WriteWarning($"Non-interactive input; assuming '{(defaultValue ? "yes" : "no")}' for prompt: {message}");
+            return defaultValue;
+        }
         return AnsiConsole.Confirm(message, defaultValue);
     }
 

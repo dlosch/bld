@@ -127,10 +127,54 @@ public class NetUtilTests {
     [InlineData("net48", true)]
     [InlineData("net472", true)]
     [InlineData("netcoreapp3.1", true)]
+    [InlineData("net11", true)]             // .NET Framework 1.1 (legacy moniker, no dot)
+    // Platform/RID-qualified TFMs: previously unrecognized, so their build output was never cleaned.
+    [InlineData("net8.0-windows", true)]
+    [InlineData("net8.0-windows10.0.19041.0", true)]
+    [InlineData("net9.0-android", true)]
+    [InlineData("net10.0-ios", true)]
+    // Future .NET monikers not present in the static list.
+    [InlineData("net11.0", true)]
+    [InlineData("net12.0", true)]
+    // Non-TFM directory names must NOT be treated as TFM output folders (would over-mark for deletion).
+    [InlineData("Debug", false)]
+    [InlineData("Release", false)]
+    [InlineData("x64", false)]
+    [InlineData("AnyCPU", false)]
+    [InlineData("publish", false)]
+    [InlineData("net", false)]
     [InlineData("invalid-tfm", false)]
     [InlineData("not-a-tfm", false)]
     public void IsTfmName_ShouldRecognizeValidTfms(string tfm, bool expected) {
         var result = bld.Services.NetUtil.Instance.IsTfmName(tfm, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(expected, result);
+    }
+}
+
+public class GetUpdatedTfmsTests {
+    private static string[] Run(List<string> current, List<string> from, string to, params string[] eol) {
+        using var svc = new bld.Services.TfmService(new TestConsole(), new CleaningOptions());
+        return svc.GetUpdatedTfms(current, from, to, new HashSet<string>(eol, StringComparer.OrdinalIgnoreCase)).ToArray();
+    }
+
+    [Fact]
+    public void ExplicitFrom_ReplacesMatchedTfm_DoesNotAppend() {
+        // Regression: multi-target migration appended (net8.0;net9.0) instead of migrating to net9.0.
+        Assert.Equal(new[] { "net9.0" }, Run(["net8.0"], ["net8.0"], "net9.0"));
+    }
+
+    [Fact]
+    public void ExplicitFrom_ReplacesOnlyMatched_KeepsOthers() {
+        Assert.Equal(new[] { "net9.0", "netstandard2.0" }, Run(["net8.0", "netstandard2.0"], ["net8.0"], "net9.0"));
+    }
+
+    [Fact]
+    public void AutoDetect_EmptyFrom_AppendsTargetWithoutReplacing() {
+        Assert.Equal(new[] { "net8.0", "net9.0" }, Run(["net8.0"], [], "net9.0"));
+    }
+
+    [Fact]
+    public void DropsEolTfm_AndReplacesMatchedSource() {
+        Assert.Equal(new[] { "net9.0" }, Run(["net6.0", "net8.0"], ["net8.0"], "net9.0", "net6.0"));
     }
 }

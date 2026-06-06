@@ -41,21 +41,6 @@ internal sealed class ProjParser(IConsoleOutput Output, ErrorSink ErrorSink, Cle
         return dict;
     }
 
-    internal class Wrapper(ProjectCollection projectCollection, Project project) : IDisposable {
-        public ProjectCollection ProjectCollection { get; } = projectCollection;
-        public Project Project { get; } = project;
-        public void Dispose() {
-            ProjectCollection.UnloadProject(Project);
-            ProjectCollection.Dispose();
-        }
-
-        internal static Wrapper Create(string projectPath, Dictionary<string, string> globalProperties) {
-            var pc = new ProjectCollection();
-            var proj = new Project(projectPath, globalProperties, null, pc);
-            return new Wrapper(pc, proj);
-        }
-    }
-
     internal ProjectPackageReferenceInfo? GetPackageReferences(ProjCfg proj) {
         Output.WriteDebug($"Loading project {proj.Path} [{proj.Configuration}]...");
         string projectPath = proj.Path;

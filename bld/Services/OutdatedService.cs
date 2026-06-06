@@ -708,43 +708,37 @@ internal class OutdatedService {
         IReadOnlyCollection<string> commentOut,
         CancellationToken cancellationToken) {
         try {
-            XDocument doc;
-            using (var readStream = File.OpenRead(propsPath)) {
-                doc = await XDocument.LoadAsync(readStream, LoadOptions.PreserveWhitespace, cancellationToken);
-            }
-
             var commentSet = commentOut is HashSet<string> hs && hs.Comparer == StringComparer.OrdinalIgnoreCase
                 ? hs
                 : new HashSet<string>(commentOut, StringComparer.OrdinalIgnoreCase);
 
-            // Materialize to a list because we mutate the tree (ReplaceWith on comment-outs).
-            var packageVersionElements = doc.Descendants("PackageVersion").ToList();
-            foreach (var element in packageVersionElements) {
-                var include = element.Attribute("Include")?.Value;
-                if (include is null) continue;
+            await XmlProjectFile.EditAsync(propsPath, doc => {
+                var changed = false;
+                // Materialize to a list because we mutate the tree (ReplaceWith on comment-outs).
+                var packageVersionElements = doc.Descendants("PackageVersion").ToList();
+                foreach (var element in packageVersionElements) {
+                    var include = element.Attribute("Include")?.Value;
+                    if (include is null) continue;
 
-                if (commentSet.Contains(include)) {
-                    var serialized = element.ToString(SaveOptions.DisableFormatting);
-                    // "--" is illegal inside XML comments; pad it so the resulting comment parses.
-                    var body = " " + serialized.Replace("--", "- -") + " ";
-                    element.ReplaceWith(new XComment(body));
-                    continue;
+                    if (commentSet.Contains(include)) {
+                        var serialized = element.ToString(SaveOptions.DisableFormatting);
+                        // "--" is illegal inside XML comments; pad it so the resulting comment parses.
+                        var body = " " + serialized.Replace("--", "- -") + " ";
+                        element.ReplaceWith(new XComment(body));
+                        changed = true;
+                        continue;
+                    }
+
+                    if (updates.TryGetValue(include, out var newVersion)) {
+                        var versionAttr = element.Attribute("Version");
+                        if (versionAttr != null && versionAttr.Value != newVersion.target) {
+                            versionAttr.Value = newVersion.target;
+                            changed = true;
+                        }
+                    }
                 }
-
-                if (updates.TryGetValue(include, out var newVersion)) {
-                    var versionAttr = element.Attribute("Version");
-                    if (versionAttr != null) versionAttr.Value = newVersion.target;
-                }
-            }
-
-            using var writeStream = File.Create(propsPath);
-            using var writer = XmlWriter.Create(writeStream, new XmlWriterSettings {
-                Indent = false,
-                OmitXmlDeclaration = true,
-                Encoding = System.Text.Encoding.UTF8,
-                Async = true
-            });
-            await doc.SaveAsync(writer, cancellationToken);
+                return changed;
+            }, cancellationToken);
         }
         catch (Exception ex) {
             _console.WriteError($"Failed to update {propsPath}: {ex.FormatMessage()}");
@@ -753,47 +747,40 @@ internal class OutdatedService {
 
     private async Task UpdatePackageVersionAsync(string projectPath, string packageId, (string target, string? currentVersion, VersionReason reason) newVersion, CancellationToken cancellationToken) {
         try {
-            XDocument doc;
-            using (var readStream = File.OpenRead(projectPath)) {
-                doc = await XDocument.LoadAsync(readStream, LoadOptions.PreserveWhitespace, cancellationToken);
-            }
+            await XmlProjectFile.EditAsync(projectPath, doc => {
+                var changed = false;
+                var packageRefElements = doc.Descendants("PackageReference")
+                    .Where(e => string.Equals(e.Attribute("Include")?.Value, packageId, StringComparison.OrdinalIgnoreCase));
 
-            var packageRefElements = doc.Descendants("PackageReference")
-                .Where(e => string.Equals(e.Attribute("Include")?.Value, packageId, StringComparison.OrdinalIgnoreCase));
-
-            foreach (var element in packageRefElements) {
-                if (VersionReason.VersionOverrideProj == newVersion.reason) {
-                    var verOverrideElem = element.Element("VersionOverride");
-                    if (verOverrideElem != null) {
-                        verOverrideElem.Value = newVersion.target;
-                        continue;
+                foreach (var element in packageRefElements) {
+                    if (VersionReason.VersionOverrideProj == newVersion.reason) {
+                        var verOverrideElem = element.Element("VersionOverride");
+                        if (verOverrideElem != null) {
+                            verOverrideElem.Value = newVersion.target;
+                            changed = true;
+                            continue;
+                        }
+                        else {
+                            // Fallback to Version element if VersionOverride not found
+                            _console.WriteWarning($"Expected VersionOverride element for {packageId} in {projectPath} not found. Falling back to Version element.");
+                        }
                     }
                     else {
-                        // Fallback to Version element if VersionOverride not found
-                        _console.WriteWarning($"Expected VersionOverride element for {packageId} in {projectPath} not found. Falling back to Version element.");
+                        var versionAttr = element.Attribute("Version");
+                        var versionElement = element.Element("Version");
+
+                        if (versionAttr != null) {
+                            versionAttr.Value = newVersion.target;
+                            changed = true;
+                        }
+                        else if (versionElement != null) {
+                            versionElement.Value = newVersion.target;
+                            changed = true;
+                        }
                     }
                 }
-                else {
-                    var versionAttr = element.Attribute("Version");
-                    var versionElement = element.Element("Version");
-
-                    if (versionAttr != null) {
-                        versionAttr.Value = newVersion.target;
-                    }
-                    else if (versionElement != null) {
-                        versionElement.Value = newVersion.target;
-                    }
-                }
-            }
-
-            using var writeStream = File.Create(projectPath);
-            using var writer = XmlWriter.Create(writeStream, new XmlWriterSettings {
-                Indent = false,
-                OmitXmlDeclaration = true,
-                Encoding = System.Text.Encoding.UTF8,
-                Async = true
-            });
-            await doc.SaveAsync(writer, cancellationToken);
+                return changed;
+            }, cancellationToken);
         }
         catch (Exception ex) {
             _console.WriteError($"Failed to update {projectPath}: {ex.FormatMessage()}");

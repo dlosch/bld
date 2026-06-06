@@ -37,7 +37,7 @@ internal class TfmService : IDisposable {
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    public async Task<int> MigrateTargetFrameworkAsync(string rootPath, List<string> fromTfms, string toTfm, bool applyChanges, CancellationToken cancellationToken) {
+    public async Task<int> MigrateTargetFrameworkAsync(string rootPath, List<string> fromTfms, string toTfm, bool applyChanges, bool updatePackages, CancellationToken cancellationToken) {
         // Initialize MSBuild before any Microsoft.Build.* types are loaded
         MSBuildInitializer.Initialize(_console, _options);
 
@@ -110,13 +110,20 @@ internal class TfmService : IDisposable {
             return 0;
         }
 
-        _console.WriteLine($"Found {projectsToMigrate.Count} projects to migrate from {fromTfmsDisplay} to {toTfm}");
+        // A project appears once per evaluated configuration; collapse to one entry per file
+        // so it is reported, written, and counted exactly once across preview and apply.
+        var distinctProjects = projectsToMigrate
+            .GroupBy(p => p.ProjectPath)
+            .Select(g => g.First())
+            .ToList();
+
+        _console.WriteLine($"Found {distinctProjects.Count} projects to migrate from {fromTfmsDisplay} to {toTfm}");
 
         if (applyChanges) {
             // Step 1: Update target frameworks
-            foreach (var project in projectsToMigrate) {
+            foreach (var project in distinctProjects) {
                 if (project.UsesTargetFrameworks) {
-                    await UpdateProjectTargetFrameworksAsync(project, toTfm, eolTfms, cancellationToken);
+                    await UpdateProjectTargetFrameworksAsync(project, fromTfms, toTfm, eolTfms, cancellationToken);
                 }
                 else {
                     await UpdateProjectTargetFrameworkAsync(project.ProjectPath, project.CurrentTfm, toTfm, eolTfms, cancellationToken);
@@ -124,50 +131,50 @@ internal class TfmService : IDisposable {
                 }
             }
 
-            // Step 2: Check for package compatibility and update if needed
-            _console.WriteInfo("\nChecking package compatibility with new target framework...");
-            var compatibilityIssues = new List<PackageCompatibilityIssue>();
+            // Step 2 (opt-in): bump packages to their latest stable version. This is NOT a
+            // framework-compatibility check — it just finds newer stable releases — so it is
+            // gated behind --update-packages to avoid surprise version bumps during migration.
+            if (updatePackages) {
+                _console.WriteInfo("\nChecking for newer stable package versions...");
+                var updateCandidates = new List<PackageCompatibilityIssue>();
 
-            foreach (var project in projectsToMigrate) {
-                var issues = await CheckPackageCompatibilityAsync(project, toTfm, cancellationToken);
-                compatibilityIssues.AddRange(issues);
-            }
+                foreach (var project in distinctProjects) {
+                    var issues = await FindNewerStablePackageVersionsAsync(project, toTfm, cancellationToken);
+                    updateCandidates.AddRange(issues);
+                }
 
-            if (compatibilityIssues.Count > 0) {
-                _console.WriteWarning($"Found {compatibilityIssues.Count} package compatibility issues:");
-                foreach (var issue in compatibilityIssues) {
-                    _console.WriteWarning($"  {issue.PackageId} {issue.CurrentVersion} in {Path.GetFileName(issue.ProjectPath)}");
-                    if (!string.IsNullOrEmpty(issue.RecommendedVersion)) {
-                        _console.WriteLine($"    → Recommended: {issue.RecommendedVersion}");
+                if (updateCandidates.Count > 0) {
+                    _console.WriteWarning($"Found {updateCandidates.Count} package(s) with a newer stable version:");
+                    foreach (var issue in updateCandidates) {
+                        _console.WriteWarning($"  {issue.PackageId} {issue.CurrentVersion} in {Path.GetFileName(issue.ProjectPath)}");
+                        if (!string.IsNullOrEmpty(issue.RecommendedVersion)) {
+                            _console.WriteLine($"    → Latest stable: {issue.RecommendedVersion}");
+                        }
                     }
-                    else {
-                        _console.WriteError($"    → No compatible version found for {toTfm}");
+
+                    var updatedPackages = 0;
+                    foreach (var issue in updateCandidates.Where(i => !string.IsNullOrEmpty(i.RecommendedVersion))) {
+                        await UpdatePackageVersionInProjectAsync(issue.ProjectPath, issue.PackageId, issue.RecommendedVersion!, cancellationToken);
+                        _console.WriteLine($"Updated {issue.PackageId} to {issue.RecommendedVersion} in {Path.GetFileName(issue.ProjectPath)}");
+                        updatedPackages++;
+                    }
+
+                    if (updatedPackages > 0) {
+                        _console.WriteLine($"Updated {updatedPackages} package(s) to latest stable");
                     }
                 }
-
-                // Update packages with compatible versions
-                var updatedPackages = 0;
-                foreach (var issue in compatibilityIssues.Where(i => !string.IsNullOrEmpty(i.RecommendedVersion))) {
-                    await UpdatePackageVersionInProjectAsync(issue.ProjectPath, issue.PackageId, issue.RecommendedVersion!, cancellationToken);
-                    _console.WriteLine($"Updated {issue.PackageId} to {issue.RecommendedVersion} in {Path.GetFileName(issue.ProjectPath)}");
-                    updatedPackages++;
-                }
-
-                if (updatedPackages > 0) {
-                    _console.WriteLine($"Updated {updatedPackages} packages for {toTfm} compatibility");
+                else {
+                    _console.WriteLine("All packages are already at their latest stable version.");
                 }
             }
-            else {
-                _console.WriteLine("All packages are compatible with the new target framework");
-            }
 
-            _console.WriteLine($"Migration complete! Migrated {projectsToMigrate.Count} projects to {toTfm}");
+            _console.WriteLine($"Migration complete! Migrated {distinctProjects.Count} projects to {toTfm}");
         }
         else {
-            var actualMigrated = projectsToMigrate.Where(project => {
+            var actualMigrated = distinctProjects.Where(project => {
                 if (project.UsesTargetFrameworks) {
                     var currentTfms = project.CurrentTfm.Split(';').Select(t => t.Trim()).Where(t => !string.IsNullOrEmpty(t)).ToList();
-                    var newTfms = GetUpdatedTfms(currentTfms, toTfm, eolTfms);
+                    var newTfms = GetUpdatedTfms(currentTfms, fromTfms, toTfm, eolTfms);
                     return !Enumerable.SequenceEqual(currentTfms.OrderBy(t => t), newTfms.OrderBy(t => t), StringComparer.OrdinalIgnoreCase);
                 }
                 else {
@@ -194,7 +201,7 @@ internal class TfmService : IDisposable {
 
                     if (project.UsesTargetFrameworks) {
                         var currentTfms = project.CurrentTfm.Split(';').Select(t => t.Trim()).Where(t => !string.IsNullOrEmpty(t)).ToList();
-                        var newTfmsList = GetUpdatedTfms(currentTfms, toTfm, eolTfms);
+                        var newTfmsList = GetUpdatedTfms(currentTfms, fromTfms, toTfm, eolTfms);
 
                         oldTfm = string.Join(", ", currentTfms.Select(t =>
                             IsEolTfm(t, eolTfms) ? $"{t} (EOL)" : t));
@@ -229,7 +236,7 @@ internal class TfmService : IDisposable {
 
                     if (project.UsesTargetFrameworks) {
                         var currentTfms = project.CurrentTfm.Split(';').Select(t => t.Trim()).Where(t => !string.IsNullOrEmpty(t)).ToList();
-                        var newTfmsList = GetUpdatedTfms(currentTfms, toTfm, eolTfms);
+                        var newTfmsList = GetUpdatedTfms(currentTfms, fromTfms, toTfm, eolTfms);
 
                         oldTfm = string.Join(", ", currentTfms.Select(t =>
                             IsEolTfm(t, eolTfms) ? $"[red]{Markup.Escape(t)} [[EOL]][/]" : Markup.Escape(t)));
@@ -355,7 +362,7 @@ internal class TfmService : IDisposable {
                 }
 
                 // Verify if GetUpdatedTfms actually makes changes
-                var updatedTfms = GetUpdatedTfms(tfms, toTfm, eolTfms);
+                var updatedTfms = GetUpdatedTfms(tfms, fromTfms, toTfm, eolTfms);
                 if (Enumerable.SequenceEqual(tfms.OrderBy(t => t), updatedTfms.OrderBy(t => t), StringComparer.OrdinalIgnoreCase)) {
                     return null;
                 }
@@ -406,7 +413,7 @@ internal class TfmService : IDisposable {
                 }
 
                 // Verify if GetUpdatedTfms actually makes changes
-                var updatedTfms = GetUpdatedTfms(tfms, toTfm, eolTfms);
+                var updatedTfms = GetUpdatedTfms(tfms, fromTfms, toTfm, eolTfms);
                 if (Enumerable.SequenceEqual(tfms.OrderBy(t => t), updatedTfms.OrderBy(t => t), StringComparer.OrdinalIgnoreCase)) {
                     return null;
                 }
@@ -434,87 +441,64 @@ internal class TfmService : IDisposable {
 
     private async Task UpdateProjectTargetFrameworkAsync(string projectPath, string fromTfm, string toTfm, ISet<string> eolTfms, CancellationToken cancellationToken) {
         try {
-            XDocument doc;
-            using (var readStream = File.OpenRead(projectPath)) {
-                doc = await XDocument.LoadAsync(readStream, LoadOptions.PreserveWhitespace, cancellationToken);
-            }
+            await XmlProjectFile.EditAsync(projectPath, doc => {
+                var targetFrameworkElement = doc.Descendants("TargetFramework").FirstOrDefault();
 
-            var targetFrameworkElement = doc.Descendants("TargetFramework").FirstOrDefault();
-
-            if (targetFrameworkElement != null && targetFrameworkElement.Value.Equals(fromTfm, StringComparison.OrdinalIgnoreCase)) {
-                // If current TFM is EOL or the target is newer, update to target
-                if (IsEolTfm(fromTfm, eolTfms) || ShouldUpdateTfm(fromTfm, toTfm)) {
+                // Only rewrite when the TFM actually matches and an update applies.
+                if (targetFrameworkElement != null
+                    && targetFrameworkElement.Value.Equals(fromTfm, StringComparison.OrdinalIgnoreCase)
+                    && (IsEolTfm(fromTfm, eolTfms) || ShouldUpdateTfm(fromTfm, toTfm))) {
                     targetFrameworkElement.Value = toTfm;
+                    return true;
                 }
-            }
-
-            using var writeStream = File.Create(projectPath);
-            using var writer = XmlWriter.Create(writeStream, new XmlWriterSettings {
-                Indent = true,
-                OmitXmlDeclaration = true,
-                Encoding = System.Text.Encoding.UTF8,
-                Async = true
-            });
-            await doc.SaveAsync(writer, cancellationToken);
+                return false;
+            }, cancellationToken);
         }
         catch (Exception ex) {
             _console.WriteError($"Failed to update {projectPath}: {ex.FormatMessage()}");
         }
     }
-    private async Task UpdateProjectTargetFrameworksAsync(ProjectMigrationInfo project, string toTfm, ISet<string> eolTfms, CancellationToken cancellationToken) {
+    private async Task UpdateProjectTargetFrameworksAsync(ProjectMigrationInfo project, List<string> fromTfms, string toTfm, ISet<string> eolTfms, CancellationToken cancellationToken) {
         try {
-            XDocument doc;
-            using (var readStream = File.OpenRead(project.ProjectPath)) {
-                doc = await XDocument.LoadAsync(readStream, LoadOptions.PreserveWhitespace, cancellationToken);
+            var written = await XmlProjectFile.EditAsync(project.ProjectPath, doc => {
+                var targetFrameworksElement = doc.Descendants("TargetFrameworks").FirstOrDefault();
+                if (targetFrameworksElement == null) {
+                    _console.WriteWarning($"No TargetFrameworks found in {Path.GetFileName(project.ProjectPath)}");
+                    return false;
+                }
+
+                var currentTfms = targetFrameworksElement.Value.Split(';').Select(t => t.Trim()).Where(t => !string.IsNullOrEmpty(t)).ToList();
+                var newTfms = GetUpdatedTfms(currentTfms, fromTfms, toTfm, eolTfms);
+                var newTargetFrameworksValue = string.Join(";", newTfms);
+
+                _console.WriteLine($"\nProject: {Path.GetFileName(project.ProjectPath)}");
+                _console.WriteLine($"Current TargetFrameworks: {string.Join("; ", currentTfms)}");
+                _console.WriteLine($"New TargetFrameworks: {string.Join("; ", newTfms)}");
+
+                // --apply is the user's consent (matching the single-target path); previously this
+                // prompted inside EditAsync, which threw in non-interactive/CI runs and was then
+                // misreported as a file-write failure.
+                targetFrameworksElement.Value = newTargetFrameworksValue;
+                return true;
+            }, cancellationToken);
+
+            if (written) {
+                _console.WriteLine($"✓ Updated {Path.GetFileName(project.ProjectPath)} TargetFrameworks");
             }
-
-            var targetFrameworksElement = doc.Descendants("TargetFrameworks").FirstOrDefault();
-            if (targetFrameworksElement == null) {
-                _console.WriteWarning($"No TargetFrameworks found in {Path.GetFileName(project.ProjectPath)}");
-                return;
-            }
-
-            var currentTfms = targetFrameworksElement.Value.Split(';').Select(t => t.Trim()).Where(t => !string.IsNullOrEmpty(t)).ToList();
-            var newTfms = GetUpdatedTfms(currentTfms, toTfm, eolTfms);
-
-            var newTargetFrameworksValue = string.Join(";", newTfms);
-
-            _console.WriteLine($"\nProject: {Path.GetFileName(project.ProjectPath)}");
-            _console.WriteLine($"Current TargetFrameworks: {string.Join("; ", currentTfms)}");
-            _console.WriteLine($"New TargetFrameworks: {string.Join("; ", newTfms)}");
-
-            // Prompt for confirmation
-            bool confirmed = _console.Confirm("Apply this change?", false);
-
-            if (!confirmed) {
-                _console.WriteLine($"Cancelled update for {Path.GetFileName(project.ProjectPath)}");
-                return;
-            }
-
-            // Apply the change
-            targetFrameworksElement.Value = newTargetFrameworksValue;
-
-            using var writeStream = File.Create(project.ProjectPath);
-            using var writer = XmlWriter.Create(writeStream, new XmlWriterSettings {
-                Indent = true,
-                OmitXmlDeclaration = true,
-                Encoding = System.Text.Encoding.UTF8,
-                Async = true
-            });
-            await doc.SaveAsync(writer, cancellationToken);
-
-            _console.WriteLine($"✓ Updated {Path.GetFileName(project.ProjectPath)} TargetFrameworks");
         }
         catch (Exception ex) {
             _console.WriteError($"Failed to update {project.ProjectPath}: {ex.FormatMessage()}");
         }
     }
 
-    private async Task<List<PackageCompatibilityIssue>> CheckPackageCompatibilityAsync(ProjectMigrationInfo project, string targetTfm, CancellationToken cancellationToken) {
+    // Finds packages that have a newer *stable* version than the one currently referenced.
+    // NOTE: this does not verify the newer version actually supports targetTfm — full
+    // framework-compatibility analysis would require resolving each package's dependency
+    // groups. It is a "latest stable" suggestion, surfaced only under --update-packages.
+    private async Task<List<PackageCompatibilityIssue>> FindNewerStablePackageVersionsAsync(ProjectMigrationInfo project, string targetTfm, CancellationToken cancellationToken) {
         var issues = new List<PackageCompatibilityIssue>();
         var packageSource = Repository.Factory.GetCoreV3("https://api.nuget.org/v3/index.json");
         var packageMetadataResource = await packageSource.GetResourceAsync<PackageMetadataResource>(cancellationToken);
-        var targetFramework = NuGetFramework.Parse(targetTfm);
 
         foreach (var package in project.PackageReferences) {
             try {
@@ -524,28 +508,25 @@ internal class TfmService : IDisposable {
                     continue;
                 }
 
-                // Check if current version supports target framework
                 var currentMetadata = metadata.FirstOrDefault(m => m.Identity.Version == currentVersion);
                 if (currentMetadata != null) {
-                    // For now, we'll assume the current package is compatible and just check if there's a newer version
-                    // Full framework compatibility checking would require downloading and analyzing package dependencies
-                    var latestCompatible = metadata.Where(m => !m.Identity.Version.IsPrerelease)
+                    var latestStable = metadata.Where(m => !m.Identity.Version.IsPrerelease)
                                                   .OrderByDescending(m => m.Identity.Version)
                                                   .FirstOrDefault();
 
-                    if (latestCompatible != null && latestCompatible.Identity.Version > currentVersion) {
+                    if (latestStable != null && latestStable.Identity.Version > currentVersion) {
                         issues.Add(new PackageCompatibilityIssue {
                             ProjectPath = project.ProjectPath,
                             PackageId = package.Id,
                             CurrentVersion = package.Version,
-                            RecommendedVersion = latestCompatible.Identity.Version.ToString(),
+                            RecommendedVersion = latestStable.Identity.Version.ToString(),
                             TargetFramework = targetTfm
                         });
                     }
                 }
             }
             catch (Exception ex) {
-                _console.WriteWarning($"Failed to check compatibility for {package.Id}: {ex.FormatMessage()}");
+                _console.WriteWarning($"Failed to query versions for {package.Id}: {ex.FormatMessage()}");
             }
         }
 
@@ -554,34 +535,26 @@ internal class TfmService : IDisposable {
 
     private async Task UpdatePackageVersionInProjectAsync(string projectPath, string packageId, string newVersion, CancellationToken cancellationToken) {
         try {
-            XDocument doc;
-            using (var readStream = File.OpenRead(projectPath)) {
-                doc = await XDocument.LoadAsync(readStream, LoadOptions.PreserveWhitespace, cancellationToken);
-            }
+            await XmlProjectFile.EditAsync(projectPath, doc => {
+                var changed = false;
+                var packageRefElements = doc.Descendants("PackageReference")
+                    .Where(e => e.Attribute("Include")?.Value == packageId);
 
-            var packageRefElements = doc.Descendants("PackageReference")
-                .Where(e => e.Attribute("Include")?.Value == packageId);
+                foreach (var element in packageRefElements) {
+                    var versionAttr = element.Attribute("Version");
+                    var versionElement = element.Element("Version");
 
-            foreach (var element in packageRefElements) {
-                var versionAttr = element.Attribute("Version");
-                var versionElement = element.Element("Version");
-
-                if (versionAttr != null) {
-                    versionAttr.Value = newVersion;
+                    if (versionAttr != null) {
+                        versionAttr.Value = newVersion;
+                        changed = true;
+                    }
+                    else if (versionElement != null) {
+                        versionElement.Value = newVersion;
+                        changed = true;
+                    }
                 }
-                else if (versionElement != null) {
-                    versionElement.Value = newVersion;
-                }
-            }
-
-            using var writeStream = File.Create(projectPath);
-            using var writer = XmlWriter.Create(writeStream, new XmlWriterSettings {
-                Indent = true,
-                OmitXmlDeclaration = true,
-                Encoding = System.Text.Encoding.UTF8,
-                Async = true
-            });
-            await doc.SaveAsync(writer, cancellationToken);
+                return changed;
+            }, cancellationToken);
         }
         catch (Exception ex) {
             _console.WriteError($"Failed to update {projectPath}: {ex.FormatMessage()}");
@@ -617,19 +590,30 @@ internal class TfmService : IDisposable {
         return packageReferences;
     }
 
-    private List<string> GetUpdatedTfms(List<string> currentTfms, string toTfm, ISet<string> eolTfms) {
-        // Remove EOL TFMs
-        var filteredTfms = currentTfms
-            .Where(tfm => !IsEolTfm(tfm, eolTfms))
-            .ToList();
+    // Computes the resulting TFM list. EOL TFMs are dropped. With an explicit --from, matched source
+    // TFMs are *replaced* by toTfm (a real migration, consistent with the single-target path); without
+    // --from (auto-detect) toTfm is added when it is newer, preserving the existing TFMs.
+    internal List<string> GetUpdatedTfms(List<string> currentTfms, List<string> fromTfms, string toTfm, ISet<string> eolTfms) {
+        var result = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        // If a newer TFM is available, add it (do not replace existing TFMs)
-        var alreadyHasToTfm = filteredTfms.Any(tfm => tfm.Equals(toTfm, StringComparison.OrdinalIgnoreCase));
-        if (!alreadyHasToTfm && IsNewerThanAny(toTfm, filteredTfms)) {
-            filteredTfms.Add(toTfm);
+        foreach (var tfm in currentTfms) {
+            if (IsEolTfm(tfm, eolTfms)) continue; // drop end-of-life frameworks
+
+            if (fromTfms.Count > 0 && fromTfms.Any(f => tfm.Equals(f, StringComparison.OrdinalIgnoreCase))) {
+                if (seen.Add(toTfm)) result.Add(toTfm); // replace the matched source TFM with the target
+                continue;
+            }
+
+            if (seen.Add(tfm)) result.Add(tfm);
         }
 
-        return filteredTfms;
+        // Auto-detect / EOL-only path: add the target when it is newer than everything kept.
+        if (!seen.Contains(toTfm) && IsNewerThanAny(toTfm, result)) {
+            result.Add(toTfm);
+        }
+
+        return result;
     }
 
     private static bool IsEolTfm(string tfm, ISet<string> eolTfms) {

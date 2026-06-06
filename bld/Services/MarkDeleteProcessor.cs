@@ -141,8 +141,9 @@ internal sealed class MarkDeleteProcessor : IProjectProcessor {
 
                     if (NotSafeToDelete(dir)) {
                         _console.WriteVerbose($"{dir} is not safe to delete, skipping.");
-                        // Opus 4.6 thinks continue would be correct here ...
-                        return Task.CompletedTask;
+                        // Skip only this unsafe candidate path; keep processing the remaining
+                        // directories/projects (a `return` here aborted the entire run).
+                        continue;
                     }
 
                     Stats OutDirDelete(string absPath, DirType dirType, Dir dir) {

@@ -130,6 +130,7 @@ internal class NugetAnalysisApplication {
         finally {
             stopwatch.Stop();
             _console.WriteInfo($"Analysis completed in {stopwatch.Elapsed:mm\\:ss\\.fff}");
+            errorSink.WriteTo();
         }
     }
 

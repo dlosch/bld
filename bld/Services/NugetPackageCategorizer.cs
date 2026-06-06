@@ -126,17 +126,4 @@ internal class NugetPackageCategorizer {
 
         return (whitelistMatch, blacklistMatch, microsoftMatch, trustedMatch);
     }
-
-    public (string? whitelistMatch, string? blacklistMatch) GetWhitelistBlacklistMatches(string packageName, string? packageVersion = null) {
-        var (whitelistMatch, blacklistMatch, _, _) = GetAllMatches(packageName, packageVersion);
-        return (whitelistMatch, blacklistMatch);
-    }
-
-    public string GetCategoryDisplayName(NugetPackageCategory category) => category switch {
-        NugetPackageCategory.MicrosoftOfficial => "Microsoft Official .NET Packages",
-        NugetPackageCategory.MicrosoftNonOfficial => "Microsoft Non-Official Packages",
-        NugetPackageCategory.TrustedThirdParty => "Known Trusted Packages",
-        NugetPackageCategory.Other => "Other Packages",
-        _ => "Unknown"
-    };
 }

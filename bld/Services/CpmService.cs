@@ -1,8 +1,10 @@
 using bld.Infrastructure;
 using bld.Models;
+using NuGet.Versioning;
 using Spectre.Console;
 using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
+using System.Text;
 using System.Threading;
 using System.Xml;
 using System.Xml.Linq;
@@ -31,7 +33,6 @@ internal class CpmService {
         var errorSink = new ErrorSink(_console);
         var slnScanner = new SlnScanner(_options, errorSink);
         var slnParser = new SlnParser(_console, errorSink);
-        var cache = new ProjCfgCache(_console);
 
         var solutionData = new List<SolutionData>();
 
@@ -47,6 +48,11 @@ internal class CpmService {
 
         foreach (var slnPath in allSlns) {
             var solutionDir = Path.GetDirectoryName(slnPath)!;
+
+            // Fresh cache per solution: dedup is only valid within one solution. A shared cache would
+            // exclude projects already seen in another solution, producing an incomplete
+            // Directory.Packages.props for this solution while still stripping those projects' versions.
+            var cache = new ProjCfgCache(_console);
 
             var allPackageReferences = new ConcurrentDictionary<string, string>(); // PackageId -> Version
             var projectFiles = new ConcurrentBag<string>();
@@ -287,25 +293,7 @@ internal class CpmService {
 
     internal async Task UpdateProjectFileAsync(string projectPath, CancellationToken cancellationToken) {
         try {
-            XDocument doc;
-            using (var readStream = File.OpenRead(projectPath)) {
-                doc = await XDocument.LoadAsync(readStream, LoadOptions.PreserveWhitespace, cancellationToken);
-            }
-
-            var modified = RemoveCentralizableVersionDeclarations(doc);
-
-            if (modified) {
-                using var writeStream = new FileStream(projectPath, FileMode.Create, FileAccess.Write);
-                using var writer = XmlWriter.Create(writeStream, new XmlWriterSettings {
-                    // Preserve the file's existing layout; only the removed Version
-                    // nodes should change. Re-indenting would rewrite the whole file.
-                    Indent = false,
-                    OmitXmlDeclaration = true,
-                    Encoding = System.Text.Encoding.UTF8,
-                    Async = true
-                });
-                await doc.SaveAsync(writer, cancellationToken);
-            }
+            await XmlProjectFile.EditAsync(projectPath, RemoveCentralizableVersionDeclarations, cancellationToken);
         }
         catch (Exception ex) {
             _console.WriteError($"Failed to update project file {projectPath}: {ex.FormatMessage()}");
@@ -315,37 +303,15 @@ internal class CpmService {
     private static string? FirstNonEmpty(params string?[] values) =>
         values.FirstOrDefault(v => !string.IsNullOrWhiteSpace(v));
 
-    private static int CompareVersions(string version1, string version2) {
-        try {
-            var v1 = Version.Parse(NormalizeVersionString(version1));
-            var v2 = Version.Parse(NormalizeVersionString(version2));
+    // Compares two package versions using NuGet SemVer2 semantics, so a stable release outranks its
+    // prereleases (2.0.0 > 2.0.0-beta) and prereleases order correctly. Version ranges ("[1.2.3]") and
+    // floating versions ("1.*") are not single versions; rather than invent an ordering we fall back to
+    // a deterministic ordinal comparison.
+    internal static int CompareVersions(string version1, string version2) {
+        if (NuGetVersion.TryParse(version1, out var v1) && NuGetVersion.TryParse(version2, out var v2)) {
             return v1.CompareTo(v2);
         }
-        catch {
-            // Fallback to string comparison if version parsing fails
-            return string.Compare(version1, version2, StringComparison.OrdinalIgnoreCase);
-        }
-    }
-
-    private static string NormalizeVersionString(string version) {
-        // Remove pre-release suffixes for comparison
-        var hyphenIndex = version.IndexOf('-');
-        if (hyphenIndex > 0) {
-            version = version.Substring(0, hyphenIndex);
-        }
-
-        // Ensure at least 3 parts (Major.Minor.Build)
-        var parts = version.Split('.');
-        if (parts.Length < 3) {
-            var normalizedParts = new string[3];
-            Array.Copy(parts, normalizedParts, parts.Length);
-            for (int i = parts.Length; i < 3; i++) {
-                normalizedParts[i] = "0";
-            }
-            version = string.Join(".", normalizedParts);
-        }
-
-        return version;
+        return string.Compare(version1, version2, StringComparison.OrdinalIgnoreCase);
     }
 
     private class SolutionData {
