@@ -64,8 +64,6 @@ internal sealed class StatsCommand : BaseCommand {
 
         var app = new CleaningApplication(base.Output, (a, b, c) => new MarkDeleteResultStatsProcessor(a, b, c));
         await app.InitAsync(options);
-        await app.RunAsync(new[] { rootPath }, options, cancellationToken);
-
-        return 0;
+        return await app.RunAsync(new[] { rootPath }, options, cancellationToken);
     }
 }

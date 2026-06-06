@@ -202,6 +202,11 @@ internal class CpmService {
 
             var versionElements = element.Elements("Version").ToList();
             foreach (var versionElement in versionElements) {
+                // Drop the indentation text node preceding the element so removing it
+                // doesn't leave a blank line behind when whitespace is preserved on save.
+                if (versionElement.PreviousNode is XText previous && string.IsNullOrWhiteSpace(previous.Value)) {
+                    previous.Remove();
+                }
                 versionElement.Remove();
                 modified = true;
             }
@@ -280,11 +285,11 @@ internal class CpmService {
         await doc.SaveAsync(writer, cancellationToken);
     }
 
-    private async Task UpdateProjectFileAsync(string projectPath, CancellationToken cancellationToken) {
+    internal async Task UpdateProjectFileAsync(string projectPath, CancellationToken cancellationToken) {
         try {
             XDocument doc;
             using (var readStream = File.OpenRead(projectPath)) {
-                doc = await XDocument.LoadAsync(readStream, LoadOptions.None, cancellationToken);
+                doc = await XDocument.LoadAsync(readStream, LoadOptions.PreserveWhitespace, cancellationToken);
             }
 
             var modified = RemoveCentralizableVersionDeclarations(doc);
@@ -292,7 +297,9 @@ internal class CpmService {
             if (modified) {
                 using var writeStream = new FileStream(projectPath, FileMode.Create, FileAccess.Write);
                 using var writer = XmlWriter.Create(writeStream, new XmlWriterSettings {
-                    Indent = true,
+                    // Preserve the file's existing layout; only the removed Version
+                    // nodes should change. Re-indenting would rewrite the whole file.
+                    Indent = false,
                     OmitXmlDeclaration = true,
                     Encoding = System.Text.Encoding.UTF8,
                     Async = true

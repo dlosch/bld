@@ -102,8 +102,6 @@ internal sealed class CleanCommand : BaseCommand {
 
             );
         await app.InitAsync(options);
-        await app.RunAsync(new[] { rootPath }, options, cancellationToken);
-
-        return 0;
+        return await app.RunAsync(new[] { rootPath }, options, cancellationToken);
     }
 }

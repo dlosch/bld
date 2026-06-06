@@ -23,7 +23,7 @@ internal class CleaningApplication(IConsoleOutput _console, Func<IConsoleOutput,
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    public async Task RunAsync(string[] rootPaths, CleaningOptions options, CancellationToken cancellationToken = default) {
+    public async Task<int> RunAsync(string[] rootPaths, CleaningOptions options, CancellationToken cancellationToken = default) {
         if (!_isInitialized) {
             throw new InvalidOperationException("Application not initialized. Call InitAsync first.");
         }
@@ -92,9 +92,12 @@ internal class CleaningApplication(IConsoleOutput _console, Func<IConsoleOutput,
 
             var res = markDeleteProcessor.GetResult();
             await markDeleteStatsProcessor.ProcessAsync(res);
+
+            return 0;
         }
         catch (Exception ex) {
             _console.WriteException(ex);
+            return 1;
         }
     }
 }

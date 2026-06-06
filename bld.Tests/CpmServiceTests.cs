@@ -1,3 +1,4 @@
+using bld.Models;
 using bld.Services;
 using System.Xml.Linq;
 
@@ -111,6 +112,48 @@ public class CpmServiceTests {
         finally {
             if (Directory.Exists(tempDir)) {
                 Directory.Delete(tempDir, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task UpdateProjectFileAsync_RemovesVersionsButPreservesExistingFormatting() {
+        // 4-space-per-level indentation, a blank line and a comment: all of which a
+        // reformatting (Indent=true) save would destroy.
+        var original =
+            "<Project Sdk=\"Microsoft.NET.Sdk\">\n" +
+            "    <PropertyGroup>\n" +
+            "        <TargetFramework>net8.0</TargetFramework>\n" +
+            "    </PropertyGroup>\n" +
+            "\n" +
+            "    <!-- third party -->\n" +
+            "    <ItemGroup>\n" +
+            "        <PackageReference Include=\"A\" Version=\"1.0.0\" />\n" +
+            "        <PackageReference Include=\"B\" Version=\"2.0.0\" />\n" +
+            "    </ItemGroup>\n" +
+            "</Project>";
+
+        var tempFile = Path.Combine(Path.GetTempPath(), $"bld-cpm-{Guid.NewGuid():N}.csproj");
+        await File.WriteAllTextAsync(tempFile, original);
+        try {
+            var service = new CpmService(new TestConsole(), new CleaningOptions());
+            await service.UpdateProjectFileAsync(tempFile, default);
+
+            var updated = await File.ReadAllTextAsync(tempFile);
+
+            // Versions stripped for central management.
+            Assert.DoesNotContain("Version=\"1.0.0\"", updated);
+            Assert.DoesNotContain("Version=\"2.0.0\"", updated);
+
+            // Original layout preserved instead of re-indented to the default 2 spaces.
+            Assert.Contains("        <TargetFramework>net8.0</TargetFramework>", updated);
+            Assert.Contains("        <PackageReference Include=\"A\" />", updated);
+            Assert.Contains("        <PackageReference Include=\"B\" />", updated);
+            Assert.Contains("<!-- third party -->", updated);
+        }
+        finally {
+            if (File.Exists(tempFile)) {
+                File.Delete(tempFile);
             }
         }
     }

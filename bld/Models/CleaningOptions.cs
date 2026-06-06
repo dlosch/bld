@@ -22,7 +22,7 @@ internal record CleaningOptions {
     public bool NoResolveVSToolsPath { get; internal set; } = false;
     public ConfirmLevel? ConfirmLevel { get; internal set; }
 
-    public int MaxDegreeOfParallelism { get; init; } = Environment.ProcessorCount >> 1;
+    public int MaxDegreeOfParallelism { get; init; } = Math.Max(1, Environment.ProcessorCount >> 1);
     public bool MarkdownOutput { get; init; } = false;
 
     private static bool FilterSupportedSlnFileFormats(string file) =>

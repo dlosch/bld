@@ -75,7 +75,14 @@ internal abstract class BaseCommand : Command {
 
     protected readonly Option<int> _concurrencyOption = new Option<int>("--concurrency") {
         Description = "Degree of parallelism for project evaluation. Use 1 for sequential processing.",
-        DefaultValueFactory = _ => Environment.ProcessorCount >> 1
+        DefaultValueFactory = _ => Math.Max(1, Environment.ProcessorCount >> 1),
+        Validators = {
+            v => {
+                if (v.GetValueOrDefault<int>() < 1) {
+                    v.AddError("Concurrency must be at least 1.");
+                }
+            }
+        }
     };
 
     protected readonly Argument<string?> _rootArgument = new Argument<string?>("root") {

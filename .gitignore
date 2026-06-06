@@ -368,3 +368,6 @@ FodyWeavers.xsd
 clean.sh
 clean.cmd
 session.md
+
+# AI agent-generated docs (reviews, notes)
+agent-docs/

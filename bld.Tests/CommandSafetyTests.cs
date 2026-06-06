@@ -141,6 +141,17 @@ public class CommandSafetyTests {
         Assert.Equal(1, exitCode);
     }
 
+    [Fact]
+    public async Task StatsCommand_ZeroConcurrency_FailsValidation() {
+        // --concurrency 0 would otherwise make Parallel.ForEachAsync throw; it must be rejected.
+        var console = new TestConsole();
+        var command = new StatsCommand(console);
+
+        var exitCode = await command.Parse(["--concurrency", "0"]).InvokeAsync();
+
+        Assert.NotEqual(0, exitCode);
+    }
+
     #endregion
 
     #region Stats Command Safety (Read-Only)
