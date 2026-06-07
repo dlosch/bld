@@ -4,8 +4,6 @@ using NuGet.Versioning;
 using Spectre.Console;
 using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
-using System.Text;
-using System.Threading;
 using System.Xml;
 using System.Xml.Linq;
 

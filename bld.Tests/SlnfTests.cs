@@ -52,7 +52,7 @@ public class SlnfTests(ITestOutputHelper Output) {
         EnsureMSBuild();
         ParseSlnf_ShouldReturnFilteredProjects_Impl();
     }
-    public void ParseSlnf_ShouldReturnFilteredProjects_Impl() {
+    private void ParseSlnf_ShouldReturnFilteredProjects_Impl() {
 
         // Point this to your Solution Filter file
         string slnfPath = @"d:\GITHUB\dotnet\aspnetcore\src\Caching\Caching.slnf";
@@ -65,7 +65,7 @@ public class SlnfTests(ITestOutputHelper Output) {
         // 3. Extract the actual buildable projects.
         // The SolutionFile parses Solution Folders as "projects" too, so we filter them out.
         var filteredProjects = solution.ProjectsInOrder
-            .Where(p => p.ProjectType != SolutionProjectType.SolutionFolder && result.ProjectFilter.Contains(p.AbsolutePath))
+            .Where(p => p.ProjectType != SolutionProjectType.SolutionFolder && result.ProjectFilter!.Contains(p.AbsolutePath))
             .ToList();
 
         Assert.Equal(6, filteredProjects.Count);

@@ -38,7 +38,8 @@ internal class NetUtil {
     }
 
     private static readonly Regex _modernDotNetTfm = new(@"^net\d+\.\d+$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
-
+    //private static readonly Regex _modernDotNetTfm = new(@"^net([5-9]\d*|[1-9]\d{1,})\.\d+$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    
     private readonly string[] ValidTfms = new string[] {
         "netcoreapp1.0",
         "netcoreapp1.1",

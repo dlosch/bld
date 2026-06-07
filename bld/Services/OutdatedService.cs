@@ -340,7 +340,7 @@ internal class OutdatedService {
                         return (minCurrent, maxLatest);
                     }
                 );
-                packageMetadata[packageReference.Key] = result;
+                packageMetadata[packageReference.Key] = result!;
             }
             catch (Exception xcptn) {
                 _console.WriteWarning($"Failed to parse version for {packageReference.Key}: {packageReference.Value.Tfm} {string.Join(',', result?.TargetFrameworkVersions?.Select(x => x.Key.GetShortFolderName()) ?? Array.Empty<string>())} {xcptn.FormatMessage()}");
@@ -761,8 +761,17 @@ internal class OutdatedService {
                             continue;
                         }
                         else {
-                            // Fallback to Version element if VersionOverride not found
                             _console.WriteWarning($"Expected VersionOverride element for {packageId} in {projectPath} not found. Falling back to Version element.");
+                            var versionAttr = element.Attribute("Version");
+                            var versionElement = element.Element("Version");
+                            if (versionAttr != null) {
+                                versionAttr.Value = newVersion.target;
+                                changed = true;
+                            }
+                            else if (versionElement != null) {
+                                versionElement.Value = newVersion.target;
+                                changed = true;
+                            }
                         }
                     }
                     else {
