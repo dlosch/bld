@@ -12,6 +12,32 @@ namespace bld.Infrastructure;
 /// is atomic (temp file + move) so a failure never leaves a truncated file.
 /// </summary>
 internal static class XmlProjectFile {
+
+    /// <summary>
+    /// Finds elements by local name, ignoring the XML namespace. Legacy and .vcxproj files declare
+    /// xmlns="http://schemas.microsoft.com/developer/msbuild/2003", against which an unqualified
+    /// Descendants("PackageReference") matches nothing - so an edit silently did nothing while the
+    /// caller reported success.
+    /// </summary>
+    internal static IEnumerable<XElement> ElementsNamed(this XContainer container, string localName) =>
+        container.Descendants().Where(e => string.Equals(e.Name.LocalName, localName, StringComparison.Ordinal));
+
+    /// <summary>Direct child by local name, namespace-agnostic.</summary>
+    internal static XElement? ChildNamed(this XElement element, string localName) =>
+        element.Elements().FirstOrDefault(e => string.Equals(e.Name.LocalName, localName, StringComparison.Ordinal));
+
+    /// <summary>
+    /// True when the element or any ancestor carries a Condition. Such items are only active for some
+    /// target framework or configuration, so the evaluated view we based the report on did not
+    /// necessarily include them and rewriting them blind changes a pin the user never saw.
+    /// </summary>
+    internal static bool IsConditioned(this XElement element) {
+        for (var e = element; e is not null; e = e.Parent) {
+            var condition = e.Attribute("Condition")?.Value;
+            if (!string.IsNullOrWhiteSpace(condition)) return true;
+        }
+        return false;
+    }
     /// <summary>
     /// Loads <paramref name="path"/>, invokes <paramref name="mutate"/>, and writes the
     /// file back only if the mutator reports a change (returns true). Returns whether the

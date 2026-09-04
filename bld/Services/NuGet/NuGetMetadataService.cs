@@ -67,6 +67,8 @@ public static class NugetMetadataService {
             }
 
             var allowPrerelease = request.AllowPrerelease;
+            // Whether the feed lists any stable version at all, independent of framework matching.
+            var sawListedStable = false;
 retry:
             for (int i = index.Items.Count - 1; i >= 0; i--) {
                 var pageItem = index.Items[i];
@@ -103,6 +105,7 @@ retry:
                         continue;
 
                     var isPrerelease = NuGetVersion.TryParse(versionItem.CatalogEntry.Version, out var nugetVersion) && nugetVersion.IsPrerelease;
+                    if (!isPrerelease) sawListedStable = true;
                     if (!allowPrerelease && isPrerelease)
                         continue;
 
@@ -156,7 +159,15 @@ retry:
                         }
                     }
 
-                    if (supportedFrameworks.Any()) {
+                    // Every requested framework must be supported, not merely one of them. Accepting a
+                    // partial match let a solution mixing net472 and net9.0 be upgraded to a version
+                    // that dropped net472, breaking the build the TFM check exists to protect.
+                    var requestedCount = request.CompatibleTargetFrameworks?.Count ?? 0;
+                    var satisfiesAll = requestedCount == 0
+                        ? supportedFrameworks.Any()
+                        : supportedFrameworks.Count >= requestedCount;
+
+                    if (satisfiesAll) {
                         logger?.WriteDebug($"Found matching version {versionItem.CatalogEntry.Version} for {request.PackageId} with {supportedFrameworks.Count} supported frameworks");
 
                         return new PackageVersionResult {
@@ -167,11 +178,18 @@ retry:
                             Dependencies = dependencyGroups
                         };
                     }
+
+                    if (supportedFrameworks.Any()) {
+                        var missing = request.CompatibleTargetFrameworksTyped.Where(f => !supportedFrameworks.ContainsKey(f));
+                        logger?.WriteDebug($"Skipping {request.PackageId} {versionItem.CatalogEntry.Version}: no support for {string.Join(", ", missing.Select(f => f.GetShortFolderName()))}");
+                    }
                 }
             }
 
-            if (!allowPrerelease) {
-                // some packages only have prerelease versions, try again allowing prerelease
+            // Retry allowing prerelease only for packages that genuinely have no stable release. The
+            // old trigger was "no match for these frameworks", which also fires on a framework
+            // mismatch - so a stable-only feed could still yield a prerelease that --apply then pinned.
+            if (!allowPrerelease && !request.AllowPrerelease && !sawListedStable) {
                 allowPrerelease = true;
                 goto retry;
             }

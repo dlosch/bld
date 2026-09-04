@@ -15,6 +15,9 @@ namespace bld.Services;
 internal class OutdatedService {
     private readonly IConsoleOutput _console;
     private readonly CleaningOptions _options;
+    // Assigned for the duration of a run so the write helpers can record failures that must affect
+    // the exit code rather than only being printed.
+    private ErrorSink? _errorSink;
 
     public OutdatedService(IConsoleOutput console, CleaningOptions options) {
         _console = console;
@@ -23,6 +26,32 @@ internal class OutdatedService {
 
     internal static IReadOnlyList<string> SelectCompatibleTargetFrameworks(bool skipTfmCheck, PackageInfoContainer packageReferences) =>
         skipTfmCheck ? Array.Empty<string>() : packageReferences.Tfms.ToList();
+
+    /// <summary>
+    /// Package ids named by a project file's raw XML, regardless of any Condition. MSBuild evaluates
+    /// one TFM and configuration at a time, so a reference inside
+    /// &lt;ItemGroup Condition="'$(TargetFramework)'=='net472'"&gt; is invisible to the evaluated view -
+    /// and the matching central PackageVersion then looks like an unused orphan.
+    /// </summary>
+    internal static IEnumerable<string> ReadDeclaredPackageIds(string projectPath) {
+        XDocument doc;
+        try {
+            doc = XDocument.Load(projectPath);
+        }
+        catch {
+            // Unreadable here is reported by the evaluation path; nothing to add.
+            yield break;
+        }
+
+        foreach (var element in doc.ElementsNamed("PackageReference")) {
+            // Include may name several packages ("A;B"); Update is the CPM-era spelling.
+            var raw = element.Attribute("Include")?.Value ?? element.Attribute("Update")?.Value;
+            if (string.IsNullOrWhiteSpace(raw)) continue;
+            foreach (var id in raw.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)) {
+                yield return id;
+            }
+        }
+    }
 
     internal static bool IsSolutionFile(string path) {
         var ext = Path.GetExtension(path);
@@ -62,7 +91,13 @@ internal class OutdatedService {
                         if (dep is null || string.IsNullOrEmpty(dep.PackageId) || string.IsNullOrEmpty(dep.Range)) continue;
                         if (!VersionRange.TryParse(dep.Range, out var range)) continue;
                         if (depRanges.TryGetValue(dep.PackageId, out var existing)) {
-                            if (range.MinVersion is { } newMin && existing.Range.MinVersion is { } oldMin && newMin > oldMin) {
+                            // Keep the strictest lower bound. Requiring *both* ranges to have a
+                            // MinVersion meant an open-ended range seen first, e.g. "(, )" on one TFM
+                            // group, discarded a real "[3.0.0, )" from another - so a genuine conflict
+                            // was never reported to the user.
+                            var newMin = range.MinVersion;
+                            var oldMin = existing.Range.MinVersion;
+                            if (newMin is { } && (oldMin is null || newMin > oldMin)) {
                                 depRanges[dep.PackageId] = (dep.Range, range);
                             }
                         }
@@ -106,6 +141,7 @@ internal class OutdatedService {
         _console.WriteInfo("Checking for outdated packages...");
 
         var errorSink = new ErrorSink(_console);
+        _errorSink = errorSink;
         var slnScanner = new SlnScanner(_options, errorSink);
         var slnParser = new SlnParser(_console, errorSink);
         var fileSystem = new FileSystem(_console, errorSink);
@@ -128,6 +164,11 @@ internal class OutdatedService {
         // --comment-orphans, because individual project inputs cannot see all consumers of the CPM
         // file and commenting an entry could break unseen projects.
         var isSolutionMode = false;
+        // Package ids declared in project XML, including inside conditional ItemGroups that MSBuild
+        // evaluation does not surface. Used to keep orphan detection from flagging live entries.
+        var declaredPackageIds = new ConcurrentDictionary<string, byte>(StringComparer.OrdinalIgnoreCase);
+        var evaluationFailures = 0;
+        var metadataFailures = 0;
 
         var parallelOptions = new ParallelOptions {
             MaxDegreeOfParallelism = _options.MaxDegreeOfParallelism
@@ -182,7 +223,17 @@ internal class OutdatedService {
                     // Only process "Release" configuration as per spec
                     if (!string.Equals(projCfg.Configuration, "Release", StringComparison.OrdinalIgnoreCase)) return;
 
+                    // Any throw here escaped Parallel.ForEachAsync, cancelling every project not yet
+                    // scanned - and the run then carried on to report and even --apply against that
+                    // partial view. Contain it per project and record the failure instead.
+                    try {
+                    // Read declared package ids straight from the project XML as well. MSBuild evaluates
+                    // one TFM/configuration at a time, so items inside a conditional ItemGroup are absent
+                    // from the evaluated view; without this they look like unreferenced CPM orphans.
+                    foreach (var declared in ReadDeclaredPackageIds(projCfg.Path)) declaredPackageIds.TryAdd(declared, 0);
+
                     var refs = projParser.GetPackageReferences(projCfg);
+                    if (refs is null) Interlocked.Increment(ref evaluationFailures);
 
                     if (refs is not null) {
                         if (refs.TargetFrameworks is { Length: > 0 }) {
@@ -239,10 +290,17 @@ internal class OutdatedService {
                         var list = allPackageReferences.GetOrAdd(pkg.Id, _ => new PackageInfoContainer());
                         list.Add(pkg);
                     }
+                    }
+                    catch (Exception ex) {
+                        Interlocked.Increment(ref evaluationFailures);
+                        errorSink.AddError("Failed to analyze project.", exception: ex, config: projCfg);
+                        _console.WriteError($"Failed to analyze {projCfg.Path}: {ex.FormatMessage()}", ex);
+                    }
                 });
             });
         }
         catch (Exception ex) {
+            Interlocked.Increment(ref evaluationFailures);
             _console.WriteException(ex);
         }
 
@@ -277,6 +335,9 @@ internal class OutdatedService {
 
             var result = await NugetMetadataService.GetLatestVersionWithFrameworkCheckAsync(client, options, _console, request, ct);
             if (result is null) {
+                // Count it: a network or feed outage made every lookup return null and the command
+                // still exited 0, so CI read "no updates" as success.
+                Interlocked.Increment(ref metadataFailures);
                 _console.WriteWarning($"Failed to retrieve NuGet metadata for {request.PackageId}.");
                 return;
             }
@@ -360,7 +421,7 @@ internal class OutdatedService {
             var orphanCandidates = new List<(string CpmFile, string PackageId, string? CurrentVersion)>();
             foreach (var (cpmFile, entries) in cpmFileEntries) {
                 foreach (var (id, version) in entries) {
-                    if (!allPackageReferences.ContainsKey(id)) {
+                    if (!allPackageReferences.ContainsKey(id) && !declaredPackageIds.ContainsKey(id)) {
                         orphanCandidates.Add((cpmFile, id, version));
                     }
                 }
@@ -393,6 +454,15 @@ internal class OutdatedService {
         }
 
         var willCommentOrphans = commentOrphans && isSolutionMode;
+        if (willCommentOrphans && evaluationFailures > 0) {
+            // A project we could not read contributes no package references, so everything only it
+            // used looks orphaned. Commenting those out breaks the build we failed to inspect.
+            _console.WriteWarning($"{evaluationFailures} project(s) could not be analyzed; not commenting out orphans. Fix those projects or re-run without --comment-orphans.");
+            willCommentOrphans = false;
+        }
+        if (willCommentOrphans && orphansToComment.Count > 0) {
+            _console.WriteWarning("Orphan detection only sees the projects in this input. A Directory.Packages.props shared with another solution may list entries that are used elsewhere.");
+        }
 
         if (interactive && outdatedPerPackage.Count > 0) {
             _console.WriteRule("[bold yellow]Interactive update selection[/]");
@@ -439,11 +509,17 @@ internal class OutdatedService {
         }
 
         if (outdatedPerPackage.Count == 0 && orphansToComment.IsEmpty) {
-            _console.WriteLine("All packages are up to date!");
+            // Only claim everything is up to date when we actually managed to look.
+            if (metadataFailures > 0 || evaluationFailures > 0) {
+                _console.WriteWarning($"Incomplete run: {evaluationFailures} project(s) failed to analyze and {metadataFailures} package lookup(s) failed. Results are not conclusive.");
+            }
+            else {
+                _console.WriteLine("All packages are up to date!");
+            }
             stopwatch.Stop();
             _console.WriteInfo($"Total elapsed time: {stopwatch.Elapsed}");
             errorSink.WriteTo();
-            return 0;
+            return ExitCode(errorSink, evaluationFailures, metadataFailures);
         }
 
         int maxMajorLength = outdatedPerPackage.Values
@@ -674,20 +750,30 @@ internal class OutdatedService {
                 var commentOut = (willCommentOrphans && orphansToComment.TryGetValue(propsPath, out var c))
                     ? (IReadOnlyCollection<string>)c.Keys.ToArray()
                     : Array.Empty<string>();
-                await UpdatePropsFileAsync(propsPath, updates, commentOut, cancellationToken);
-                if (commentOut.Count > 0) {
-                    _console.WriteLine($"Updated {updates.Count} package(s), commented out {commentOut.Count} orphan(s) in {propsPath}");
+                // Report what was actually written. The previous message printed the intended count
+                // regardless of whether any element matched, so "Updated 3 package(s)" was routine on
+                // files where nothing changed at all.
+                var applied = await UpdatePropsFileAsync(propsPath, updates, commentOut, cancellationToken);
+                if (applied == 0) {
+                    _console.WriteWarning($"No changes written to {propsPath}.");
+                }
+                else if (commentOut.Count > 0) {
+                    _console.WriteLine($"Updated {applied} entr(ies) in {propsPath} (including {commentOut.Count} orphan(s) commented out)");
                 }
                 else {
-                    _console.WriteLine($"Updated {updates.Count} package(s) in {propsPath}");
+                    _console.WriteLine($"Updated {applied} package(s) in {propsPath}");
                 }
             }
 
             // Update project files
             foreach (var (projPath, updates) in projectUpdates) {
                 foreach (var (pkg, v) in updates) {
-                    await UpdatePackageVersionAsync(projPath, pkg, v, cancellationToken);
-                    _console.WriteLine($"Updated {pkg} to {v} in {Path.GetFileName(projPath)}");
+                    if (await UpdatePackageVersionAsync(projPath, pkg, v, cancellationToken)) {
+                        _console.WriteLine($"Updated {pkg} to {v.target} in {Path.GetFileName(projPath)}");
+                    }
+                    else {
+                        _console.WriteWarning($"{pkg} was not updated in {Path.GetFileName(projPath)}.");
+                    }
                 }
             }
         }
@@ -699,14 +785,22 @@ internal class OutdatedService {
         _console.WriteInfo($"Total elapsed time: {stopwatch.Elapsed}");
         errorSink.WriteTo();
 
-        return 0;
+        return ExitCode(errorSink, evaluationFailures, metadataFailures);
     }
 
-    internal async Task UpdatePropsFileAsync(
+    /// <summary>
+    /// Non-zero when anything prevented a complete answer, so a CI step cannot read a failed run as
+    /// "no updates available".
+    /// </summary>
+    private static int ExitCode(ErrorSink errorSink, int evaluationFailures, int metadataFailures) =>
+        errorSink.HasErrors || evaluationFailures > 0 || metadataFailures > 0 ? 1 : 0;
+
+    internal async Task<int> UpdatePropsFileAsync(
         string propsPath,
         IReadOnlyDictionary<string, (string target, string? current)> updates,
         IReadOnlyCollection<string> commentOut,
         CancellationToken cancellationToken) {
+        var applied = 0;
         try {
             var commentSet = commentOut is HashSet<string> hs && hs.Comparer == StringComparer.OrdinalIgnoreCase
                 ? hs
@@ -715,7 +809,7 @@ internal class OutdatedService {
             await XmlProjectFile.EditAsync(propsPath, doc => {
                 var changed = false;
                 // Materialize to a list because we mutate the tree (ReplaceWith on comment-outs).
-                var packageVersionElements = doc.Descendants("PackageVersion").ToList();
+                var packageVersionElements = doc.ElementsNamed("PackageVersion").ToList();
                 foreach (var element in packageVersionElements) {
                     var include = element.Attribute("Include")?.Value;
                     if (include is null) continue;
@@ -726,73 +820,109 @@ internal class OutdatedService {
                         var body = " " + serialized.Replace("--", "- -") + " ";
                         element.ReplaceWith(new XComment(body));
                         changed = true;
+                        applied++;
                         continue;
                     }
 
                     if (updates.TryGetValue(include, out var newVersion)) {
                         var versionAttr = element.Attribute("Version");
-                        if (versionAttr != null && versionAttr.Value != newVersion.target) {
-                            versionAttr.Value = newVersion.target;
-                            changed = true;
-                        }
-                    }
-                }
-                return changed;
-            }, cancellationToken);
-        }
-        catch (Exception ex) {
-            _console.WriteError($"Failed to update {propsPath}: {ex.FormatMessage()}");
-        }
-    }
-
-    private async Task UpdatePackageVersionAsync(string projectPath, string packageId, (string target, string? currentVersion, VersionReason reason) newVersion, CancellationToken cancellationToken) {
-        try {
-            await XmlProjectFile.EditAsync(projectPath, doc => {
-                var changed = false;
-                var packageRefElements = doc.Descendants("PackageReference")
-                    .Where(e => string.Equals(e.Attribute("Include")?.Value, packageId, StringComparison.OrdinalIgnoreCase));
-
-                foreach (var element in packageRefElements) {
-                    if (VersionReason.VersionOverrideProj == newVersion.reason) {
-                        var verOverrideElem = element.Element("VersionOverride");
-                        if (verOverrideElem != null) {
-                            verOverrideElem.Value = newVersion.target;
-                            changed = true;
+                        var versionElement = element.ChildNamed("Version");
+                        var currentValue = versionAttr?.Value ?? versionElement?.Value;
+                        if (currentValue is null) continue;
+                        if (!IsLiteralVersion(currentValue)) {
+                            _console.WriteWarning($"Leaving {include} at '{currentValue}' in {propsPath}: floating versions, ranges and property references are not rewritten.");
                             continue;
                         }
-                        else {
-                            _console.WriteWarning($"Expected VersionOverride element for {packageId} in {projectPath} not found. Falling back to Version element.");
-                            var versionAttr = element.Attribute("Version");
-                            var versionElement = element.Element("Version");
-                            if (versionAttr != null) {
-                                versionAttr.Value = newVersion.target;
-                                changed = true;
-                            }
-                            else if (versionElement != null) {
-                                versionElement.Value = newVersion.target;
-                                changed = true;
-                            }
-                        }
-                    }
-                    else {
-                        var versionAttr = element.Attribute("Version");
-                        var versionElement = element.Element("Version");
+                        if (currentValue == newVersion.target) continue;
 
-                        if (versionAttr != null) {
-                            versionAttr.Value = newVersion.target;
-                            changed = true;
-                        }
-                        else if (versionElement != null) {
-                            versionElement.Value = newVersion.target;
-                            changed = true;
-                        }
+                        if (versionAttr is { }) versionAttr.Value = newVersion.target;
+                        else versionElement!.Value = newVersion.target;
+                        changed = true;
+                        applied++;
                     }
                 }
                 return changed;
             }, cancellationToken);
         }
         catch (Exception ex) {
-            _console.WriteError($"Failed to update {projectPath}: {ex.FormatMessage()}");
+            _errorSink?.AddError($"Failed to update {propsPath}.", exception: ex);
+            _console.WriteError($"Failed to update {propsPath}: {ex.FormatMessage()}", ex);
+            return 0;
+        }
+        return applied;
+    }
+
+    /// <summary>
+    /// A version we may safely overwrite with a literal. Floating versions ("9.*"), ranges
+    /// ("[9.0.0,10.0.0)") and property references ("$(XVersion)") were previously replaced with a
+    /// concrete number, silently pinning a deliberately flexible reference.
+    /// </summary>
+    internal static bool IsLiteralVersion(string? version) {
+        if (string.IsNullOrWhiteSpace(version)) return false;
+        if (version.Contains('*') || version.Contains('$') || version.Contains('[') || version.Contains('(')) return false;
+        return NuGetVersion.TryParse(version, out _);
+    }
+
+    private async Task<bool> UpdatePackageVersionAsync(string projectPath, string packageId, (string target, string? currentVersion, VersionReason reason) newVersion, CancellationToken cancellationToken) {
+        try {
+            return await XmlProjectFile.EditAsync(projectPath, doc => {
+                var changed = false;
+                var packageRefElements = doc.ElementsNamed("PackageReference")
+                    .Where(e => string.Equals(e.Attribute("Include")?.Value, packageId, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+
+                // The reported "current" version came from the evaluated project, which sees only the
+                // items active for the evaluated TFM/configuration. Rewriting a condition-scoped item
+                // would change a pin that never appeared in the report - e.g. bumping a net48-only
+                // reference to a version that does not support net48.
+                var conditioned = packageRefElements.Where(e => e.IsConditioned()).ToList();
+                if (conditioned.Count > 0) {
+                    _console.WriteWarning($"Skipping {conditioned.Count} conditional {packageId} reference(s) in {projectPath}; update them by hand.");
+                }
+
+                foreach (var element in packageRefElements.Except(conditioned)) {
+                    // VersionOverride may be written as an attribute or as a child element; MSBuild
+                    // metadata (which drove the reason) covers both, so only checking for the element
+                    // meant the attribute form silently had its Version rewritten instead - leaving the
+                    // override, which wins at restore, untouched.
+                    var overrideAttr = element.Attribute("VersionOverride");
+                    var overrideElement = element.ChildNamed("VersionOverride");
+                    var versionAttr = element.Attribute("Version");
+                    var versionElement = element.ChildNamed("Version");
+
+                    var useOverride = VersionReason.VersionOverrideProj == newVersion.reason
+                        && (overrideAttr is { } || overrideElement is { });
+
+                    var currentValue = useOverride
+                        ? overrideAttr?.Value ?? overrideElement?.Value
+                        : versionAttr?.Value ?? versionElement?.Value;
+
+                    if (currentValue is null) {
+                        _console.WriteWarning($"No version to update for {packageId} in {projectPath}.");
+                        continue;
+                    }
+                    if (!IsLiteralVersion(currentValue)) {
+                        _console.WriteWarning($"Leaving {packageId} at '{currentValue}' in {projectPath}: floating versions, ranges and property references are not rewritten.");
+                        continue;
+                    }
+                    if (currentValue == newVersion.target) continue;
+
+                    if (useOverride) {
+                        if (overrideAttr is { }) overrideAttr.Value = newVersion.target;
+                        else overrideElement!.Value = newVersion.target;
+                    }
+                    else if (versionAttr is { }) versionAttr.Value = newVersion.target;
+                    else versionElement!.Value = newVersion.target;
+
+                    changed = true;
+                }
+                return changed;
+            }, cancellationToken);
+        }
+        catch (Exception ex) {
+            _errorSink?.AddError($"Failed to update {projectPath}.", exception: ex);
+            _console.WriteError($"Failed to update {projectPath}: {ex.FormatMessage()}", ex);
+            return false;
         }
     }
 

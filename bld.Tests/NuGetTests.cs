@@ -77,7 +77,7 @@ public class ManualTests {
     [InlineData("Newtonsoft.Json")]
     [InlineData("Microsoft.Build.Utilities.Core")]
     [InlineData("System.Data.DataSetExtensions")]
-    [InlineData("MemoryPack")]
+    //[InlineData("MemoryPack")] // moved: MemoryPack ships netstandard2.1, not 2.0 - see RunPackageIds_RequiresEveryRequestedFramework
     //[InlineData("MemoryPack.Generator")]
     public async Task RunPackageIds(string packageId) {
         // Arrange
@@ -97,6 +97,55 @@ public class ManualTests {
         Assert.NotNull(result);
         Assert.NotEmpty(result.TargetFrameworkVersions);
         Console.WriteLine($"Found versions: {string.Join(", ", result.TargetFrameworkVersions.Select(kv => $"{kv.Key}:{kv.Value}"))}");
+    }
+
+    /// <summary>
+    /// A candidate version must support *every* requested framework. Accepting a partial match let a
+    /// solution mixing frameworks be upgraded to a version that had dropped one of them.
+    /// MemoryPack publishes net7.0/net8.0/netstandard2.1 groups, so netstandard2.0 is not satisfiable.
+    /// </summary>
+    [Fact]
+    public async Task RunPackageIds_RequiresEveryRequestedFramework() {
+        var options = new NugetMetadataOptions { MaxParallelRequests = 1 };
+        var client = NugetMetadataService.CreateHttpClient(options);
+
+        var unsatisfiable = await NugetMetadataService.GetLatestVersionWithFrameworkCheckAsync(client, options, default,
+            new PackageVersionRequest {
+                PackageId = "MemoryPack",
+                AllowPrerelease = false,
+                CompatibleTargetFrameworks = ["net8.0", "netstandard2.0"]
+            });
+        Assert.Null(unsatisfiable);
+
+        var satisfiable = await NugetMetadataService.GetLatestVersionWithFrameworkCheckAsync(client, options, default,
+            new PackageVersionRequest {
+                PackageId = "MemoryPack",
+                AllowPrerelease = false,
+                CompatibleTargetFrameworks = ["net8.0", "netstandard2.1"]
+            });
+        Assert.NotNull(satisfiable);
+        Assert.Equal(2, satisfiable.TargetFrameworkVersions.Count);
+    }
+
+    /// <summary>
+    /// Without --prerelease a prerelease may only be offered for a package that has no stable release
+    /// at all. It used to be offered whenever no stable version matched the requested frameworks, so a
+    /// framework mismatch could pin a beta.
+    /// </summary>
+    [Fact]
+    public async Task RunPackageIds_DoesNotFallBackToPrereleaseOnFrameworkMismatch() {
+        var options = new NugetMetadataOptions { MaxParallelRequests = 1 };
+        var client = NugetMetadataService.CreateHttpClient(options);
+
+        var result = await NugetMetadataService.GetLatestVersionWithFrameworkCheckAsync(client, options, default,
+            new PackageVersionRequest {
+                PackageId = "MemoryPack",
+                AllowPrerelease = false,
+                CompatibleTargetFrameworks = ["net8.0", "netstandard2.0"]
+            });
+
+        // Null, not a prerelease that happens to satisfy neither.
+        Assert.Null(result);
     }
 
     [Theory()]
