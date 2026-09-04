@@ -47,28 +47,22 @@ internal class MSBuildService : IMSBuildService, IDisposable {
                                 console?.WriteWarning($"Registering MSBuild instance: {loc.Name} {loc.MSBuildPath} {Path.Exists(loc.MSBuildPath)} {loc.Version}");
                                 NuGetAssemblyResolver.MSBuildDirectory = loc.MSBuildPath;
                                 MSBuildLocator.RegisterInstance(loc);
+                                // Fall through to set _isRegistered: returning here left IsRegistered
+                                // reporting false after a successful registration.
+                                _isRegistered = true;
                                 return;
                             }
                         }
 
-                        var queryOptions = new VisualStudioInstanceQueryOptions { DiscoveryTypes = DiscoveryType.VisualStudioSetup | DiscoveryType.DotNetSdk | DiscoveryType.DeveloperConsole };
-
-                        var instance = MSBuildLocator.QueryVisualStudioInstances(queryOptions)
-                            .Where(x => x.DiscoveryType != DiscoveryType.DotNetSdk)
-                            .OrderByDescending(x => x.Version)
-                            .FirstOrDefault();
-
-                        if (instance is { })
-                        {
-                            NuGetAssemblyResolver.MSBuildDirectory = instance.MSBuildPath;
-                            MSBuildLocator.RegisterInstance(instance);
-                            console?.WriteDebug($"Registered MSBuild instance: {instance.Name} {instance.Version} ({instance.MSBuildPath})");
-                        }
-                        else {
-                            instance = MSBuildLocator.RegisterDefaults();
-                            NuGetAssemblyResolver.MSBuildDirectory = instance.MSBuildPath;
-                            console?.WriteDebug($"Registered default MSBuild instance: {instance.Name} {instance.Version} ({instance.MSBuildPath})");
-                        }
+                        // On .NET, MSBuildLocator only discovers .NET SDK instances: VisualStudioSetup
+                        // and DeveloperConsole discovery live behind #if NET46 in the locator, so the
+                        // former "prefer the newest non-SDK instance" query here could never match and
+                        // always fell through. RegisterDefaults resolves through hostfxr, which honours
+                        // a global.json in the current working directory - use --use-vs (VSService) to
+                        // host a Visual Studio MSBuild instead.
+                        var instance = MSBuildLocator.RegisterDefaults();
+                        NuGetAssemblyResolver.MSBuildDirectory = instance.MSBuildPath;
+                        console?.WriteDebug($"Registered MSBuild instance: {instance.Name} {instance.Version} ({instance.MSBuildPath})");
                     }
                     _isRegistered = true;
                 }

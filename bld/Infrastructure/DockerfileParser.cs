@@ -1,11 +1,8 @@
-using System.Text.RegularExpressions;
-
 namespace bld.Infrastructure;
 
 /// <summary>
-/// Parses Dockerfiles to extract configuration information.
-/// Note: This parser has limited support for multi-line directives (those ending with backslash).
-/// Multi-line directives are currently skipped for simplicity.
+/// Parses Dockerfiles to extract configuration information. Backslash continuations are folded into
+/// one logical line before parsing; heredocs and ARG/ENV substitution are still not interpreted.
 /// </summary>
 internal class DockerfileParser {
     public record DockerfileInfo {
@@ -26,80 +23,92 @@ internal class DockerfileParser {
         }
 
         var lines = await File.ReadAllLinesAsync(filePath);
-        
-        foreach (var rawLine in lines) {
-            var line = rawLine.Trim();
-            
-            // Skip comments and empty lines
-            if (string.IsNullOrWhiteSpace(line) || line.StartsWith('#')) {
-                continue;
-            }
 
-            // Handle line continuations - skip for now as they require multi-line processing
-            // This is a known limitation: multi-line directives are not fully parsed
-            if (line.EndsWith('\\')) {
-                continue;
-            }
+        foreach (var line in JoinContinuations(lines)) {
+            // Directive and argument may be separated by any whitespace, including a tab.
+            var split = line.Split((char[]?)null, 2, StringSplitOptions.RemoveEmptyEntries);
+            if (split.Length < 2) continue;
+            var directive = split[0];
+            var rest = split[1].Trim();
 
-            // Parse FROM directive
-            if (line.StartsWith("FROM ", StringComparison.OrdinalIgnoreCase)) {
-                var parts = line.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-                if (parts.Length >= 2) {
-                    var image = parts[1];
-                    info.BaseImages.Add(image);
-                    
-                    // Check for stage name (FROM image AS stage)
-                    if (parts.Length >= 4 && parts[2].Equals("AS", StringComparison.OrdinalIgnoreCase)) {
-                        info.Stages.Add(parts[3]);
+            if (directive.Equals("FROM", StringComparison.OrdinalIgnoreCase)) {
+                // FROM [--platform=...] <image> [AS <stage>] - the flags are not the image name.
+                var parts = rest.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)
+                    .SkipWhile(p => p.StartsWith("--", StringComparison.Ordinal))
+                    .ToArray();
+                if (parts.Length >= 1) {
+                    info.BaseImages.Add(parts[0]);
+
+                    if (parts.Length >= 3 && parts[1].Equals("AS", StringComparison.OrdinalIgnoreCase)) {
+                        info.Stages.Add(parts[2]);
                     }
                 }
             }
-            // Parse EXPOSE directive
-            else if (line.StartsWith("EXPOSE ", StringComparison.OrdinalIgnoreCase)) {
-                var parts = line.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-                for (int i = 1; i < parts.Length; i++) {
-                    info.ExposedPorts.Add(parts[i]);
-                }
+            else if (directive.Equals("EXPOSE", StringComparison.OrdinalIgnoreCase)) {
+                info.ExposedPorts.AddRange(rest.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
             }
-            // Parse WORKDIR directive
-            else if (line.StartsWith("WORKDIR ", StringComparison.OrdinalIgnoreCase)) {
-                var parts = line.Split(new[] { ' ' }, 2, StringSplitOptions.RemoveEmptyEntries);
-                if (parts.Length >= 2) {
-                    info.WorkDir = parts[1];
-                }
+            else if (directive.Equals("WORKDIR", StringComparison.OrdinalIgnoreCase)) {
+                info.WorkDir = rest;
             }
-            // Parse ENTRYPOINT directive
-            else if (line.StartsWith("ENTRYPOINT ", StringComparison.OrdinalIgnoreCase)) {
-                var parts = line.Split(new[] { ' ' }, 2, StringSplitOptions.RemoveEmptyEntries);
-                if (parts.Length >= 2) {
-                    info.EntryPoint = parts[1];
-                }
+            else if (directive.Equals("ENTRYPOINT", StringComparison.OrdinalIgnoreCase)) {
+                info.EntryPoint = rest;
             }
-            // Parse CMD directive
-            else if (line.StartsWith("CMD ", StringComparison.OrdinalIgnoreCase)) {
-                var parts = line.Split(new[] { ' ' }, 2, StringSplitOptions.RemoveEmptyEntries);
-                if (parts.Length >= 2) {
-                    info.Cmd = parts[1];
-                }
+            else if (directive.Equals("CMD", StringComparison.OrdinalIgnoreCase)) {
+                info.Cmd = rest;
             }
         }
 
         return info;
     }
 
-    public static Task<List<string>> FindDockerfilesAsync(string rootPath, int maxDepth = 3) {
+    /// <summary>
+    /// Folds backslash-continued lines into single logical instructions. Dropping a continued line and
+    /// then parsing the next physical line as a fresh instruction did not merely lose detail - it
+    /// reported no ENTRYPOINT at all for the common `ENTRYPOINT ["dotnet", \` / `"app.dll"]` form.
+    /// </summary>
+    internal static IEnumerable<string> JoinContinuations(IEnumerable<string> lines) {
+        var pending = (string?)null;
+
+        foreach (var rawLine in lines) {
+            var line = rawLine.Trim();
+
+            if (pending is null && (line.Length == 0 || line.StartsWith('#'))) continue;
+            // A comment inside a continuation is stripped by Docker as well.
+            if (pending is { } && line.StartsWith('#')) continue;
+
+            var continues = line.EndsWith('\\');
+            if (continues) line = line[..^1].TrimEnd();
+
+            pending = pending is null ? line : $"{pending} {line}".Trim();
+
+            if (!continues) {
+                if (pending.Length > 0) yield return pending;
+                pending = null;
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(pending)) yield return pending;
+    }
+
+    public static Task<List<string>> FindDockerfilesAsync(string rootPath, int maxDepth = 3, Action<string, Exception>? onError = null) {
         var dockerfiles = new List<string>();
-        
+
+        // A Dockerfile passed directly as the root used to yield nothing at all.
+        if (File.Exists(rootPath)) {
+            if (Path.GetFileName(rootPath).StartsWith("Dockerfile", StringComparison.OrdinalIgnoreCase)) dockerfiles.Add(rootPath);
+            return Task.FromResult(dockerfiles);
+        }
+
         if (!Directory.Exists(rootPath)) {
             return Task.FromResult(dockerfiles);
         }
 
-        FindDockerfilesRecursive(rootPath, 0, maxDepth, dockerfiles);
-        
+        FindDockerfilesRecursive(rootPath, 0, maxDepth, dockerfiles, onError);
+
         return Task.FromResult(dockerfiles);
     }
 
-    private static void FindDockerfilesRecursive(string currentPath, int currentDepth, int maxDepth, List<string> dockerfiles) {
+    private static void FindDockerfilesRecursive(string currentPath, int currentDepth, int maxDepth, List<string> dockerfiles, Action<string, Exception>? onError) {
         if (currentDepth > maxDepth) {
             return;
         }
@@ -119,14 +128,11 @@ internal class DockerfileParser {
                     continue;
                 }
                 
-                FindDockerfilesRecursive(dir, currentDepth + 1, maxDepth, dockerfiles);
+                FindDockerfilesRecursive(dir, currentDepth + 1, maxDepth, dockerfiles, onError);
             }
         }
-        catch (UnauthorizedAccessException) {
-            // Skip directories we don't have access to
-        }
-        catch (Exception) {
-            // Skip directories that cause other errors
+        catch (Exception ex) {
+            onError?.Invoke(currentPath, ex);
         }
     }
 }

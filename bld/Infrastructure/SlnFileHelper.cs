@@ -111,6 +111,14 @@ internal static class SlnFileHelper {
             return Path.GetFullPath(converted);
         }
 
+        // A UNC path is meaningless off Windows: NormalizeSlashes turns \\server\share into
+        // //server/share, which Path.IsPathRooted accepts and GetFullPath collapses to the bogus local
+        // path /server/share. Keep it verbatim so the caller reports "not found" rather than parsing
+        // some unrelated file.
+        if (!OperatingSystem.IsWindows() && path.StartsWith(@"\\", StringComparison.Ordinal)) {
+            return path;
+        }
+
         var normalized = NormalizeSlashes(path);
 
         if (!OperatingSystem.IsWindows()

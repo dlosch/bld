@@ -1,3 +1,4 @@
+using Microsoft.Build.Locator;
 using System.Reflection;
 using System.Runtime.Loader;
 
@@ -15,8 +16,43 @@ namespace bld.Infrastructure;
 internal static class NuGetAssemblyResolver {
     private static readonly string BundledDirectory = Path.Combine(AppContext.BaseDirectory, "nuget");
 
-    /// <summary>Directory of the registered MSBuild instance. Set before its assemblies are loaded.</summary>
-    public static string? MSBuildDirectory { get; set; }
+    private static readonly object _lock = new();
+    private static string? _msbuildDirectory;
+    private static bool _probed;
+
+    /// <summary>
+    /// Directory of the MSBuild instance we host. MSBuildService sets this when it registers, but a
+    /// NuGet.* assembly can be resolved earlier than that - JIT of a method mentioning NuGet types
+    /// loads them before the method's first statement runs, which is exactly what `outdated` does.
+    /// Once a version is bound into the default load context it cannot be swapped, so the resolver
+    /// discovers the directory itself rather than depending on call order.
+    /// </summary>
+    public static string? MSBuildDirectory {
+        get {
+            lock (_lock) {
+                if (_msbuildDirectory is null && !_probed) {
+                    _probed = true;
+                    try {
+                        // Same choice RegisterDefaults makes: the locator lists the global.json-resolved
+                        // SDK first, then the newest.
+                        _msbuildDirectory = MSBuildLocator
+                            .QueryVisualStudioInstances(VisualStudioInstanceQueryOptions.Default)
+                            .FirstOrDefault()?.MSBuildPath;
+                    }
+                    catch {
+                        // No SDK discoverable: fall back to the bundled copies only.
+                    }
+                }
+                return _msbuildDirectory;
+            }
+        }
+        set {
+            lock (_lock) {
+                _msbuildDirectory = value;
+                _probed = true;
+            }
+        }
+    }
 
     /// <summary>Must run before any NuGet.* type is touched and before MSBuildLocator adds its own resolver.</summary>
     public static void Register() => AssemblyLoadContext.Default.Resolving += Resolve;

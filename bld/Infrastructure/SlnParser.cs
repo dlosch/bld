@@ -52,17 +52,23 @@ internal sealed class SlnParser(IConsoleOutput Output, ErrorSink ErrorSink) {
             }
 
             var proj = new Proj(fullyQualifiedPath, sln);
-            if (project.ProjectConfigurations is { }) {
-                foreach (var cfg in project.ProjectConfigurations
-                      .Select(x => (x.Value?.ConfigurationName, queryPlatform ? x.Value?.PlatformName : null))
-                            .Where(x => x.ConfigurationName is not null)
-                            .Distinct()
-                    ) {
+            // ProjectConfigurations is never null - it is an empty dictionary when the solution has no
+            // ActiveCfg entries for this project - so the null check alone left the fallback below
+            // unreachable and the project was dropped from the run without a word.
+            var configurations = project.ProjectConfigurations
+                  .Select(x => (x.Value?.ConfigurationName, queryPlatform ? x.Value?.PlatformName : null))
+                        .Where(x => x.ConfigurationName is not null)
+                        .Distinct()
+                        .ToList();
+
+            if (configurations.Count > 0) {
+                foreach (var cfg in configurations) {
                     var projCfg = new ProjCfg(proj, cfg.ConfigurationName!, cfg.Item2);
                     yield return projCfg;
                 }
             }
             else {
+                Output.WriteWarning($"{fullyQualifiedPath} has no configuration entries in {Path.GetFileName(slnPath)}; assuming default configurations.");
                 if (createDefaultDebugConfiguration) {
                     var projCfg = new ProjCfg(proj, "Debug", null);
                     yield return projCfg;

@@ -275,7 +275,7 @@ internal class OutdatedService {
                 CompatibleTargetFrameworks = SelectCompatibleTargetFrameworks(skipTfmCheck, packageReference.Value)
             };
 
-            var result = await NugetMetadataService.GetLatestVersionWithFrameworkCheckAsync(client, options, _console, request);
+            var result = await NugetMetadataService.GetLatestVersionWithFrameworkCheckAsync(client, options, _console, request, ct);
             if (result is null) {
                 _console.WriteWarning($"Failed to retrieve NuGet metadata for {request.PackageId}.");
                 return;
@@ -374,7 +374,7 @@ internal class OutdatedService {
                         AllowPrerelease = includePrerelease,
                         CompatibleTargetFrameworks = tfmList
                     };
-                    var result = await NugetMetadataService.GetLatestVersionWithFrameworkCheckAsync(client, options, _console, request);
+                    var result = await NugetMetadataService.GetLatestVersionWithFrameworkCheckAsync(client, options, _console, request, ct);
                     if (result?.TargetFrameworkVersions is null || result.TargetFrameworkVersions.Count == 0) {
                         _console.WriteDebug($"No NuGet metadata for orphan {orphan.PackageId} in {orphan.CpmFile}");
                         return;

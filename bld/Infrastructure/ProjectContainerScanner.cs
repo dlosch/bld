@@ -20,19 +20,25 @@ internal class ProjectContainerScanner {
         public bool EnableSdkContainerSupport { get; init; }
     }
 
-    public static Task<List<string>> FindProjectFilesAsync(string rootPath, int maxDepth = 3) {
+    public static Task<List<string>> FindProjectFilesAsync(string rootPath, int maxDepth = 3, Action<string, Exception>? onError = null) {
         var projects = new List<string>();
-        
+
+        // Accept a project file directly, matching the documented "Root directory, .sln, or project file".
+        if (File.Exists(rootPath)) {
+            if (SlnScanner.IsProjectFile(rootPath)) projects.Add(rootPath);
+            return Task.FromResult(projects);
+        }
+
         if (!Directory.Exists(rootPath)) {
             return Task.FromResult(projects);
         }
 
-        FindProjectFilesRecursive(rootPath, 0, maxDepth, projects);
-        
+        FindProjectFilesRecursive(rootPath, 0, maxDepth, projects, onError);
+
         return Task.FromResult(projects);
     }
 
-    private static void FindProjectFilesRecursive(string currentPath, int currentDepth, int maxDepth, List<string> projects) {
+    private static void FindProjectFilesRecursive(string currentPath, int currentDepth, int maxDepth, List<string> projects, Action<string, Exception>? onError) {
         if (currentDepth > maxDepth) {
             return;
         }
@@ -50,19 +56,22 @@ internal class ProjectContainerScanner {
                 if (dirName is "bin" or "obj" or "node_modules" or ".git" or ".vs" or "packages") {
                     continue;
                 }
-                
-                FindProjectFilesRecursive(dir, currentDepth + 1, maxDepth, projects);
+
+                FindProjectFilesRecursive(dir, currentDepth + 1, maxDepth, projects, onError);
             }
         }
-        catch (UnauthorizedAccessException) {
-            // Skip directories we don't have access to
-        }
-        catch (Exception) {
-            // Skip directories that cause other errors
+        catch (Exception ex) {
+            // Swallowing this silently truncated the whole subtree and looked like "nothing found".
+            onError?.Invoke(currentPath, ex);
         }
     }
 
-    public static Task<ContainerProjectInfo?> ParseProjectAsync(string projectPath, Dictionary<string, string>? globalProperties = null) {
+    /// <summary>
+    /// Returns null both for "not a container project" and, previously, for "could not be evaluated",
+    /// which made a repo-wide evaluation failure look like an empty result. <paramref name="onError"/>
+    /// lets the caller tell the two apart.
+    /// </summary>
+    public static Task<ContainerProjectInfo?> ParseProjectAsync(string projectPath, Dictionary<string, string>? globalProperties = null, Action<string, Exception>? onError = null) {
         if (!File.Exists(projectPath)) {
             return Task.FromResult<ContainerProjectInfo?>(null);
         }
@@ -109,8 +118,8 @@ internal class ProjectContainerScanner {
                 EnableSdkContainerSupport = enableSdkContainer?.Equals("true", StringComparison.OrdinalIgnoreCase) == true
             });
         }
-        catch (Exception) {
-            // Failed to parse project - return null
+        catch (Exception ex) {
+            onError?.Invoke(projectPath, ex);
             return Task.FromResult<ContainerProjectInfo?>(null);
         }
     }

@@ -53,6 +53,7 @@ internal sealed class ContainerizeCommand : BaseCommand {
         var shouldScanProjects = scanAll || scanProjects;
 
         // Initialize MSBuild if we need to scan projects
+        var resolvedOptions = default(CleaningOptions);
         if (shouldScanProjects) {
             var options = new CleaningOptions {
                 LogLevel = logLevel,
@@ -66,6 +67,7 @@ internal sealed class ContainerizeCommand : BaseCommand {
             }
 
             Services.MSBuildService.RegisterMSBuildDefaults(Output, options);
+            resolvedOptions = options;
         }
 
         Output.WriteInfo($"Scanning: {rootPath}");
@@ -76,21 +78,36 @@ internal sealed class ContainerizeCommand : BaseCommand {
 
         // Scan for .NET container projects
         if (shouldScanProjects) {
-            var projectFiles = await ProjectContainerScanner.FindProjectFilesAsync(rootPath, depth);
+            var failures = 0;
+            void ReportFailure(string path, Exception ex) {
+                failures++;
+                Output.WriteWarning($"Could not evaluate {path}: {ex.FormatMessage()}");
+            }
+
+            var projectFiles = await ProjectContainerScanner.FindProjectFilesAsync(rootPath, depth, ReportFailure);
             var containerProjects = new List<ProjectContainerScanner.ContainerProjectInfo>();
 
-            // Prepare global properties for project evaluation
+            // Prepare global properties for project evaluation. Reading the raw option here discarded
+            // the VSToolsPath resolved above, so projects needing those targets failed to evaluate and
+            // were silently reported as "not a container project".
             var globalProps = new Dictionary<string, string>();
-            var vsToolsPath = parseResult.GetValue(_vsToolsPath);
-            if (!string.IsNullOrEmpty(vsToolsPath)) {
-                globalProps["VSToolsPath"] = vsToolsPath;
+            if (!string.IsNullOrEmpty(resolvedOptions?.VSToolsPath)) {
+                globalProps["VSToolsPath"] = resolvedOptions.VSToolsPath;
+            }
+            if (!string.IsNullOrEmpty(resolvedOptions?.VSRootPath) && Directory.Exists(Path.Combine(resolvedOptions.VSRootPath, "MSBuild"))) {
+                globalProps["MSBuildExtensionsPath"] = Path.Combine(resolvedOptions.VSRootPath, "MSBuild");
             }
 
             foreach (var projectFile in projectFiles) {
-                var projectInfo = await ProjectContainerScanner.ParseProjectAsync(projectFile, globalProps);
+                cancellationToken.ThrowIfCancellationRequested();
+                var projectInfo = await ProjectContainerScanner.ParseProjectAsync(projectFile, globalProps, ReportFailure);
                 if (projectInfo != null) {
                     containerProjects.Add(projectInfo);
                 }
+            }
+
+            if (failures > 0) {
+                Output.WriteWarning($"{failures} project(s) could not be evaluated and were skipped; results may be incomplete.");
             }
 
             if (containerProjects.Count > 0) {
@@ -160,7 +177,8 @@ internal sealed class ContainerizeCommand : BaseCommand {
 
         // Scan for Dockerfiles
         if (shouldScanDockerfiles) {
-            var dockerfiles = await DockerfileParser.FindDockerfilesAsync(rootPath, depth);
+            var dockerfiles = await DockerfileParser.FindDockerfilesAsync(rootPath, depth,
+                (path, ex) => Output.WriteWarning($"Could not scan {path}: {ex.FormatMessage()}"));
 
             if (dockerfiles.Count > 0) {
                 foundAny = true;

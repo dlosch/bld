@@ -19,7 +19,10 @@ internal record class ProjectPackageReferenceInfo(
         string? CpmFile,
         Dictionary<string, Pkg> PackageReferences,
         Dictionary<string, PackageVersionEntry>? PackageVersions) {
-    public string TargetFramework => TargetFrameworks.First();
+    // FirstOrDefault, not First: a project with no TargetFramework/TargetFrameworks/TargetFrameworkVersion
+    // (a .vcxproj carrying PackageReferences, say) threw here from inside Parallel.ForEachAsync, which
+    // cancelled every project not yet scanned while the run carried on with the partial result.
+    public string TargetFramework => TargetFrameworks.FirstOrDefault() ?? string.Empty;
 }
 internal record class ProjectPackage(string PackageId, string? Version);
 
@@ -41,6 +44,16 @@ internal sealed class ProjParser(IConsoleOutput Output, ErrorSink ErrorSink, Cle
         return dict;
     }
 
+    /// <summary>
+    /// Reads item metadata by name. MSBuild metadata names are case-insensitive, so the previous
+    /// `meta.Name == "Version"` comparison missed a lowercase `version="1.2.3"` attribute and the
+    /// package was then reported with no version at all.
+    /// </summary>
+    private static string? Meta(ProjectItem item, string name) {
+        var value = item.GetMetadataValue(name);
+        return string.IsNullOrEmpty(value) ? null : value;
+    }
+
     internal ProjectPackageReferenceInfo? GetPackageReferences(ProjCfg proj) {
         Output.WriteDebug($"Loading project {proj.Path} [{proj.Configuration}]...");
         string projectPath = proj.Path;
@@ -53,6 +66,11 @@ internal sealed class ProjParser(IConsoleOutput Output, ErrorSink ErrorSink, Cle
             if (!string.IsNullOrEmpty(configuration)) {
                 properties["Configuration"] = configuration;
             }
+            // Platform matters for .vcxproj, whose output path is <Platform>\<Configuration>\. Without
+            // it every platform evaluated identically and only the default one was ever cleaned.
+            if (!string.IsNullOrEmpty(proj.Platform)) {
+                properties["Platform"] = proj.Platform;
+            }
             try {
                 project = new Project(projectPath, properties, null, projectCollection);
                 var usesCpm = SafeBool(project.GetPropertyValue("ManagePackageVersionsCentrally"));
@@ -64,11 +82,11 @@ internal sealed class ProjParser(IConsoleOutput Output, ErrorSink ErrorSink, Cle
                 var versions = packageVersionItems is null
                     ? null
                     : packageVersionItems
-                        .DistinctBy(pr => pr.Xml.Include, StringComparer.OrdinalIgnoreCase)
+                        .DistinctBy(pr => pr.EvaluatedInclude, StringComparer.OrdinalIgnoreCase)
                         .ToDictionary(
-                                pr => pr.Xml.Include
+                                pr => pr.EvaluatedInclude
                                 , pr => new PackageVersionEntry(
-                                    pr.Metadata?.FirstOrDefault(meta => meta.Name == "Version")?.EvaluatedValue,
+                                    Meta(pr, "Version"),
                                     pr.Xml?.ContainingProject?.FullPath)
                                 , StringComparer.OrdinalIgnoreCase);
 
@@ -98,16 +116,20 @@ internal sealed class ProjParser(IConsoleOutput Output, ErrorSink ErrorSink, Cle
                     project.TfmOrTfmsSafe(),
                     usesCpm,
                     cpmFile,
-                        // todo this pukes if a single package reference include is included more than once
-                        // dotnet build picks the first not the highest or lowest and warns only
+                        // EvaluatedInclude, not Xml.Include: the raw attribute keeps property references
+                        // ("$(Prefix)soft.Json") and, for a multi-id include ("A;B"), is the same string on
+                        // every produced item - so one of them was dropped by DistinctBy and the package id
+                        // sent to NuGet was one that does not exist. Orphan detection keys off this same
+                        // dictionary, so a raw id there meant the matching PackageVersion looked unused.
+                        // dotnet build picks the first duplicate, not the highest or lowest, and warns only.
                         project.GetItems("PackageReference")
-                                .DistinctBy(pr => pr.Xml.Include, StringComparer.OrdinalIgnoreCase)
-                                .ToDictionary(pr => pr.Xml.Include, pr =>
+                                .DistinctBy(pr => pr.EvaluatedInclude, StringComparer.OrdinalIgnoreCase)
+                                .ToDictionary(pr => pr.EvaluatedInclude, pr =>
 
-                                    new Pkg(pr.Xml.Include
-                                        , pr.Metadata?.FirstOrDefault(meta => meta.Name == "Version")?.EvaluatedValue
-                                        , pr.Metadata?.FirstOrDefault(meta => meta.Name == "VersionOverride")?.EvaluatedValue
-                                        , versions?.GetValueOrDefault(pr.Xml.Include)?.Version
+                                    new Pkg(pr.EvaluatedInclude
+                                        , Meta(pr, "Version")
+                                        , Meta(pr, "VersionOverride")
+                                        , versions?.GetValueOrDefault(pr.EvaluatedInclude)?.Version
                                         )
                                     , StringComparer.OrdinalIgnoreCase)
                                 ,
@@ -171,6 +193,11 @@ internal sealed class ProjParser(IConsoleOutput Output, ErrorSink ErrorSink, Cle
             var properties = new Dictionary<string, string>(GlobalProperties);
             if (!string.IsNullOrEmpty(configuration)) {
                 properties["Configuration"] = configuration;
+            }
+            // Platform matters for .vcxproj, whose output path is <Platform>\<Configuration>\. Without
+            // it every platform evaluated identically and only the default one was ever cleaned.
+            if (!string.IsNullOrEmpty(proj.Platform)) {
+                properties["Platform"] = proj.Platform;
             }
             try {
                 project = new Project(projectPath, properties, null, projectCollection);

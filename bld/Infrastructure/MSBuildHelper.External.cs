@@ -50,7 +50,12 @@ internal static partial class MSBuildHelper {
         }
         string output = process.StandardOutput.ReadToEnd();
         resultList.AddRange(output.GetLines().Where(Directory.Exists));
-        process.WaitForExit(3000);
+        // Reading ExitCode on a process that has not exited throws. vswhere can close stdout and
+        // linger, so an ignored timeout here crashed the whole command.
+        if (!process.WaitForExit(3000)) {
+            try { process.Kill(entireProcessTree: true); } catch { /* best effort */ }
+            return Array.Empty<string>();
+        }
         if (process.ExitCode != 0) {
             return Array.Empty<string>();
         }
