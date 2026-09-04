@@ -96,4 +96,56 @@ public class XmlProjectFileTests {
             File.Delete(path);
         }
     }
+
+    [Fact]
+    public async Task EditAsync_RepeatedEditsDoNotAccumulateBlankLinesAfterDeclaration() {
+        var content =
+            "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n" +
+            "<Project>\n" +
+            "  <PropertyGroup>\n" +
+            "    <TargetFramework>net8.0</TargetFramework>\n" +
+            "  </PropertyGroup>\n" +
+            "</Project>\n";
+        var path = TempFile();
+        await File.WriteAllTextAsync(path, content, new UTF8Encoding(false));
+        try {
+            for (var i = 9; i <= 11; i++) {
+                await XmlProjectFile.EditAsync(path, doc => {
+                    doc.Descendants("TargetFramework").First().Value = $"net{i}.0";
+                    return true;
+                }, default);
+            }
+
+            var text = await File.ReadAllTextAsync(path);
+            Assert.Equal(content.Replace("net8.0", "net11.0"), text);
+            Assert.DoesNotContain("?>\n\n", text);
+        }
+        finally {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public async Task EditAsync_RefusesToRewriteNonUtf8File() {
+        // Windows-1252 'ü' (0xFC) is not valid UTF-8; rewriting it used to replace it with U+FFFD.
+        var path = TempFile();
+        var bytes = new List<byte>();
+        bytes.AddRange(Encoding.ASCII.GetBytes("<Project>\n  <!-- M"));
+        bytes.Add(0xFC);
+        bytes.AddRange(Encoding.ASCII.GetBytes("ller -->\n  <PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup>\n</Project>\n"));
+        await File.WriteAllBytesAsync(path, bytes.ToArray());
+        try {
+            var original = await File.ReadAllBytesAsync(path);
+
+            await Assert.ThrowsAsync<InvalidOperationException>(() => XmlProjectFile.EditAsync(path, doc => {
+                doc.Descendants("TargetFramework").First().Value = "net9.0";
+                return true;
+            }, default));
+
+            Assert.Equal(original, await File.ReadAllBytesAsync(path)); // untouched
+        }
+        finally {
+            File.Delete(path);
+        }
+    }
 }

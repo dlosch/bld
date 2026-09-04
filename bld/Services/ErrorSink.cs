@@ -13,6 +13,11 @@ internal class ErrorSink(IConsoleOutput console) {
 
     private readonly ConcurrentBag<Err> _errors = new();
 
+    /// <summary>Whether anything failed. Commands use this to return a non-zero exit code.</summary>
+    internal bool HasErrors => !_errors.IsEmpty;
+
+    internal int Count => _errors.Count;
+
     internal void AddError(string message, Exception? exception = default, Sln? sln = default, Proj? proj = default, ProjCfg? config = default) {
         var error = new Err(message, exception, sln, proj, config);
         _errors.Add(error);
@@ -44,11 +49,16 @@ internal class ErrorSink(IConsoleOutput console) {
             var slnPath = group.Key.SlnPath;
             var projPath = group.Key.ProjPath;
             foreach (var error in group) {
+                // Without the exception detail every row reads "Failed to load project." and the
+                // actual cause (missing SDK, bad import, malformed XML) is lost entirely.
+                var message = error.Exception is { } ex
+                    ? $"{error.Message} ({ex.GetType().Name}: {ex.FormatMessage()})"
+                    : error.Message;
                 table.AddRow(
                     Markup.Escape(slnPath),
                     Markup.Escape(projPath),
                     Markup.Escape(error.Config?.Configuration ?? ""),
-                    Markup.Escape(error.Message)
+                    Markup.Escape(message)
                 );
             }
         }

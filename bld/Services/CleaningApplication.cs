@@ -70,7 +70,7 @@ internal class CleaningApplication(IConsoleOutput _console, Func<IConsoleOutput,
 
                 await Parallel.ForEachAsync(allProjCfgs, parallelOptions, async (projCfg, ct) => {
                     var current = Interlocked.Increment(ref count);
-                    ctx.Status($"Evaluating projects: {current}/{total} ([bold]{Path.GetFileName(projCfg.Path)}[/])");
+                    ctx.Status($"Evaluating projects: {current}/{total} ([bold]{Markup.Escape(Path.GetFileName(projCfg.Path))}[/])");
 
                     var properties = projParser.LoadProject(projCfg, ProjConstants.PropertyNames);
                     if (properties is null) {
@@ -84,16 +84,18 @@ internal class CleaningApplication(IConsoleOutput _console, Func<IConsoleOutput,
 
             await markDeleteProcessor.ProcessDirs();
 
+            var res = markDeleteProcessor.GetResult();
+            // Run the processor before reporting: deletion failures are recorded in the sink and must
+            // be included in both the error table and the exit code.
+            await markDeleteStatsProcessor.ProcessAsync(res);
+
             stopwatch.Stop();
 
             _console.WriteInfo($"Total elapsed time: {stopwatch.Elapsed}");
 
             errorSink.WriteTo();
 
-            var res = markDeleteProcessor.GetResult();
-            await markDeleteStatsProcessor.ProcessAsync(res);
-
-            return 0;
+            return errorSink.HasErrors ? 1 : 0;
         }
         catch (Exception ex) {
             _console.WriteException(ex);

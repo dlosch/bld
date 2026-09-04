@@ -25,8 +25,12 @@ internal class SpectreConsoleOutput : IConsoleOutput {
     }
 
     public void WriteOutput(string caption, string? message) {
-        if (message is { }) AnsiConsole.MarkupLine($"{caption}:\r\n{Markup.Escape(message)}\r\n");
-        else AnsiConsole.MarkupLine($"{caption}\r\n");
+        // The payload here is verbatim text (markdown tables, generated batch scripts). Spectre wraps
+        // at the profile width - 80 columns when redirected - which splits markdown rows and breaks
+        // the table. Write the body straight to stdout so it survives redirection unaltered.
+        AnsiConsole.MarkupLine(message is { } ? $"{Markup.Escape(caption)}:" : $"{Markup.Escape(caption)}");
+        if (message is { }) Console.Out.WriteLine(message);
+        Console.Out.WriteLine();
     }
 
     public void WriteWarning(string message) {
@@ -38,6 +42,12 @@ internal class SpectreConsoleOutput : IConsoleOutput {
     public void WriteError(string message, Exception? exception = default) {
         if (_logLevel <= LogLevel.Error) {
             AnsiConsole.MarkupLine($"[red]error:[/] {Markup.Escape(message)}");
+            // The caller took the trouble to hand us the exception; surfacing its type and message
+            // is usually the only way to tell "missing SDK" from "malformed XML".
+            if (exception is { }) {
+                AnsiConsole.MarkupLine($"[red]     [/] {Markup.Escape($"{exception.GetType().Name}: {exception.FormatMessage()}")}");
+                if (_logLevel <= LogLevel.Debug) AnsiConsole.WriteException(exception);
+            }
         }
     }
 
@@ -57,11 +67,14 @@ internal class SpectreConsoleOutput : IConsoleOutput {
         AnsiConsole.Write(table);
     }
 
+    /// <summary>Title is markup — callers pass literals like "[bold]x[/]". Never pass user data here.</summary>
     public void WriteRule(string title) {
         AnsiConsole.Write(new Rule(title) { Justification = Justify.Left });
     }
+
+    /// <summary>Title is plain text (callers pass file paths), so it is escaped.</summary>
     public void WriteHeader(string title, string? additionalText = default) {
-        AnsiConsole.Write(new Rule(title) { Justification = Justify.Left });
+        AnsiConsole.Write(new Rule(Markup.Escape(title)) { Justification = Justify.Left });
         if (!string.IsNullOrWhiteSpace(additionalText)) {
             AnsiConsole.MarkupLine($"[dim]{Markup.Escape(additionalText)}[/]");
         }
@@ -75,7 +88,8 @@ internal class SpectreConsoleOutput : IConsoleOutput {
             WriteWarning($"Non-interactive input; assuming '{(defaultValue ? "yes" : "no")}' for prompt: {message}");
             return defaultValue;
         }
-        return AnsiConsole.Confirm(message, defaultValue);
+        // Callers pass plain text containing paths and package ids; Confirm renders markup.
+        return AnsiConsole.Confirm(Markup.Escape(message), defaultValue);
     }
 
     public T Prompt<T>(SelectionPrompt<T> prompt) where T : notnull {

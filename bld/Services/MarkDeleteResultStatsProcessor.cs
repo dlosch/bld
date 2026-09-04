@@ -58,7 +58,7 @@ internal class MarkDeleteResultStatsProcessor : IMarkDeleteResultProcessor {
                 (bytes / 1024d).ToString("N0"),
                 (bytes / 1024d / 1024d).ToString("N2"),
                 Markup.Escape(path.FullName),
-                "" + string.Join(", ", kvp.References?.SelectMany(d => d.Tfms).Distinct() ?? Array.Empty<string>()) + " "
+                Markup.Escape("" + string.Join(", ", kvp.References?.SelectMany(d => d.Tfms).Distinct() ?? Array.Empty<string>()) + " ")
                 );
 
             markdownRows.Add(new[] {

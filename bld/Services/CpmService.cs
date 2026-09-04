@@ -62,13 +62,13 @@ internal class CpmService {
                 }
             }
 
-            await _console.StartStatusAsync($"Analyzing {solutionProjCfgs.Count} project configurations in {Path.GetFileName(slnPath)}...", async ctx => {
+            await _console.StartStatusAsync($"Analyzing {solutionProjCfgs.Count} project configurations in {Markup.Escape(Path.GetFileName(slnPath))}...", async ctx => {
                 var count = 0;
                 var total = solutionProjCfgs.Count;
 
                 await Parallel.ForEachAsync(solutionProjCfgs, parallelOptions, async (projCfg, ct) => {
                     var current = Interlocked.Increment(ref count);
-                    ctx.Status($"Analyzing projects: {current}/{total} ([bold]{Path.GetFileName(projCfg.Path)}[/])");
+                    ctx.Status($"Analyzing projects: {current}/{total} ([bold]{Markup.Escape(Path.GetFileName(projCfg.Path))}[/])");
                     
                     var projectPath = projCfg.Path;
                     projectFiles.Add(projectPath);

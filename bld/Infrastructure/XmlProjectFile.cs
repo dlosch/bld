@@ -20,7 +20,19 @@ internal static class XmlProjectFile {
     internal static async Task<bool> EditAsync(string path, Func<XDocument, bool> mutate, CancellationToken cancellationToken) {
         var originalBytes = await File.ReadAllBytesAsync(path, cancellationToken);
         var hasBom = originalBytes.Length >= 3 && originalBytes[0] == 0xEF && originalBytes[1] == 0xBB && originalBytes[2] == 0xBF;
-        var originalText = new UTF8Encoding(false).GetString(originalBytes, hasBom ? 3 : 0, originalBytes.Length - (hasBom ? 3 : 0));
+
+        string originalText;
+        try {
+            // Decode strictly. The permissive decoder silently turned undecodable bytes into U+FFFD and
+            // then wrote them back, permanently corrupting e.g. a Windows-1252 comment. Refusing to edit
+            // is the safe outcome: the caller reports it and the file is left untouched.
+            originalText = new UTF8Encoding(false, throwOnInvalidBytes: true)
+                .GetString(originalBytes, hasBom ? 3 : 0, originalBytes.Length - (hasBom ? 3 : 0));
+        }
+        catch (DecoderFallbackException ex) {
+            throw new InvalidOperationException(
+                $"{path} is not valid UTF-8 and would be corrupted by rewriting it. Convert it to UTF-8 first.", ex);
+        }
         var newline = originalText.Contains("\r\n") ? "\r\n" : "\n";
 
         XDocument doc;
@@ -58,7 +70,9 @@ internal static class XmlProjectFile {
 
         // XML load normalized newlines to LF; restore the file's original style and BOM.
         var body = sb.Replace("\r\n", "\n").Replace("\n", newline).ToString();
-        var result = declaration is null ? body : declaration + newline + body;
+        // PreserveWhitespace already kept the whitespace that followed the declaration, so it is part of
+        // `body`. Adding another newline here inserted one blank line per edit, accumulating on every run.
+        var result = declaration is null ? body : declaration + body;
 
         var tempPath = path + ".bldtmp";
         try {

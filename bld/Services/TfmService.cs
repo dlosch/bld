@@ -94,7 +94,7 @@ internal class TfmService : IDisposable {
 
                 await Parallel.ForEachAsync(allProjCfgs, parallelOptions, async (projCfg, ct) => {
                     var current = Interlocked.Increment(ref count);
-                    ctx.Status($"Analyzing projects: {current}/{total} ([bold]{Path.GetFileName(projCfg.Path)}[/])");
+                    ctx.Status($"Analyzing projects: {current}/{total} ([bold]{Markup.Escape(Path.GetFileName(projCfg.Path))}[/])");
 
                     var migrationInfo = await AnalyzeProjectForMigrationAsync(projCfg.Path, fromTfms, toTfm, eolTfms, cancellationToken);
 

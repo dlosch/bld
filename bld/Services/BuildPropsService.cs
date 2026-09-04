@@ -115,7 +115,7 @@ internal class BuildPropsService {
 
                 await Parallel.ForEachAsync(uniqueProjectPaths, parallelOptions, (projectPath, ct) => {
                     var current = Interlocked.Increment(ref count);
-                    ctx.Status($"Resolving: {current}/{total} ([bold]{Path.GetFileName(projectPath)}[/])");
+                    ctx.Status($"Resolving: {current}/{total} ([bold]{Markup.Escape(Path.GetFileName(projectPath))}[/])");
 
                     var (props, _) = projectCollectionPool.Execute(projectPath,
                         pc => ResolveImportedBuildFiles(projectPath, globalProperties, pc));
@@ -138,7 +138,7 @@ internal class BuildPropsService {
 
             await Parallel.ForEachAsync(uniqueProjectPaths, parallelOptions, (projectPath, ct) => {
                 var current = Interlocked.Increment(ref count);
-                ctx.Status($"Evaluating: {current}/{total} ([bold]{Path.GetFileName(projectPath)}[/])");
+                ctx.Status($"Evaluating: {current}/{total} ([bold]{Markup.Escape(Path.GetFileName(projectPath))}[/])");
 
                 var result = projectCollectionPool.Execute(projectPath,
                     pc => EvaluateProject(projectPath, globalProperties, filterSet, pc));
