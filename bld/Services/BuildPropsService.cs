@@ -151,6 +151,13 @@ internal class BuildPropsService {
 
         var resultsList = results.ToList();
 
+        // Say so plainly when the analysis covers fewer projects than were found; the counts printed
+        // elsewhere come from the pre-evaluation list and otherwise imply full coverage.
+        var skipped = uniqueProjectPaths.Count - resultsList.Count;
+        if (skipped > 0) {
+            _console.WriteWarning($"{skipped} of {uniqueProjectPaths.Count} project(s) could not be evaluated; the results below cover the remaining {resultsList.Count}.");
+        }
+
         if (markdownOutput) {
             DisplayMarkdownResults(resultsList, rootPath, filterProperties, includeOverridden);
         }
@@ -290,7 +297,9 @@ internal class BuildPropsService {
                 projectPath, projectName, propsFiles, targetsFiles, properties, overrides);
         }
         catch (Exception ex) {
-            _console.WriteVerbose($"Failed to evaluate {projectPath}: {ex.FormatMessage()}");
+            // Verbose only meant that at the default log level a report built from a fraction of the
+            // solution looked complete.
+            _console.WriteWarning($"Failed to evaluate {Path.GetFileName(projectPath)}: {ex.FormatMessage()}");
             return null;
         }
         finally {

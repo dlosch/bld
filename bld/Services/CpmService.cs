@@ -10,7 +10,7 @@ using System.Xml.Linq;
 namespace bld.Services;
 
 internal class CpmService {
-    internal readonly record struct PackageReferenceVersion(string PackageId, string Version, bool IsVersionOverride);
+    internal readonly record struct PackageReferenceVersion(string PackageId, string Version, bool IsVersionOverride, bool IsConditional = false);
 
     private readonly IConsoleOutput _console;
     private readonly CleaningOptions _options;
@@ -20,8 +20,10 @@ internal class CpmService {
         _options = options;
     }
 
+    /// <summary>Returns true when the conversion completed without an error worth failing on.</summary>
     [MethodImpl(MethodImplOptions.NoInlining)]
-    public async Task ConvertToCentralPackageManagementAsync(string rootPath, bool applyChanges, bool overwrite, CancellationToken cancellationToken) {
+    public async Task<bool> ConvertToCentralPackageManagementAsync(string rootPath, bool applyChanges, bool overwrite, CancellationToken cancellationToken) {
+        var succeeded = true;
         // Initialize MSBuild before any Microsoft.Build.* types are loaded
         MSBuildInitializer.Initialize(_console, _options);
 
@@ -55,12 +57,22 @@ internal class CpmService {
             var allPackageReferences = new ConcurrentDictionary<string, string>(); // PackageId -> Version
             var projectFiles = new ConcurrentBag<string>();
             var solutionProjCfgs = new List<ProjCfg>();
+            // Packages declared inside a conditional ItemGroup anywhere in the solution; they cannot be
+            // safely centralized because the per-condition versions differ by design.
+            var conditionalPackages = new ConcurrentDictionary<string, byte>(StringComparer.OrdinalIgnoreCase);
 
             await foreach (var projCfg in slnParser.ParseSolution(slnPath)) {
                 if (cache.Add(projCfg)) {
                     solutionProjCfgs.Add(projCfg);
                 }
             }
+
+            // One ProjCfg per configuration means the same project appears several times; collapse by
+            // path so counts are real and each file is rewritten once.
+            solutionProjCfgs = solutionProjCfgs
+                .GroupBy(p => p.Path, StringComparer.OrdinalIgnoreCase)
+                .Select(g => g.First())
+                .ToList();
 
             await _console.StartStatusAsync($"Analyzing {solutionProjCfgs.Count} project configurations in {Markup.Escape(Path.GetFileName(slnPath))}...", async ctx => {
                 var count = 0;
@@ -71,10 +83,26 @@ internal class CpmService {
                     ctx.Status($"Analyzing projects: {current}/{total} ([bold]{Markup.Escape(Path.GetFileName(projCfg.Path))}[/])");
                     
                     var projectPath = projCfg.Path;
+
+                    // A project outside the solution directory never imports the props file we create,
+                    // yet its Version attributes were stripped anyway - leaving it with no version at
+                    // all (NU1604).
+                    if (!DirExt.IsNestedBelow(projectPath, solutionDir)) {
+                        _console.WriteWarning($"Skipping {projectPath}: it is outside {solutionDir} and would not import the generated Directory.Packages.props.");
+                        return;
+                    }
+
                     projectFiles.Add(projectPath);
 
                     var packageRefs = await ExtractPackageReferencesAsync(projectPath, cancellationToken);
                     foreach (var packageRef in packageRefs) {
+                        if (packageRef.IsConditional) {
+                            // Per-TFM pins collapse to one central version, so the framework that needed
+                            // the lower version silently starts resolving the higher one.
+                            _console.WriteWarning($"Skipping centralization for {packageRef.PackageId} in {Path.GetFileName(projectPath)}: it is declared inside a conditional ItemGroup.");
+                            conditionalPackages.TryAdd(packageRef.PackageId, 0);
+                            continue;
+                        }
                         if (packageRef.IsVersionOverride) {
                             _console.WriteVerbose($"Skipping centralization for {packageRef.PackageId} in {Path.GetFileName(projectPath)} because VersionOverride is project-specific.");
                             continue;
@@ -100,13 +128,14 @@ internal class CpmService {
                 SolutionPath = slnPath,
                 SolutionDirectory = solutionDir,
                 PackageReferences = allPackageReferences.ToDictionary(kvp => kvp.Key, kvp => kvp.Value, StringComparer.OrdinalIgnoreCase),
-                ProjectFiles = projectFiles.ToList()
+                ProjectFiles = projectFiles.ToList(),
+                ConditionalPackages = new HashSet<string>(conditionalPackages.Keys, StringComparer.OrdinalIgnoreCase)
             });
         }
 
         if (solutionData.Count == 0) {
             _console.WriteError("No solution files found. Central Package Management requires a solution file.");
-            return;
+            return false;
         }
 
         _console.WriteLine($"Found {solutionData.Count} solution(s) to process");
@@ -134,22 +163,25 @@ internal class CpmService {
 
             // Check if Directory.Packages.props already exists
             if (File.Exists(directoryPackagesPath) && !overwrite) {
-                _console.WriteError($"Directory.Packages.props already exists at {directoryPackagesPath}. Use --overwrite to replace it.");
+                _console.WriteError($"Directory.Packages.props already exists at {directoryPackagesPath}. Use --overwrite to merge into it.");
+                succeeded = false;
                 continue;
             }
 
             if (applyChanges) {
                 // Create Directory.Packages.props
                 await CreateDirectoryPackagesPropsAsync(directoryPackagesPath, solution.PackageReferences, cancellationToken);
-                _console.WriteLine($"Created Directory.Packages.props with {solution.PackageReferences.Count} package versions");
 
                 // Update all project files to remove versions
+                var updated = 0;
                 foreach (var projectPath in solution.ProjectFiles) {
-                    await UpdateProjectFileAsync(projectPath, cancellationToken);
-                    _console.WriteVerbose($"Updated project file: {Path.GetFileName(projectPath)}");
+                    if (await UpdateProjectFileAsync(projectPath, solution.ConditionalPackages, cancellationToken)) {
+                        updated++;
+                        _console.WriteVerbose($"Updated project file: {Path.GetFileName(projectPath)}");
+                    }
                 }
 
-                _console.WriteLine($"Updated {solution.ProjectFiles.Count} project files to use central package management");
+                _console.WriteLine($"Updated {updated} project file(s) to use central package management");
             }
             else {
                 _console.WriteLine("Dry run - showing what would be created:");
@@ -163,48 +195,64 @@ internal class CpmService {
                 _console.WriteLine($"\n{solution.ProjectFiles.Count} project files would be updated to remove version attributes");
             }
         }
+
+        return succeeded;
     }
 
     internal static IReadOnlyList<PackageReferenceVersion> ReadPackageReferences(XDocument doc) {
         var packageReferences = new List<PackageReferenceVersion>();
 
-        foreach (var element in doc.Descendants("PackageReference")) {
+        foreach (var element in doc.ElementsNamed("PackageReference")) {
             var packageId = element.Attribute("Include")?.Value;
             if (string.IsNullOrWhiteSpace(packageId)) {
                 continue;
             }
 
+            var isConditional = element.IsConditioned();
+
             var versionOverride = FirstNonEmpty(
                 element.Attribute("VersionOverride")?.Value,
-                element.Element("VersionOverride")?.Value);
+                element.ChildNamed("VersionOverride")?.Value);
             if (!string.IsNullOrWhiteSpace(versionOverride)) {
-                packageReferences.Add(new PackageReferenceVersion(packageId, versionOverride, true));
+                packageReferences.Add(new PackageReferenceVersion(packageId, versionOverride, true, isConditional));
                 continue;
             }
 
             var version = FirstNonEmpty(
                 element.Attribute("Version")?.Value,
-                element.Element("Version")?.Value);
+                element.ChildNamed("Version")?.Value);
 
             if (!string.IsNullOrWhiteSpace(version)) {
-                packageReferences.Add(new PackageReferenceVersion(packageId, version, false));
+                packageReferences.Add(new PackageReferenceVersion(packageId, version, false, isConditional));
             }
         }
 
         return packageReferences;
     }
 
-    internal static bool RemoveCentralizableVersionDeclarations(XDocument doc) {
+    internal static bool RemoveCentralizableVersionDeclarations(XDocument doc) =>
+        RemoveCentralizableVersionDeclarations(doc, skipPackageIds: null);
+
+    /// <summary>
+    /// Strips inline versions so the central ones apply. Packages in <paramref name="skipPackageIds"/>
+    /// keep theirs: a reference inside a conditional ItemGroup has a per-framework version on purpose,
+    /// and centralizing it would silently resolve one framework against another's version.
+    /// </summary>
+    internal static bool RemoveCentralizableVersionDeclarations(XDocument doc, ISet<string>? skipPackageIds) {
         var modified = false;
 
-        foreach (var element in doc.Descendants("PackageReference")) {
+        foreach (var element in doc.ElementsNamed("PackageReference")) {
+            var packageId = element.Attribute("Include")?.Value;
+            if (element.IsConditioned()) continue;
+            if (packageId is { } && skipPackageIds is { } && skipPackageIds.Contains(packageId)) continue;
+
             var versionAttr = element.Attribute("Version");
             if (versionAttr != null) {
                 versionAttr.Remove();
                 modified = true;
             }
 
-            var versionElements = element.Elements("Version").ToList();
+            var versionElements = element.Elements().Where(e => e.Name.LocalName == "Version").ToList();
             foreach (var versionElement in versionElements) {
                 // Drop the indentation text node preceding the element so removing it
                 // doesn't leave a blank line behind when whitespace is preserved on save.
@@ -263,7 +311,48 @@ internal class CpmService {
     }
 
     private async Task CreateDirectoryPackagesPropsAsync(string filePath, Dictionary<string, string> packageVersions, CancellationToken cancellationToken) {
-        var doc = new XDocument(
+        // Merge into an existing file instead of replacing it. Building the document from scratch and
+        // opening with FileMode.Create discarded every PackageVersion already centralized (projects
+        // already on CPM have no inline version, so they contribute nothing here) along with any
+        // GlobalPackageReference, conditions and comments - breaking restore for the whole solution.
+        if (File.Exists(filePath)) {
+            var merged = 0;
+            var written = await XmlProjectFile.EditAsync(filePath, doc => {
+                var itemGroup = doc.ElementsNamed("ItemGroup").FirstOrDefault(g => g.ElementsNamed("PackageVersion").Any())
+                    ?? doc.ElementsNamed("ItemGroup").FirstOrDefault();
+
+                if (itemGroup is null) {
+                    itemGroup = new XElement("ItemGroup");
+                    (doc.ElementsNamed("Project").FirstOrDefault() ?? doc.Root)?.Add(itemGroup);
+                }
+
+                var existing = doc.ElementsNamed("PackageVersion")
+                    .Where(e => e.Attribute("Include")?.Value is { })
+                    .ToDictionary(e => e.Attribute("Include")!.Value, e => e, StringComparer.OrdinalIgnoreCase);
+
+                foreach (var (id, version) in packageVersions.OrderBy(x => x.Key, StringComparer.OrdinalIgnoreCase)) {
+                    if (existing.TryGetValue(id, out var element)) {
+                        var current = element.Attribute("Version")?.Value ?? element.ChildNamed("Version")?.Value;
+                        if (string.Equals(current, version, StringComparison.OrdinalIgnoreCase)) continue;
+                        _console.WriteWarning($"{id} is already centrally managed at {current}; leaving it unchanged (found {version} inline).");
+                        continue;
+                    }
+
+                    itemGroup.Add(new XElement("PackageVersion",
+                        new XAttribute("Include", id),
+                        new XAttribute("Version", version)));
+                    merged++;
+                }
+                return merged > 0;
+            }, cancellationToken);
+
+            _console.WriteLine(written
+                ? $"Added {merged} package version(s) to {filePath}"
+                : $"No new package versions to add to {filePath}");
+            return;
+        }
+
+        var newDoc = new XDocument(
             new XElement("Project",
                 new XElement("PropertyGroup",
                     new XElement("ManagePackageVersionsCentrally", "true")
@@ -279,22 +368,38 @@ internal class CpmService {
             )
         );
 
-        await using var stream = new FileStream(filePath, FileMode.Create, FileAccess.Write);
-        using var writer = XmlWriter.Create(stream, new XmlWriterSettings {
-            Indent = true,
-            OmitXmlDeclaration = true,
-            Encoding = System.Text.Encoding.UTF8,
-            Async = true
-        });
-        await doc.SaveAsync(writer, cancellationToken);
+        // Write via a temp file and move, so an interrupted write cannot leave a truncated props file.
+        var tempPath = filePath + ".bldtmp";
+        try {
+            await using (var stream = new FileStream(tempPath, FileMode.Create, FileAccess.Write)) {
+                using var writer = XmlWriter.Create(stream, new XmlWriterSettings {
+                    Indent = true,
+                    OmitXmlDeclaration = true,
+                    Encoding = System.Text.Encoding.UTF8,
+                    Async = true
+                });
+                await newDoc.SaveAsync(writer, cancellationToken);
+            }
+            File.Move(tempPath, filePath, overwrite: true);
+        }
+        catch {
+            if (File.Exists(tempPath)) {
+                try { File.Delete(tempPath); } catch { /* best effort */ }
+            }
+            throw;
+        }
     }
 
-    internal async Task UpdateProjectFileAsync(string projectPath, CancellationToken cancellationToken) {
+    internal Task<bool> UpdateProjectFileAsync(string projectPath, CancellationToken cancellationToken) =>
+        UpdateProjectFileAsync(projectPath, null, cancellationToken);
+
+    internal async Task<bool> UpdateProjectFileAsync(string projectPath, ISet<string>? skipPackageIds, CancellationToken cancellationToken) {
         try {
-            await XmlProjectFile.EditAsync(projectPath, RemoveCentralizableVersionDeclarations, cancellationToken);
+            return await XmlProjectFile.EditAsync(projectPath, doc => RemoveCentralizableVersionDeclarations(doc, skipPackageIds), cancellationToken);
         }
         catch (Exception ex) {
-            _console.WriteError($"Failed to update project file {projectPath}: {ex.FormatMessage()}");
+            _console.WriteError($"Failed to update project file {projectPath}: {ex.FormatMessage()}", ex);
+            return false;
         }
     }
 
@@ -317,5 +422,7 @@ internal class CpmService {
         public string SolutionDirectory { get; set; } = string.Empty;
         public Dictionary<string, string> PackageReferences { get; set; } = new();
         public List<string> ProjectFiles { get; set; } = new();
+        /// <summary>Packages declared under a Condition; their inline versions must be left in place.</summary>
+        public HashSet<string> ConditionalPackages { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     }
 }

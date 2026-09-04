@@ -119,15 +119,24 @@ internal class TfmService : IDisposable {
 
         _console.WriteLine($"Found {distinctProjects.Count} projects to migrate from {fromTfmsDisplay} to {toTfm}");
 
+        var migrated = 0;
+        var notMigrated = 0;
         if (applyChanges) {
-            // Step 1: Update target frameworks
+            // Step 1: Update target frameworks. Count what was actually written - the previous code
+            // printed "Updated X" and a final "Migrated N projects" regardless of whether any element
+            // matched, so a no-op run looked identical to a successful one.
             foreach (var project in distinctProjects) {
-                if (project.UsesTargetFrameworks) {
-                    await UpdateProjectTargetFrameworksAsync(project, fromTfms, toTfm, eolTfms, cancellationToken);
+                var written = project.UsesTargetFrameworks
+                    ? await UpdateProjectTargetFrameworksAsync(project, fromTfms, toTfm, eolTfms, cancellationToken)
+                    : await UpdateProjectTargetFrameworkAsync(project.ProjectPath, project.CurrentTfm, toTfm, eolTfms, cancellationToken);
+
+                if (written) {
+                    migrated++;
+                    if (!project.UsesTargetFrameworks) _console.WriteLine($"Updated {Path.GetFileName(project.ProjectPath)} to {toTfm}");
                 }
                 else {
-                    await UpdateProjectTargetFrameworkAsync(project.ProjectPath, project.CurrentTfm, toTfm, eolTfms, cancellationToken);
-                    _console.WriteLine($"Updated {Path.GetFileName(project.ProjectPath)} to {toTfm}");
+                    notMigrated++;
+                    _console.WriteWarning($"{Path.GetFileName(project.ProjectPath)} was not migrated.");
                 }
             }
 
@@ -154,9 +163,10 @@ internal class TfmService : IDisposable {
 
                     var updatedPackages = 0;
                     foreach (var issue in updateCandidates.Where(i => !string.IsNullOrEmpty(i.RecommendedVersion))) {
-                        await UpdatePackageVersionInProjectAsync(issue.ProjectPath, issue.PackageId, issue.RecommendedVersion!, cancellationToken);
-                        _console.WriteLine($"Updated {issue.PackageId} to {issue.RecommendedVersion} in {Path.GetFileName(issue.ProjectPath)}");
-                        updatedPackages++;
+                        if (await UpdatePackageVersionInProjectAsync(issue.ProjectPath, issue.PackageId, issue.RecommendedVersion!, cancellationToken)) {
+                            _console.WriteLine($"Updated {issue.PackageId} to {issue.RecommendedVersion} in {Path.GetFileName(issue.ProjectPath)}");
+                            updatedPackages++;
+                        }
                     }
 
                     if (updatedPackages > 0) {
@@ -168,7 +178,11 @@ internal class TfmService : IDisposable {
                 }
             }
 
-            _console.WriteLine($"Migration complete! Migrated {distinctProjects.Count} projects to {toTfm}");
+            if (notMigrated > 0) {
+                _console.WriteWarning($"Migration finished: {migrated} project(s) updated to {toTfm}, {notMigrated} left unchanged.");
+                return 1;
+            }
+            _console.WriteLine($"Migration complete! Migrated {migrated} projects to {toTfm}");
         }
         else {
             var actualMigrated = distinctProjects.Where(project => {
@@ -178,7 +192,9 @@ internal class TfmService : IDisposable {
                     return !Enumerable.SequenceEqual(currentTfms.OrderBy(t => t), newTfms.OrderBy(t => t), StringComparer.OrdinalIgnoreCase);
                 }
                 else {
-                    return !project.CurrentTfm.Equals(toTfm, StringComparison.OrdinalIgnoreCase);
+                    // Match the writer's eligibility rules so the dry run cannot advertise a migration
+                    // that --apply then declines to perform.
+                    return WillUpdateSingleTfm(project.CurrentTfm, toTfm, eolTfms);
                 }
             }).ToList();
 
@@ -439,35 +455,57 @@ internal class TfmService : IDisposable {
         }
     }
 
-    private async Task UpdateProjectTargetFrameworkAsync(string projectPath, string fromTfm, string toTfm, ISet<string> eolTfms, CancellationToken cancellationToken) {
-        try {
-            await XmlProjectFile.EditAsync(projectPath, doc => {
-                var targetFrameworkElement = doc.Descendants("TargetFramework").FirstOrDefault();
+    /// <summary>
+    /// Whether a single-target project is actually eligible. The dry run used only "current != target"
+    /// while the writer additionally required this, so the preview listed migrations that --apply then
+    /// silently declined to make while still reporting success.
+    /// </summary>
+    internal bool WillUpdateSingleTfm(string fromTfm, string toTfm, ISet<string> eolTfms) =>
+        !fromTfm.Equals(toTfm, StringComparison.OrdinalIgnoreCase)
+        && (IsEolTfm(fromTfm, eolTfms) || ShouldUpdateTfm(fromTfm, toTfm));
 
-                // Only rewrite when the TFM actually matches and an update applies.
-                if (targetFrameworkElement != null
-                    && targetFrameworkElement.Value.Equals(fromTfm, StringComparison.OrdinalIgnoreCase)
-                    && (IsEolTfm(fromTfm, eolTfms) || ShouldUpdateTfm(fromTfm, toTfm))) {
-                    targetFrameworkElement.Value = toTfm;
-                    return true;
+    private async Task<bool> UpdateProjectTargetFrameworkAsync(string projectPath, string fromTfm, string toTfm, ISet<string> eolTfms, CancellationToken cancellationToken) {
+        if (!WillUpdateSingleTfm(fromTfm, toTfm, eolTfms)) {
+            _console.WriteVerbose($"Skipping {Path.GetFileName(projectPath)}: {fromTfm} -> {toTfm} is not a supported migration.");
+            return false;
+        }
+
+        try {
+            return await XmlProjectFile.EditAsync(projectPath, doc => {
+                var targetFrameworkElement = FindTargetFrameworkProperty(doc, "TargetFramework", fromTfm);
+                if (targetFrameworkElement is null) {
+                    _console.WriteWarning($"No unambiguous <TargetFramework> to update in {Path.GetFileName(projectPath)}; it may be conditional or set in an imported file.");
+                    return false;
                 }
-                return false;
+
+                targetFrameworkElement.Value = toTfm;
+                return true;
             }, cancellationToken);
         }
         catch (Exception ex) {
-            _console.WriteError($"Failed to update {projectPath}: {ex.FormatMessage()}");
+            _console.WriteError($"Failed to update {projectPath}: {ex.FormatMessage()}", ex);
+            return false;
         }
     }
-    private async Task UpdateProjectTargetFrameworksAsync(ProjectMigrationInfo project, List<string> fromTfms, string toTfm, ISet<string> eolTfms, CancellationToken cancellationToken) {
+    private async Task<bool> UpdateProjectTargetFrameworksAsync(ProjectMigrationInfo project, List<string> fromTfms, string toTfm, ISet<string> eolTfms, CancellationToken cancellationToken) {
         try {
             var written = await XmlProjectFile.EditAsync(project.ProjectPath, doc => {
-                var targetFrameworksElement = doc.Descendants("TargetFrameworks").FirstOrDefault();
+                var targetFrameworksElement = FindTargetFrameworkProperty(doc, "TargetFrameworks", project.CurrentTfm);
                 if (targetFrameworksElement == null) {
-                    _console.WriteWarning($"No TargetFrameworks found in {Path.GetFileName(project.ProjectPath)}");
+                    _console.WriteWarning($"No unambiguous <TargetFrameworks> to update in {Path.GetFileName(project.ProjectPath)}; it may be conditional or set in an imported file.");
                     return false;
                 }
 
                 var currentTfms = targetFrameworksElement.Value.Split(';').Select(t => t.Trim()).Where(t => !string.IsNullOrEmpty(t)).ToList();
+
+                // The preview was computed from the evaluated list; recomputing from raw XML that still
+                // contains a property reference produces a different result (e.g. keeping an EOL TFM
+                // that came in via $(TargetFrameworks)). Leave those for a human.
+                if (currentTfms.Any(t => t.Contains("$("))) {
+                    _console.WriteWarning($"Skipping {Path.GetFileName(project.ProjectPath)}: <TargetFrameworks> contains a property reference ({targetFrameworksElement.Value}).");
+                    return false;
+                }
+
                 var newTfms = GetUpdatedTfms(currentTfms, fromTfms, toTfm, eolTfms);
                 var newTargetFrameworksValue = string.Join(";", newTfms);
 
@@ -485,9 +523,11 @@ internal class TfmService : IDisposable {
             if (written) {
                 _console.WriteLine($"✓ Updated {Path.GetFileName(project.ProjectPath)} TargetFrameworks");
             }
+            return written;
         }
         catch (Exception ex) {
-            _console.WriteError($"Failed to update {project.ProjectPath}: {ex.FormatMessage()}");
+            _console.WriteError($"Failed to update {project.ProjectPath}: {ex.FormatMessage()}", ex);
+            return false;
         }
     }
 
@@ -536,16 +576,29 @@ internal class TfmService : IDisposable {
         return issues;
     }
 
-    private async Task UpdatePackageVersionInProjectAsync(string projectPath, string packageId, string newVersion, CancellationToken cancellationToken) {
+    private async Task<bool> UpdatePackageVersionInProjectAsync(string projectPath, string packageId, string newVersion, CancellationToken cancellationToken) {
         try {
-            await XmlProjectFile.EditAsync(projectPath, doc => {
+            return await XmlProjectFile.EditAsync(projectPath, doc => {
                 var changed = false;
-                var packageRefElements = doc.Descendants("PackageReference")
-                    .Where(e => e.Attribute("Include")?.Value == packageId);
+                var packageRefElements = doc.ElementsNamed("PackageReference")
+                    .Where(e => string.Equals(e.Attribute("Include")?.Value, packageId, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
 
+                // A condition-scoped reference belongs to a framework this migration is not targeting;
+                // bumping it can pin a version that framework does not support.
                 foreach (var element in packageRefElements) {
+                    if (element.IsConditioned()) {
+                        _console.WriteWarning($"Skipping conditional {packageId} reference in {Path.GetFileName(projectPath)}; update it by hand.");
+                        continue;
+                    }
+
                     var versionAttr = element.Attribute("Version");
-                    var versionElement = element.Element("Version");
+                    var versionElement = element.ChildNamed("Version");
+                    var currentValue = versionAttr?.Value ?? versionElement?.Value;
+                    if (!OutdatedService.IsLiteralVersion(currentValue)) {
+                        if (currentValue is { }) _console.WriteWarning($"Leaving {packageId} at '{currentValue}' in {Path.GetFileName(projectPath)}: not a literal version.");
+                        continue;
+                    }
 
                     if (versionAttr != null) {
                         versionAttr.Value = newVersion;
@@ -560,7 +613,8 @@ internal class TfmService : IDisposable {
             }, cancellationToken);
         }
         catch (Exception ex) {
-            _console.WriteError($"Failed to update {projectPath}: {ex.FormatMessage()}");
+            _console.WriteError($"Failed to update {projectPath}: {ex.FormatMessage()}", ex);
+            return false;
         }
     }
 
@@ -601,12 +655,15 @@ internal class TfmService : IDisposable {
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var tfm in currentTfms) {
-            if (IsEolTfm(tfm, eolTfms)) continue; // drop end-of-life frameworks
-
+            // Match --from *before* dropping end-of-life frameworks. The other order discarded the very
+            // TFM the user asked to migrate, so "--from net6.0 --to net10.0" on <net6.0;net7.0> produced
+            // an empty list and wrote <TargetFrameworks></TargetFrameworks>.
             if (fromTfms.Count > 0 && fromTfms.Any(f => tfm.Equals(f, StringComparison.OrdinalIgnoreCase))) {
                 if (seen.Add(toTfm)) result.Add(toTfm); // replace the matched source TFM with the target
                 continue;
             }
+
+            if (IsEolTfm(tfm, eolTfms)) continue; // drop end-of-life frameworks
 
             if (seen.Add(tfm)) result.Add(tfm);
         }
@@ -616,7 +673,34 @@ internal class TfmService : IDisposable {
             result.Add(toTfm);
         }
 
+        // Never produce an empty list: dropping every entry as end-of-life would otherwise leave the
+        // project with no target framework at all, which does not build.
+        if (result.Count == 0) {
+            result.Add(toTfm);
+        }
+
         return result;
+    }
+
+    /// <summary>
+    /// The property element MSBuild would actually have evaluated: a direct child of a PropertyGroup,
+    /// carrying no Condition, and (when known) holding the value we reported. Taking the first match in
+    /// document order instead rewrote an inactive conditional PropertyGroup, or even the TargetFramework
+    /// metadata of a ProjectReference item, while leaving the live property untouched.
+    /// </summary>
+    private XElement? FindTargetFrameworkProperty(XDocument doc, string localName, string? expectedValue) {
+        var candidates = doc.ElementsNamed(localName)
+            .Where(e => string.Equals(e.Parent?.Name.LocalName, "PropertyGroup", StringComparison.Ordinal))
+            .Where(e => !e.IsConditioned())
+            .ToList();
+
+        if (candidates.Count == 0) return null;
+        if (expectedValue is null) return candidates.Count == 1 ? candidates[0] : null;
+
+        var exact = candidates.Where(e => string.Equals(e.Value.Trim(), expectedValue.Trim(), StringComparison.OrdinalIgnoreCase)).ToList();
+        if (exact.Count == 1) return exact[0];
+        if (exact.Count > 1) return null;
+        return candidates.Count == 1 ? candidates[0] : null;
     }
 
     private static bool IsEolTfm(string tfm, ISet<string> eolTfms) {

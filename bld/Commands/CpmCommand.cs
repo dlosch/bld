@@ -58,7 +58,12 @@ internal sealed class CpmCommand : BaseCommand {
 
         try {
             var cpmService = new CpmService(Output, options);
-            await cpmService.ConvertToCentralPackageManagementAsync(rootPath, apply, overwrite, cancellationToken);
+            // The success message used to print unconditionally - directly after "No solution files
+            // found", for instance - and the command always returned 0.
+            if (!await cpmService.ConvertToCentralPackageManagementAsync(rootPath, apply, overwrite, cancellationToken)) {
+                Output.WriteWarning("Central Package Management conversion did not complete for every solution.");
+                return 1;
+            }
 
             Output.WriteLine("Central Package Management conversion completed successfully.");
             return 0;
