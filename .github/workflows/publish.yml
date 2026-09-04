@@ -47,9 +47,9 @@ jobs:
       id: nuget-login
       uses: NuGet/login@v1
       with:
-        # The account that CREATED the trusted publishing policy, not the package owner
-        # organisation ("cloudsider") - the token exchange matches on the policy creator.
-        user: dlosch
+        # The nuget.org account that created the trusted publishing policy. It must be the
+        # account that owns dotnet-bld, since a policy only covers packages owned by its owner.
+        user: cloudsider
 
     - name: Push to NuGet
       env:
