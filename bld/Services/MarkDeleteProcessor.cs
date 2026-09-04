@@ -9,12 +9,16 @@ internal sealed class MarkDeleteProcessor : IProjectProcessor {
     private readonly IFileSystem _fileSystem;
     private readonly CleaningOptions _options;
     private readonly ErrorSink _errorSink;
+    // TFM and configuration names are case-insensitive identifiers regardless of platform.
     private static readonly StringComparer DefaultComparer = StringComparer.OrdinalIgnoreCase;
     private static readonly StringComparison DefaultComparison = StringComparison.OrdinalIgnoreCase;
+    // Paths must follow the filesystem: on Linux /src/Foo and /src/foo are different directories and
+    // collapsing them into one key left one of them undeleted.
+    private static readonly StringComparer PathComparer = DirExt.PathComparer;
 
     // Track directories for deletion - using ConcurrentBag for thread-safe value collection
-    private readonly ConcurrentDictionary<string, ConcurrentBag<Dir>> _deleteDirs = new ConcurrentDictionary<string, ConcurrentBag<Dir>>(DefaultComparer);
-    private readonly ConcurrentDictionary<string, Dir> _dirs = new ConcurrentDictionary<string, Dir>(DefaultComparer);
+    private readonly ConcurrentDictionary<string, ConcurrentBag<Dir>> _deleteDirs = new ConcurrentDictionary<string, ConcurrentBag<Dir>>(PathComparer);
+    private readonly ConcurrentDictionary<string, Dir> _dirs = new ConcurrentDictionary<string, Dir>(PathComparer);
 
     public MarkDeleteProcessor(IConsoleOutput console, IFileSystem fileSystem, CleaningOptions options, ErrorSink errorSink) {
         _console = console;
@@ -126,13 +130,17 @@ internal sealed class MarkDeleteProcessor : IProjectProcessor {
                     var dirInfo = new DirectoryInfo(item.path);
 
                     bool NotSafeToDelete(Dir dir) {
-                        // no proj or sln may be below target / inexact science
-                        if (dir.AbsProjPath.Any(absProjPath => DirExt.IsNestedBelow(absProjPath.Key, item.path))) {
-                            _console.WriteWarning("");
+                        // No project or solution may live below the target. Checking only the owning
+                        // project missed the shared-artifacts layout, where another project's sources
+                        // sit under the directory we are about to delete recursively.
+                        var offender = AllKnownProjectPaths().FirstOrDefault(p => DirExt.IsNestedBelow(p, item.path));
+                        if (offender is { }) {
+                            _console.WriteWarning($"Skipping {item.path}: project {offender} is below it.");
                             return true;
                         }
 
-                        if (dir.AbsParentPath.Any(absProjPath => DirExt.IsNestedBelow(absProjPath, item.path))) {
+                        if (AllKnownProjectDirs().Any(p => DirExt.IsNestedBelow(p, item.path))) {
+                            _console.WriteWarning($"Skipping {item.path}: a project directory is below it.");
                             return true;
                         }
 
@@ -167,9 +175,12 @@ internal sealed class MarkDeleteProcessor : IProjectProcessor {
                                     return default;
                                 }
 
+                                // "Current" means current for *any* project writing here, not just this one.
+                                var claimedTfms = TfmsClaimedUnder(cfgDir);
+
                                 IEnumerable<DirectoryInfo> GetCfgNestedAffected(DirectoryInfo cfgDir2, Dir dir2, bool onlyNonCurrent2) => cfgDir2.EnumerateDirectories()
                                         .Where(tfmDir => NetUtil.Instance.IsTfmName(tfmDir.Name, DefaultComparison)
-                                        && (!onlyNonCurrent2 || !dir2.Tfms.Contains(tfmDir.Name)));
+                                        && (!onlyNonCurrent2 || !claimedTfms.Contains(tfmDir.Name)));
 
                                 var onlyNonCurrent = HasCleanOnlyNoncurrentTfmsFlag();
 
@@ -197,6 +208,20 @@ internal sealed class MarkDeleteProcessor : IProjectProcessor {
                                     }
                                 }
                             }
+                            else if (exists && dir.Configs.Any(cfg => 0 == string.Compare(cfg, dirInfo.Name, DefaultComparison))) {
+                                // OutDir is the configuration directory itself (bin\Debug\), which is what
+                                // MSBuild produces for a multi-targeted outer build and for legacy projects.
+                                // The TFM-shaped branch above never matched these, so they were never cleaned.
+                                var binDir = dirInfo.Parent;
+                                var underBin = binDir is { } && (0 == string.Compare(binDir.Name, "bin", DefaultComparison)
+                                    || dir.AbsProjPath.Any(kvp => kvp.Value is { } projectName && 0 == string.Compare(binDir.Name, projectName, DefaultComparison)));
+                                if (underBin) {
+                                    deleteCandidates = new DirectoryInfo[] { dirInfo };
+                                }
+                                else {
+                                    _console.WriteVerbose($"{absPath} is a configuration directory but its parent is not 'bin'; skipping.");
+                                }
+                            }
                         }
                         else {
                             if (exists) deleteCandidates = new DirectoryInfo[] { dirInfo };
@@ -222,6 +247,14 @@ internal sealed class MarkDeleteProcessor : IProjectProcessor {
                         if (!_options.CleanObjDirectory) return default;
                         if (!Directory.Exists(absPath)) return default;
 
+                        // This path had no structural validation at all: a project pointing
+                        // BaseIntermediateOutputPath at a shared build\ directory would have that whole
+                        // tree - including any sources under it - marked for recursive deletion.
+                        if (ContainsProjectOrSolution(absPath)) {
+                            _console.WriteWarning($"Skipping {absPath}: it contains project or solution files.");
+                            return default;
+                        }
+
                         if (_options.KeepRestoreArtifacts) {
                             // Only mark subdirectories (build output like Debug/net8.0),
                             // preserving root-level files (project.assets.json, *.nuget.* etc.)
@@ -237,6 +270,10 @@ internal sealed class MarkDeleteProcessor : IProjectProcessor {
 
                     Stats VcxDir(string absPath, DirType dirType, Dir dir) {
                         if (Directory.Exists(absPath)) {
+                            if (ContainsProjectOrSolution(absPath)) {
+                                _console.WriteWarning($"Skipping {absPath}: it contains project or solution files.");
+                                return default;
+                            }
                             _deleteDirs.GetOrAdd(absPath, _ => new ConcurrentBag<Dir>()).Add(dir);
                         }
                         return default;
@@ -253,6 +290,57 @@ internal sealed class MarkDeleteProcessor : IProjectProcessor {
             }
         }
         return Task.CompletedTask;
+    }
+
+    /// <summary>Every project file discovered in this run, not just the one owning a given directory.</summary>
+    private IEnumerable<string> AllKnownProjectPaths() => _dirs.Values.SelectMany(d => d.AbsProjPath.Keys);
+
+    /// <summary>Every project directory discovered in this run.</summary>
+    private IEnumerable<string> AllKnownProjectDirs() => _dirs.Values.SelectMany(d => d.AbsParentPath);
+
+    /// <summary>
+    /// Filesystem check for project/solution files below a candidate. Used where there is no structural
+    /// validation to fall back on (an explicit BaseIntermediateOutputPath, or a .vcxproj output dir),
+    /// which is exactly where a shared-artifacts layout can point us at a directory holding sources.
+    /// </summary>
+    private bool ContainsProjectOrSolution(string absPath) {
+        try {
+            var options = new EnumerationOptions {
+                RecurseSubdirectories = true,
+                MaxRecursionDepth = 8,
+                IgnoreInaccessible = true,
+                ReturnSpecialDirectories = false,
+                MatchType = MatchType.Simple,
+            };
+            foreach (var pattern in ProjConstants.ProjectAndSolutionGlobs) {
+                if (new DirectoryInfo(absPath).EnumerateFiles(pattern, options).Any()) return true;
+            }
+        }
+        catch (Exception ex) {
+            // If we cannot prove the directory is safe, treat it as unsafe.
+            _console.WriteWarning($"Could not inspect {absPath} for project files ({ex.FormatMessage()}); skipping it.");
+            return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// TFMs that any discovered project builds into <paramref name="cfgDir"/>. With a shared output path
+    /// several projects write into the same Debug/ directory, and treating only the current project's
+    /// TFMs as "current" made --non-current delete another project's live output.
+    /// </summary>
+    private HashSet<string> TfmsClaimedUnder(DirectoryInfo cfgDir) {
+        var claimed = new HashSet<string>(DefaultComparer);
+        foreach (var other in _dirs.Values) {
+            foreach (var (path, type) in other.AbsPath) {
+                if (type != DirType.OutDir) continue;
+                var parent = Path.GetDirectoryName(path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+                if (parent is null) continue;
+                if (!string.Equals(Path.TrimEndingDirectorySeparator(parent), Path.TrimEndingDirectorySeparator(cfgDir.FullName), DirExt.PathComparison)) continue;
+                claimed.UnionWith(other.Tfms);
+            }
+        }
+        return claimed;
     }
 
     private bool HasValidateBasicOutDirStructureFlag() => true; // Default to true

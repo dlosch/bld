@@ -75,18 +75,42 @@ internal static class DirExt {
         return candidateNormalized != null;
     }
 
-    internal static bool IsNestedBelow(string targetRelOrAbs, string baseDirRooted) {
-        if (string.IsNullOrWhiteSpace(targetRelOrAbs) || 0 == string.Compare(".", targetRelOrAbs, StringComparison.Ordinal) || 0 == string.Compare("..", targetRelOrAbs, StringComparison.Ordinal)) return false;
-        targetRelOrAbs = EnsureRooted(targetRelOrAbs, baseDirRooted);
+    /// <summary>
+    /// Path comparison matching the host filesystem: Windows is case-insensitive, Linux is not.
+    /// Using a case-sensitive comparison on Windows made the deletion guards fail *open* whenever a
+    /// project's OutDir differed only in case from the project path.
+    /// </summary>
+    internal static StringComparison PathComparison => OperatingSystem.IsWindows()
+        ? StringComparison.OrdinalIgnoreCase
+        : StringComparison.Ordinal;
 
-        return targetRelOrAbs.StartsWith(baseDirRooted)
-            &&
-            (
-                (targetRelOrAbs.Length - baseDirRooted.Length >= 2)
-                || (Path.EndsInDirectorySeparator(baseDirRooted) == Path.EndsInDirectorySeparator(targetRelOrAbs) && targetRelOrAbs.Length > baseDirRooted.Length)
-                || (Path.EndsInDirectorySeparator(baseDirRooted) && targetRelOrAbs.Length > baseDirRooted.Length)
-                || ((targetRelOrAbs.Length - 1) > baseDirRooted.Length)
-            );
+    internal static StringComparer PathComparer => OperatingSystem.IsWindows()
+        ? StringComparer.OrdinalIgnoreCase
+        : StringComparer.Ordinal;
+
+    /// <summary>
+    /// True when <paramref name="targetRelOrAbs"/> sits strictly below <paramref name="baseDirRooted"/>.
+    /// The match is anchored on a directory separator, so "/foo/bar2" is NOT below "/foo/bar" — the
+    /// previous length-only test reported sibling directories as nested.
+    /// </summary>
+    internal static bool IsNestedBelow(string targetRelOrAbs, string baseDirRooted) {
+        if (string.IsNullOrWhiteSpace(targetRelOrAbs) || targetRelOrAbs == "." || targetRelOrAbs == "..") return false;
+        if (string.IsNullOrWhiteSpace(baseDirRooted)) return false;
+
+        var target = TrimTrailingSeparators(EnsureRooted(targetRelOrAbs, baseDirRooted));
+        var baseDir = TrimTrailingSeparators(baseDirRooted);
+
+        if (target.Length <= baseDir.Length) return false;
+        if (!target.StartsWith(baseDir, PathComparison)) return false;
+
+        var boundary = target[baseDir.Length];
+        return boundary == Path.DirectorySeparatorChar || boundary == Path.AltDirectorySeparatorChar;
+    }
+
+    private static string TrimTrailingSeparators(string path) {
+        var trimmed = path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        // Keep the separator for a root such as "/" or "C:\".
+        return trimmed.Length == 0 || (trimmed.Length == 2 && trimmed[1] == ':') ? path : trimmed;
     }
 
     internal static string EnsureRooted(string absOrRelative, string baseDir) {

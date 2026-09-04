@@ -14,11 +14,44 @@ internal class MarkDeleteResultDeleteProcessor : IMarkDeleteResultProcessor {
         _errorSink = errorSink;
     }
 
+    /// <summary>
+    /// Honours --confirm. The option was previously parsed and stored but never read, so every level
+    /// behaved like Directory. Sln is treated as "ask once for the run": a marked directory carries its
+    /// owning projects but not the solution they came from.
+    /// </summary>
+    private bool ShouldDelete(DirResult entry, Dictionary<string, bool> answers) {
+        if (_options.Force) return true;
+
+        var level = _options.ConfirmLevel ?? ConfirmLevel.Directory;
+        if (level == ConfirmLevel.None) return true;
+
+        var path = entry.Directory.FullName;
+        var scope = level switch {
+            ConfirmLevel.Directory => path,
+            ConfirmLevel.Project => entry.References.SelectMany(r => r.AbsProjPath.Keys).OrderBy(p => p).FirstOrDefault() ?? path,
+            _ => "*", // Sln: once for the whole run
+        };
+
+        if (answers.TryGetValue(scope, out var remembered)) return remembered;
+
+        var prompt = level switch {
+            ConfirmLevel.Directory => $"Delete directory {path} and all its contents?",
+            ConfirmLevel.Project => $"Delete build output for {scope}?",
+            _ => "Delete all marked build output directories?",
+        };
+
+        var answer = _console.Confirm(prompt);
+        answers[scope] = answer;
+        return answer;
+    }
+
     public Task ProcessAsync(MarkDeleteResult result) {
         if (!result.Directories.Any()) {
             _console.WriteLine("No directories marked for deletion.");
             return Task.CompletedTask;
         }
+
+        var answers = new Dictionary<string, bool>(DirExt.PathComparer);
 
         foreach (var kvp in result.Directories.OrderBy(k => k.Directory.FullName)) {
             var path = kvp.Directory;
@@ -29,7 +62,7 @@ internal class MarkDeleteResultDeleteProcessor : IMarkDeleteResultProcessor {
             path.Refresh();
             if (!path.Exists) continue;
 
-            if (_options.Force || _console.Confirm($"Delete directory {path.FullName} and all its contents?")) {
+            if (ShouldDelete(kvp, answers)) {
                 try {
                     path.Delete(true);
                     _console.WriteLine($"Deleted {path.FullName}");
