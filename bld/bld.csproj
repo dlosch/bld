@@ -11,7 +11,7 @@
     <WarningsAsErrors>true</WarningsAsErrors>
     <WarningLevel>9999</WarningLevel>
     <DisableMSBuildAssemblyCopyCheck>true</DisableMSBuildAssemblyCopyCheck>
-    <Version>0.2.40</Version>
+    <Version>0.2.41</Version>
   </PropertyGroup>
 
   <PropertyGroup>

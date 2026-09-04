@@ -39,5 +39,17 @@ jobs:
         name: nupkg
         path: ./nupkg/*.nupkg
 
+    # Trusted publishing: exchange the GitHub OIDC token (id-token: write above) for a
+    # short-lived NuGet API key, so no long-lived NUGET_API_KEY secret is needed.
+    # Requires a trusted publishing policy on nuget.org for this package, bound to this
+    # repository and workflow.
+    - name: NuGet login (OIDC)
+      id: nuget-login
+      uses: NuGet/login@v1
+      with:
+        user: cloudsider
+
     - name: Push to NuGet
-      run: dotnet nuget push ./nupkg/*.nupkg --interactive false --source https://api.nuget.org/v3/index.json --skip-duplicate
+      env:
+        NUGET_API_KEY: ${{ steps.nuget-login.outputs.NUGET_API_KEY }}
+      run: dotnet nuget push ./nupkg/*.nupkg --api-key "$NUGET_API_KEY" --source https://api.nuget.org/v3/index.json --skip-duplicate
