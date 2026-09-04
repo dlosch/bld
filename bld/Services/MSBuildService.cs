@@ -45,6 +45,7 @@ internal class MSBuildService : IMSBuildService, IDisposable {
                                 .FirstOrDefault();
                             if (loc is { }) {
                                 console?.WriteWarning($"Registering MSBuild instance: {loc.Name} {loc.MSBuildPath} {Path.Exists(loc.MSBuildPath)} {loc.Version}");
+                                NuGetAssemblyResolver.MSBuildDirectory = loc.MSBuildPath;
                                 MSBuildLocator.RegisterInstance(loc);
                                 return;
                             }
@@ -59,12 +60,14 @@ internal class MSBuildService : IMSBuildService, IDisposable {
 
                         if (instance is { })
                         {
+                            NuGetAssemblyResolver.MSBuildDirectory = instance.MSBuildPath;
                             MSBuildLocator.RegisterInstance(instance);
-                            console?.WriteDebug($"Registered MSBuild instance: {instance.Name} {instance.Version}");
+                            console?.WriteDebug($"Registered MSBuild instance: {instance.Name} {instance.Version} ({instance.MSBuildPath})");
                         }
                         else {
-                            MSBuildLocator.RegisterDefaults();
-                            console?.WriteDebug("Registered default MSBuild instance");
+                            instance = MSBuildLocator.RegisterDefaults();
+                            NuGetAssemblyResolver.MSBuildDirectory = instance.MSBuildPath;
+                            console?.WriteDebug($"Registered default MSBuild instance: {instance.Name} {instance.Version} ({instance.MSBuildPath})");
                         }
                     }
                     _isRegistered = true;

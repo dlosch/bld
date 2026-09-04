@@ -499,6 +499,9 @@ internal class TfmService : IDisposable {
         var issues = new List<PackageCompatibilityIssue>();
         var packageSource = Repository.Factory.GetCoreV3("https://api.nuget.org/v3/index.json");
         var packageMetadataResource = await packageSource.GetResourceAsync<PackageMetadataResource>(cancellationToken);
+        if (packageMetadataResource is null) {
+            return issues;
+        }
 
         foreach (var package in project.PackageReferences) {
             try {

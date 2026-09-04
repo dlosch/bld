@@ -37,6 +37,16 @@
     <PackageReference Include="NuGet.Frameworks" />
   </ItemGroup>
 
+  <!-- Ship NuGet.* in bin/nuget and keep them out of deps.json (and so off the runtime's TPA list):
+       NuGetAssemblyResolver then loads the newer of our copy and the hosted SDK's. -->
+  <Target Name="StageNuGetAssemblies" AfterTargets="ResolvePackageAssets">
+    <ItemGroup>
+      <_NuGetStagedAssembly Include="@(RuntimeCopyLocalItems)" Condition="$([System.String]::Copy('%(RuntimeCopyLocalItems.NuGetPackageId)').StartsWith('NuGet.'))" />
+      <RuntimeCopyLocalItems Remove="@(_NuGetStagedAssembly)" />
+      <ReferenceCopyLocalPaths Include="@(_NuGetStagedAssembly)" DestinationSubDirectory="nuget/" />
+    </ItemGroup>
+  </Target>
+
   <PropertyGroup>
     <CopyOutputSymbolsToPublishDirectory>false</CopyOutputSymbolsToPublishDirectory>
     <PackAsTool>true</PackAsTool>

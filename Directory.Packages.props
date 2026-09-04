@@ -11,10 +11,11 @@
     <!-- <PackageVersion Include="Microsoft.Sbom.Api" Version="2.2.8" /> -->
     <!-- <PackageVersion Include="CycloneDX.Core" Version="6.0.5" /> -->
     <!-- <PackageVersion Include="System.Text.Json" Version="9.0.0" /> -->
-    <PackageVersion Include="NuGet.Protocol" Version="7.6.0" />
-    <PackageVersion Include="NuGet.Versioning" Version="7.6.0" />
-    <PackageVersion Include="NuGet.Packaging" Version="7.6.0" />
-    <PackageVersion Include="NuGet.Frameworks" Version="7.6.0" />
+    <!-- Shipped in bin/nuget, off the TPA list; see NuGetAssemblyResolver and StageNuGetAssemblies in bld.csproj. -->
+    <PackageVersion Include="NuGet.Protocol" Version="7.9.0" />
+    <PackageVersion Include="NuGet.Versioning" Version="7.9.0" />
+    <PackageVersion Include="NuGet.Packaging" Version="7.9.0" />
+    <PackageVersion Include="NuGet.Frameworks" Version="7.9.0" />
     <PackageVersion Include="coverlet.collector" Version="10.0.1" />
     <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.6.0" />
     <PackageVersion Include="xunit" Version="2.9.3" />
