@@ -9,6 +9,7 @@ All notable changes to this project are documented in this file.
 - extend `outdated` command: `--package`/`-p` and `--exclude` select a subset of packages by wildcard pattern.
 - extend `outdated` command: `--apply` and dry runs now check the packages they would update against the versions their dependencies will end up at, and hold back any package whose declared range would be violated. `--allow-conflicts` updates anyway. The check covers direct references only.
 - extend `outdated` command: `--verify-restore` runs `dotnet restore` after `--apply` and fails the command on NuGet errors.
+- bump `System.CommandLine` to 2.0.12 and `Microsoft.SourceLink.GitHub` to 10.0.401.
 
 ## [0.2.33] - 2026-05-25
 
