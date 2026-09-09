@@ -32,6 +32,31 @@ internal sealed class OutdatedCommand : BaseCommand {
         DefaultValueFactory = _ => false
     };
 
+    private readonly Option<MaxBump> _maxBumpOption = new Option<MaxBump>("--max-bump") {
+        Description = "Largest version step to propose, relative to the version a package is pinned at now: 'major' (no cap), 'minor' (same major, no breaking change per SemVer) or 'patch' (same major and minor). Versions above the cap are reported in the 'held' column instead of being applied.",
+        DefaultValueFactory = _ => MaxBump.Major
+    };
+
+    private readonly Option<string[]> _packageOption = new Option<string[]>("--package", "-p") {
+        Description = "Only consider packages whose id matches one of these patterns. Supports '*' wildcards, is case-insensitive, may be repeated, and accepts ';'-separated lists. Default: all packages.",
+        AllowMultipleArgumentsPerToken = true
+    };
+
+    private readonly Option<string[]> _excludeOption = new Option<string[]>("--exclude") {
+        Description = "Skip packages whose id matches one of these patterns. Same syntax as --package and applied after it.",
+        AllowMultipleArgumentsPerToken = true
+    };
+
+    private readonly Option<bool> _allowConflictsOption = new Option<bool>("--allow-conflicts") {
+        Description = "Update packages even when a dependency they require stays at a version that does not satisfy their declared range. Without this, such packages are held back.",
+        DefaultValueFactory = _ => false
+    };
+
+    private readonly Option<bool> _verifyRestoreOption = new Option<bool>("--verify-restore") {
+        Description = "After --apply, run 'dotnet restore' on the input and fail the command if NuGet reports errors. The only check that sees what NuGet actually resolves.",
+        DefaultValueFactory = _ => false
+    };
+
     private readonly Option<bool> _interactiveOption = new Option<bool>("--interactive", "-i") {
         Description = "Prompt yes/no for each outdated package before applying. If you skip a package that another picked package depends on at a higher version, the conflict is surfaced so you can include the dependency, skip the picker, or accept the risk. Implies --apply.",
         DefaultValueFactory = _ => false
@@ -46,6 +71,11 @@ internal sealed class OutdatedCommand : BaseCommand {
         Add(_orphanedOption);
         Add(_commentOrphansOption);
         Add(_interactiveOption);
+        Add(_maxBumpOption);
+        Add(_packageOption);
+        Add(_excludeOption);
+        Add(_allowConflictsOption);
+        Add(_verifyRestoreOption);
         Add(_logLevelOption);
         Add(_vsToolsPath);
         Add(_noResolveVsToolsPath);
@@ -82,7 +112,13 @@ internal sealed class OutdatedCommand : BaseCommand {
         var interactive = parseResult.GetValue(_interactiveOption);
         if (interactive) applyUpdates = true;
 
+        var maxBump = parseResult.GetValue(_maxBumpOption);
+        var includePatterns = OutdatedService.SplitPatterns(parseResult.GetValue(_packageOption));
+        var excludePatterns = OutdatedService.SplitPatterns(parseResult.GetValue(_excludeOption));
+        var allowConflicts = parseResult.GetValue(_allowConflictsOption);
+        var verifyRestore = parseResult.GetValue(_verifyRestoreOption);
+
         var service = new OutdatedService(Output, options);
-        return await service.CheckOutdatedPackagesAsync(rootValue, applyUpdates, skipTfmCheck, includePrerelease, listOrphans, commentOrphans, interactive, cancellationToken);
+        return await service.CheckOutdatedPackagesAsync(rootValue, applyUpdates, skipTfmCheck, includePrerelease, listOrphans, commentOrphans, interactive, maxBump, includePatterns, excludePatterns, allowConflicts, verifyRestore, cancellationToken);
     }
 }

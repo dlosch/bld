@@ -180,8 +180,8 @@ Helpful when your favorite agent creates your shiny new project targeting a old 
 - How it works: aggregates package versions across projects, resolves conflicts, writes the props file, and updates project files when `--apply` (with optional `--overwrite`).
 
 ### outdated
-- What it does: lists packages with newer versions and can update them.
-- How it works: queries NuGet feeds for newer versions, respects TFM compatibility unless `--skip-tfm-check`, and applies updates when `--apply` (with optional `--prerelease`).
+- What it does: lists packages with newer versions and can update them, in whole or in part.
+- How it works: queries NuGet feeds for newer versions, respects TFM compatibility unless `--skip-tfm-check`, and applies updates when `--apply` (with optional `--prerelease`). `--max-bump` caps how far a package may move, `--package`/`--exclude` narrow the set by wildcard, and the declared dependency ranges of the selected packages are checked before anything is written.
 - (dotnet-outdated is another .NET tool which updates NuGet package versions)
 
 ### containerize
@@ -240,12 +240,23 @@ bld cpm --root MySolution.sln --apply --overwrite
 - `--orphaned` — List `PackageVersion` entries in `Directory.Packages.props` that have no matching `PackageReference` and have a newer version on NuGet. Report-only; works for project or solution input.
 - `--comment-orphans` — With `--apply`, comment out outdated orphan entries. Only honored for solution input (`.sln`/`.slnx`/`.slnf`), since a single project can't see all CPM consumers. Implies `--orphaned`.
 - `--interactive`, `-i` — Prompt yes/no per outdated package before applying; surfaces dependency version conflicts when you skip a needed package. Implies `--apply`.
+- `--max-bump <major|minor|patch>` — Largest version step to propose, relative to the version a package is pinned at now: `major` (no cap, the default), `minor` (same major, so no breaking change per SemVer) or `patch` (same major and minor).
+- `--package <pattern>`, `-p` — Only consider packages whose id matches one of these patterns. Supports `*` wildcards, is case-insensitive, may be repeated, and accepts `;`-separated lists. Default: all packages.
+- `--exclude <pattern>` — Skip packages whose id matches one of these patterns. Same syntax as `--package` and applied after it.
+- `--allow-conflicts` — Update packages even when a dependency they require stays at a version that does not satisfy their declared range. Without this, such packages are held back.
+- `--verify-restore` — After `--apply`, run `dotnet restore` on the input and fail the command when NuGet reports errors.
 
-Example:
+Examples:
 
 ```powershell
 bld outdated --root C:\src\MyRepo --prerelease
+bld outdated --root C:\src\MyRepo --max-bump minor --apply
+bld outdated --root C:\src\MyRepo -p "Serilog.*" -p "xunit*" --exclude "Serilog.Sinks.Seq" --max-bump minor --apply
 ```
+
+The **held** column names the newest version that `--max-bump` refused, so a capped run does not read as "up to date". A package that has nothing but a held-back version is listed with `current` equal to `latest`, and `--apply` leaves it untouched.
+
+Before writing, the command checks the packages it is about to update against the versions their dependencies will actually end up at, and holds back any package whose declared range would be violated. That check sees **direct references only**: transitive chains and upper-bounded ranges declared by packages you are not updating are outside its reach, so `--verify-restore` is the only complete answer. Held-back packages are a normal outcome and do not change the exit code; failures to analyze a project, look up a package, or restore do.
 
 ### containerize (BETA)
 

@@ -28,6 +28,47 @@ internal class OutdatedService {
         skipTfmCheck ? Array.Empty<string>() : packageReferences.Tfms.ToList();
 
     /// <summary>
+    /// Whether <paramref name="candidate"/> is inside the update window allowed by
+    /// <paramref name="bump"/>, relative to the currently pinned <paramref name="current"/>.
+    /// </summary>
+    /// <remarks>
+    /// Compares version components rather than testing against an upper bound, because a prerelease
+    /// sorts *below* its release: "candidate &lt; 9.0.0" would let 9.0.0-preview.1 through under
+    /// <c>--max-bump minor --pre</c>, which is exactly the major bump the caller ruled out.
+    /// </remarks>
+    internal static bool WithinBump(NuGetVersion current, NuGetVersion candidate, MaxBump bump) => bump switch {
+        MaxBump.Minor => candidate.Major == current.Major,
+        MaxBump.Patch => candidate.Major == current.Major && candidate.Minor == current.Minor,
+        _ => true
+    };
+
+    /// <summary>
+    /// Applies the <c>--package</c> / <c>--exclude</c> wildcard patterns. An empty include list means
+    /// "everything"; exclude is applied afterwards and wins.
+    /// </summary>
+    internal static HashSet<string> SelectByFilter(IEnumerable<string> ids, IReadOnlyList<string> include, IReadOnlyList<string> exclude) {
+        var selected = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var id in ids) {
+            if (include.Count > 0 && WhitelistBlacklistParser.FindMatchingPattern(id, include) is null) continue;
+            if (exclude.Count > 0 && WhitelistBlacklistParser.FindMatchingPattern(id, exclude) is not null) continue;
+            selected.Add(id);
+        }
+        return selected;
+    }
+
+    /// <summary>
+    /// Flattens repeated option values and semicolon-separated lists into one pattern list, so
+    /// <c>-p A -p "B;C"</c> and <c>-p A B C</c> mean the same thing.
+    /// </summary>
+    internal static IReadOnlyList<string> SplitPatterns(string[]? raw) {
+        if (raw is null || raw.Length == 0) return Array.Empty<string>();
+        return raw
+            .Where(v => !string.IsNullOrWhiteSpace(v))
+            .SelectMany(v => v.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            .ToList();
+    }
+
+    /// <summary>
     /// Package ids named by a project file's raw XML, regardless of any Condition. MSBuild evaluates
     /// one TFM and configuration at a time, so a reference inside
     /// &lt;ItemGroup Condition="'$(TargetFramework)'=='net472'"&gt; is invisible to the evaluated view -
@@ -63,13 +104,20 @@ internal class OutdatedService {
     internal enum ConflictChoice { IncludeDep, SkipPicker, AcceptRisk }
 
     // Pure helper: given the user's initial acceptance set, iterates until stable resolving
-    // conflicts where an accepted package needs a higher version of a skipped package than what's
-    // currently pinned. Returns the final accepted set (a mutated copy of the input).
+    // conflicts where an accepted package needs a higher version of a dependency than the version
+    // that dependency will actually end up at. Returns the final accepted set (a mutated copy of the
+    // input).
+    //
+    // Scope (tier A): only dependencies that are themselves direct references in scope are checked -
+    // an id is resolvable when it appears in `outdated` or in `currentPins`. Transitive chains
+    // (P needs X needs D) and upper bounds declared by packages that are not being updated are not
+    // followed; `--verify-restore` is the only complete answer.
     internal static HashSet<string> ResolveInteractivePicks(
         IEnumerable<string> initialAccepted,
         IReadOnlyDictionary<string, (NuGetVersion CurrentMin, NuGetVersion Latest)> outdated,
         IReadOnlyDictionary<string, PackageVersionResult> metadata,
-        Func<string, NuGetVersion, string, string, NuGetVersion, ConflictChoice> askConflict) {
+        Func<string, NuGetVersion, string, string, NuGetVersion, bool, ConflictChoice> askConflict,
+        IReadOnlyDictionary<string, NuGetVersion>? currentPins = null) {
 
         var accepted = new HashSet<string>(initialAccepted, StringComparer.OrdinalIgnoreCase);
 
@@ -108,13 +156,37 @@ internal class OutdatedService {
                 }
 
                 foreach (var (depId, dep) in depRanges) {
-                    if (!outdated.TryGetValue(depId, out var depVersions)) continue; // unknown to us
-                    if (accepted.Contains(depId)) continue; // will be updated
-                    if (dep.Range.Satisfies(depVersions.CurrentMin)) continue; // skip is safe
+                    // The version this dependency will actually end up at: its update target when it
+                    // is being updated too, otherwise the version it stays pinned at. A dependency
+                    // that is already accepted is not automatically safe - --max-bump can cap its
+                    // target below what the picker needs.
+                    NuGetVersion effective;
+                    bool depAlreadyIncluded;
+                    var isOutdated = outdated.TryGetValue(depId, out var depVersions);
+                    if (isOutdated && accepted.Contains(depId)) {
+                        effective = depVersions.Latest;
+                        depAlreadyIncluded = true;
+                    }
+                    else if (isOutdated) {
+                        effective = depVersions.CurrentMin;
+                        depAlreadyIncluded = false;
+                    }
+                    else if (currentPins is not null && currentPins.TryGetValue(depId, out var pinned)) {
+                        // Up to date, or filtered out before we got here: it stays where it is.
+                        effective = pinned;
+                        depAlreadyIncluded = false;
+                    }
+                    else {
+                        continue; // not a direct reference in scope - out of tier A's reach
+                    }
 
-                    var choice = askConflict(pickerId, outdated[pickerId].Latest, depId, dep.Raw, depVersions.CurrentMin);
+                    if (dep.Range.Satisfies(effective)) continue; // safe either way
+
+                    var choice = askConflict(pickerId, outdated[pickerId].Latest, depId, dep.Raw, effective, depAlreadyIncluded);
                     switch (choice) {
-                        case ConflictChoice.IncludeDep:
+                        // Including only helps when the dependency has an update available that is
+                        // not already selected; otherwise treat the answer as accept-risk.
+                        case ConflictChoice.IncludeDep when isOutdated && !depAlreadyIncluded:
                             accepted.Add(depId);
                             changed = true;
                             break;
@@ -122,7 +194,7 @@ internal class OutdatedService {
                             accepted.Remove(pickerId);
                             changed = true;
                             break;
-                        case ConflictChoice.AcceptRisk:
+                        default:
                             break;
                     }
                     if (!accepted.Contains(pickerId)) break; // picker dropped — stop checking its other deps
@@ -134,7 +206,7 @@ internal class OutdatedService {
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    public async Task<int> CheckOutdatedPackagesAsync(string rootPath, bool updatePackages, bool skipTfmCheck, bool includePrerelease, bool listOrphans, bool commentOrphans, bool interactive, CancellationToken cancellationToken) {
+    public async Task<int> CheckOutdatedPackagesAsync(string rootPath, bool updatePackages, bool skipTfmCheck, bool includePrerelease, bool listOrphans, bool commentOrphans, bool interactive, MaxBump maxBump, IReadOnlyList<string> includePatterns, IReadOnlyList<string> excludePatterns, bool allowConflicts, bool verifyRestore, CancellationToken cancellationToken) {
         MSBuildService.RegisterMSBuildDefaults(_console, _options);
 
         _console.WriteRule("[bold blue]bld outdated (BETA)[/]");
@@ -313,6 +385,13 @@ internal class OutdatedService {
 
         var latestPerPackage = new Dictionary<string, NuGetVersion>(StringComparer.OrdinalIgnoreCase);
         var outdatedPerPackage = new ConcurrentDictionary<string, (NuGetVersion CurrentMin, NuGetVersion Latest)>(StringComparer.OrdinalIgnoreCase);
+        // Packages with a newer version that --max-bump refused. Reported so a capped run does not
+        // read as "up to date". Kept apart from outdatedPerPackage so a held-back-only package never
+        // reaches the picker, the dependency check or the apply path as if it had an update.
+        var heldPerPackage = new ConcurrentDictionary<string, (NuGetVersion CurrentMin, string Held)>(StringComparer.OrdinalIgnoreCase);
+        // Lowest pin per package across every usage in scope, including packages that are up to date.
+        // The dependency check needs it to know where a package it is not updating will end up.
+        var currentPins = new ConcurrentDictionary<string, NuGetVersion>(StringComparer.OrdinalIgnoreCase);
         // NuGet metadata (with dependency manifest) cached per outdated package so the interactive
         // mode can detect transitive conflicts without re-querying NuGet.
         var packageMetadata = new ConcurrentDictionary<string, PackageVersionResult>(StringComparer.OrdinalIgnoreCase);
@@ -327,10 +406,24 @@ internal class OutdatedService {
                 return;
             }
 
+            // The lowest pin in scope has to be known before the request is built: --max-bump is
+            // expressed relative to it, and the feed walk applies that cap while scanning.
+            var parsedVersions = packageReference.Value
+                .Select(u => NuGetVersion.TryParse(u.Version, out var v) ? v : null)
+                .Where(v => v is not null)
+                .ToList();
+            if (parsedVersions.Count == 0) {
+                _console.WriteWarning($"No parseable versions found for {packageReference.Key}; skipping.");
+                return;
+            }
+            var currentMin = parsedVersions.Min()!;
+            currentPins[packageReference.Key] = currentMin;
+
             var request = new PackageVersionRequest {
                 PackageId = packageReference.Key,
                 AllowPrerelease = includePrerelease,
-                CompatibleTargetFrameworks = SelectCompatibleTargetFrameworks(skipTfmCheck, packageReference.Value)
+                CompatibleTargetFrameworks = SelectCompatibleTargetFrameworks(skipTfmCheck, packageReference.Value),
+                VersionFilter = maxBump == MaxBump.Major ? null : v => WithinBump(currentMin, v, maxBump)
             };
 
             var result = await NugetMetadataService.GetLatestVersionWithFrameworkCheckAsync(client, options, _console, request, ct);
@@ -342,16 +435,18 @@ internal class OutdatedService {
                 return;
             }
 
+            if (result.NewestOutsideFilter is { } heldVersion) {
+                heldPerPackage[packageReference.Key] = (currentMin, heldVersion);
+            }
+
+            // The window excluded everything, so there is no version to compare against. Reported as
+            // held above; not a failure, and not something to run the target-version logic over.
+            if (result.NoVersionWithinFilter) {
+                _console.WriteDebug($"No version within the --max-bump window for {packageReference.Key}; newest outside it is {result.NewestOutsideFilter}.");
+                return;
+            }
+
             try {
-                var parsedVersions = packageReference.Value
-                    .Select(u => NuGetVersion.TryParse(u.Version, out var v) ? v : null)
-                    .Where(v => v is not null)
-                    .ToList();
-                if (parsedVersions.Count == 0) {
-                    _console.WriteWarning($"No parseable versions found for {packageReference.Key}; skipping.");
-                    return;
-                }
-                var currentMin = parsedVersions.Min()!;
                 var targetVer = default(string?);
                 if (request.CompatibleTargetFrameworks is { } && request.CompatibleTargetFrameworks.Count > 1) {
                     foreach (var item in request.CompatibleTargetFrameworksTyped) {
@@ -464,6 +559,76 @@ internal class OutdatedService {
             _console.WriteWarning("Orphan detection only sees the projects in this input. A Directory.Packages.props shared with another solution may list entries that are used elsewhere.");
         }
 
+        // --package / --exclude. A pre-selection, like the interactive picker: metadata was fetched
+        // for every package regardless, so the dependency check below can still see where an
+        // excluded package stays pinned. Orphan detection is deliberately untouched.
+        var excludedByFilter = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (includePatterns.Count > 0 || excludePatterns.Count > 0) {
+            var candidateIds = outdatedPerPackage.Keys.Concat(heldPerPackage.Keys)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            var selected = SelectByFilter(candidateIds, includePatterns, excludePatterns);
+
+            foreach (var id in candidateIds) {
+                if (selected.Contains(id)) continue;
+                excludedByFilter.Add(id);
+                outdatedPerPackage.TryRemove(id, out _);
+                heldPerPackage.TryRemove(id, out _);
+            }
+
+            if (selected.Count == 0) {
+                var patternText = string.Join(", ", includePatterns.Concat(excludePatterns.Select(p => "!" + p)));
+                _console.WriteWarning($"No outdated package matched the filter ({patternText}).");
+            }
+            else {
+                _console.WriteInfo($"Filter: {selected.Count} of {candidateIds.Count} outdated package(s) selected, {excludedByFilter.Count} excluded.");
+            }
+        }
+
+        // Dependency consistency check for non-interactive runs. --interactive resolves the same
+        // conflicts through its own prompts below, so running both would ask and warn twice.
+        var conflictHeldBack = 0;
+        if (!interactive && outdatedPerPackage.Count > 0) {
+            // The warning is all the user gets, so the reason has to match the branch that produced
+            // it. Order matters: a package can be both capped and dropped, and the proximate reason
+            // it stays where it is, is the one closest to this run's decisions.
+            string HoldReason(string depId, bool depAlreadyIncluded) {
+                if (depAlreadyIncluded) return "its own update target is still too low";
+                if (excludedByFilter.Contains(depId)) return "excluded by --package/--exclude";
+                // Still in the map at callback time: every outdated package starts accepted here, so
+                // not being accepted means an earlier conflict in this same pass dropped it.
+                if (outdatedPerPackage.ContainsKey(depId)) return "held back earlier in this run";
+                if (heldPerPackage.ContainsKey(depId)) return "capped by --max-bump";
+                return "no newer version available";
+            }
+
+            var picks = ResolveInteractivePicks(
+                outdatedPerPackage.Keys.ToList(),
+                outdatedPerPackage,
+                packageMetadata,
+                (pickerId, pickerLatest, depId, depRange, depCurrent, depAlreadyIncluded) => {
+                    var action = allowConflicts
+                        ? "Updating anyway (--allow-conflicts)."
+                        : $"Holding {pickerId} back.";
+                    var verb = depAlreadyIncluded ? "only reaches" : "stays at";
+                    _console.WriteWarning(
+                        $"{pickerId} {pickerLatest} requires {depId} {depRange}, but {depId} {verb} {depCurrent} ({HoldReason(depId, depAlreadyIncluded)}). {action}");
+                    return allowConflicts ? ConflictChoice.AcceptRisk : ConflictChoice.SkipPicker;
+                },
+                currentPins);
+
+            foreach (var id in outdatedPerPackage.Keys.ToList()) {
+                if (!picks.Contains(id)) {
+                    outdatedPerPackage.TryRemove(id, out _);
+                    heldPerPackage.TryRemove(id, out _);
+                    conflictHeldBack++;
+                }
+            }
+            if (conflictHeldBack > 0) {
+                _console.WriteLine($"{conflictHeldBack} package(s) held back due to dependency conflicts; pass --allow-conflicts to update anyway.");
+            }
+        }
+
         if (interactive && outdatedPerPackage.Count > 0) {
             _console.WriteRule("[bold yellow]Interactive update selection[/]");
 
@@ -490,28 +655,38 @@ internal class OutdatedService {
                 initial,
                 outdatedPerPackage,
                 packageMetadata,
-                (pickerId, pickerLatest, depId, depRange, depCurrent) => {
+                (pickerId, pickerLatest, depId, depRange, depCurrent, depAlreadyIncluded) => {
                     _console.WriteWarning(
-                        $"{pickerId} {pickerLatest} requires {depId} {depRange}, but {depId} was skipped at {depCurrent}.");
-                    if (_console.Confirm($"  Include {depId} update too?", defaultValue: true)) return ConflictChoice.IncludeDep;
+                        $"{pickerId} {pickerLatest} requires {depId} {depRange}, but {depId} stays at {depCurrent}.");
+                    // Offering "include it too" only makes sense when there is an unselected update
+                    // to include: a dependency that is already selected, filtered out or up to date
+                    // has nothing left to add.
+                    var canInclude = !depAlreadyIncluded && outdatedPerPackage.ContainsKey(depId);
+                    if (canInclude && _console.Confirm($"  Include {depId} update too?", defaultValue: true)) return ConflictChoice.IncludeDep;
                     if (_console.Confirm($"  Skip {pickerId} as well?", defaultValue: false)) return ConflictChoice.SkipPicker;
                     return ConflictChoice.AcceptRisk;
-                });
+                },
+                currentPins);
 
             var dropped = 0;
             foreach (var id in outdatedPerPackage.Keys.ToList()) {
                 if (!picks.Contains(id)) {
                     outdatedPerPackage.TryRemove(id, out _);
+                    heldPerPackage.TryRemove(id, out _);
                     dropped++;
                 }
             }
             _console.WriteInfo($"Interactive selection: {picks.Count} package(s) selected, {dropped} skipped.");
         }
 
-        if (outdatedPerPackage.Count == 0 && orphansToComment.IsEmpty) {
+        if (outdatedPerPackage.Count == 0 && heldPerPackage.IsEmpty && orphansToComment.IsEmpty) {
             // Only claim everything is up to date when we actually managed to look.
             if (metadataFailures > 0 || evaluationFailures > 0) {
                 _console.WriteWarning($"Incomplete run: {evaluationFailures} project(s) failed to analyze and {metadataFailures} package lookup(s) failed. Results are not conclusive.");
+            }
+            else if (conflictHeldBack > 0) {
+                // Updates existed; they were all withheld. Saying "up to date" here would be a lie.
+                _console.WriteLine($"Nothing left to update: all {conflictHeldBack} candidate(s) were held back by the dependency check.");
             }
             else {
                 _console.WriteLine("All packages are up to date!");
@@ -522,10 +697,25 @@ internal class OutdatedService {
             return ExitCode(errorSink, evaluationFailures, metadataFailures);
         }
 
-        int maxMajorLength = outdatedPerPackage.Values
+        // One row per package that has either an update inside the window or a version the cap held
+        // back. A held-back-only package shows current == latest, so the apply path (guarded by
+        // HasVersionUpdate) leaves it alone.
+        var reportRows = outdatedPerPackage.Keys.Concat(heldPerPackage.Keys)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(id => id, StringComparer.OrdinalIgnoreCase)
+            .Select(id => {
+                var held = heldPerPackage.TryGetValue(id, out var h) ? h.Held : null;
+                if (outdatedPerPackage.TryGetValue(id, out var v)) return (Id: id, v.CurrentMin, v.Latest, Held: held);
+                var pinned = heldPerPackage[id].CurrentMin;
+                return (Id: id, CurrentMin: pinned, Latest: pinned, Held: held);
+            })
+            .ToList();
+
+        int maxMajorLength = reportRows
             .SelectMany(v => new[] {
                 v.CurrentMin?.Major.ToString().Length ?? 0,
-                v.Latest?.Major.ToString().Length ?? 0
+                v.Latest?.Major.ToString().Length ?? 0,
+                NuGetVersion.TryParse(v.Held, out var h) ? h.Major.ToString().Length : 0
             })
             .Concat(orphansToComment.Values.SelectMany(d => d.Values).SelectMany(v => new[] {
                 NuGetVersion.TryParse(v.current, out var c) ? c.Major.ToString().Length : 0,
@@ -534,33 +724,41 @@ internal class OutdatedService {
             .DefaultIfEmpty(0)
             .Max();
 
-        if (outdatedPerPackage.Count > 0) {
-            _console.WriteLine($"\nFound {outdatedPerPackage.Count} packages with available updates:");
+        if (reportRows.Count > 0) {
+            _console.WriteLine(outdatedPerPackage.Count > 0
+                ? $"\nFound {outdatedPerPackage.Count} packages with available updates:"
+                : $"\nNo updates available within --max-bump {maxBump.ToString().ToLowerInvariant()}, but newer versions exist:");
             if (_options.MarkdownOutput) {
-                var rows = outdatedPerPackage
-                    .OrderBy(k => k.Key)
-                    .Select(kvp => (IReadOnlyList<string?>)new[] {
-                        kvp.Key,
-                        PlainVersion(kvp.Value.CurrentMin),
-                        PlainVersion(kvp.Value.Latest)
+                var rows = reportRows
+                    .Select(row => (IReadOnlyList<string?>)new[] {
+                        row.Id,
+                        PlainVersion(row.CurrentMin),
+                        PlainVersion(row.Latest),
+                        row.Held ?? string.Empty
                     });
 
-                MarkdownTableFormatter.Write(_console, "Outdated packages (markdown)", new[] { "PackageId", "Current", "Latest" }, rows);
+                MarkdownTableFormatter.Write(_console, "Outdated packages (markdown)", new[] { "PackageId", "Current", "Latest", "Held" }, rows);
             }
             else {
                 var table = new Table().Border(TableBorder.Rounded);
                 table.AddColumn(new TableColumn("PackageId").LeftAligned());
                 table.AddColumn(new TableColumn("current").LeftAligned());
                 table.AddColumn(new TableColumn("latest").LeftAligned());
+                table.AddColumn(new TableColumn("held").LeftAligned());
 
-                foreach (var kvp in outdatedPerPackage.OrderBy(k => k.Key)) {
+                foreach (var row in reportRows) {
                     table.AddRow(
-                        Markup.Escape(kvp.Key ?? ""),
-                        FormatVersion(kvp.Value.CurrentMin, maxMajorLength),
-                        GetFormattedVersion(kvp.Value.CurrentMin, kvp.Value.Latest, maxMajorLength)
+                        Markup.Escape(row.Id ?? ""),
+                        FormatVersion(row.CurrentMin, maxMajorLength),
+                        GetFormattedVersion(row.CurrentMin, row.Latest, maxMajorLength),
+                        row.Held is null ? "" : Markup.Escape(row.Held)
                     );
                 }
                 _console.WriteTable(table);
+            }
+
+            if (!heldPerPackage.IsEmpty) {
+                _console.WriteLine($"{heldPerPackage.Count} package(s) have newer versions held back by --max-bump {maxBump.ToString().ToLowerInvariant()}.");
             }
         }
 
@@ -776,8 +974,26 @@ internal class OutdatedService {
                     }
                 }
             }
+
+            if (verifyRestore) {
+                _console.WriteInfo("\nVerifying the update with dotnet restore...");
+                var restoreErrors = await RunRestoreAsync(rootPath, cancellationToken);
+                if (restoreErrors.Count == 0) {
+                    _console.WriteLine("Restore succeeded after update.");
+                }
+                else {
+                    foreach (var line in restoreErrors) {
+                        errorSink.AddError(line);
+                        _console.WriteError(line);
+                    }
+                    _console.WriteWarning("Restore failed. The updated files were left in place - inspect them with git diff and revert what you do not want.");
+                }
+            }
         }
         else {
+            if (verifyRestore) {
+                _console.WriteWarning("--verify-restore only applies together with --apply; nothing was written, so there is nothing to verify.");
+            }
             _console.WriteOutput("Use --apply to apply these changes.", default);
         }
 
@@ -786,6 +1002,80 @@ internal class OutdatedService {
         errorSink.WriteTo();
 
         return ExitCode(errorSink, evaluationFailures, metadataFailures);
+    }
+
+    /// <summary>
+    /// NuGet error lines from restore output, deduplicated and in the order they appeared. Anything
+    /// else (warnings, MSBuild chatter, progress) is left to the debug log.
+    /// </summary>
+    internal static IReadOnlyList<string> ParseRestoreErrors(IEnumerable<string> outputLines) {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var errors = new List<string>();
+        foreach (var line in outputLines) {
+            if (string.IsNullOrWhiteSpace(line)) continue;
+            if (line.IndexOf("error NU", StringComparison.OrdinalIgnoreCase) < 0) continue;
+            var trimmed = line.Trim();
+            if (seen.Add(trimmed)) errors.Add(trimmed);
+        }
+        return errors;
+    }
+
+    /// <summary>
+    /// Runs <c>dotnet restore</c> against the command's input and returns the reasons it failed, or
+    /// an empty list when it succeeded. This is the only check that sees what NuGet actually
+    /// resolves - the in-process dependency check covers direct references only.
+    /// </summary>
+    /// <remarks>
+    /// Every failure path returns a line rather than recording it directly, so the caller stays the
+    /// single place that reports and counts them. An empty result means success and nothing else -
+    /// returning empty on a caught exception made the caller print "Restore succeeded" after a
+    /// failure (e.g. dotnet missing from PATH).
+    /// </remarks>
+    private async Task<IReadOnlyList<string>> RunRestoreAsync(string input, CancellationToken cancellationToken) {
+        var startInfo = new ProcessStartInfo("dotnet") {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+        startInfo.ArgumentList.Add("restore");
+        startInfo.ArgumentList.Add(input);
+        startInfo.ArgumentList.Add("--nologo");
+
+        var lines = new List<string>();
+        try {
+            using var process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
+            process.OutputDataReceived += Collect;
+            process.ErrorDataReceived += Collect;
+
+            void Collect(object _, DataReceivedEventArgs e) {
+                if (e.Data is null) return;
+                lock (lines) lines.Add(e.Data);
+                _console.WriteDebug(e.Data);
+            }
+
+            if (!process.Start()) {
+                return new[] { "Could not start 'dotnet restore'; the update was not verified." };
+            }
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
+            await process.WaitForExitAsync(cancellationToken);
+
+            List<string> snapshot;
+            lock (lines) snapshot = lines.ToList();
+            var errors = ParseRestoreErrors(snapshot);
+
+            // A non-zero exit with no parseable NU line still means restore failed; do not report success.
+            if (errors.Count == 0 && process.ExitCode != 0) {
+                return new[] { $"dotnet restore exited with code {process.ExitCode}. Re-run it manually for the full output." };
+            }
+            return errors;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException) {
+            // Not a restore result: we never learned whether the update is sound. Report it as a
+            // failure so neither the console message nor the exit code claims success.
+            return new[] { $"Failed to run 'dotnet restore': {ex.FormatMessage()}" };
+        }
     }
 
     /// <summary>
@@ -1099,4 +1389,16 @@ internal enum VersionReason {
     VersionOverrideProj,
 
     PackageVersionCpm,
+}
+
+/// <summary>
+/// How far a package may be moved by <c>--apply</c>, relative to the version it is pinned at now.
+/// </summary>
+internal enum MaxBump {
+    /// <summary>No cap - the newest compatible version wins (the default).</summary>
+    Major,
+    /// <summary>Highest version with the same major, so no breaking change per SemVer.</summary>
+    Minor,
+    /// <summary>Highest version with the same major and minor.</summary>
+    Patch,
 }

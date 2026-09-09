@@ -122,4 +122,129 @@ public class NuGetMetadataServiceTests {
         Assert.False(result!.IsPrerelease);
         Assert.Contains("1.0.0", result.TargetFrameworkVersions.Values);
     }
+
+    private const string CapIndexJson = """
+        {
+          "count": 1,
+          "items": [
+            {
+              "@id": "https://api.nuget.org/v3/registration5-gz-semver2/my.package/page0.json",
+              "@type": "catalog:CatalogPage",
+              "count": 3
+            }
+          ]
+        }
+        """;
+
+    private const string CapPageJson = """
+        {
+          "@id": "https://api.nuget.org/v3/registration5-gz-semver2/my.package/page0.json",
+          "@type": "catalog:CatalogPage",
+          "count": 3,
+          "items": [
+            {
+              "@id": "https://api.nuget.org/v3/registration5-gz-semver2/my.package/8.0.0.json",
+              "@type": "Package",
+              "catalogEntry": {
+                "id": "My.Package",
+                "version": "8.0.0",
+                "listed": true,
+                "dependencyGroups": [ { "targetFramework": "net8.0", "dependencies": [] } ]
+              }
+            },
+            {
+              "@id": "https://api.nuget.org/v3/registration5-gz-semver2/my.package/8.4.0.json",
+              "@type": "Package",
+              "catalogEntry": {
+                "id": "My.Package",
+                "version": "8.4.0",
+                "listed": true,
+                "dependencyGroups": [ { "targetFramework": "net8.0", "dependencies": [] } ]
+              }
+            },
+            {
+              "@id": "https://api.nuget.org/v3/registration5-gz-semver2/my.package/9.0.0.json",
+              "@type": "Package",
+              "catalogEntry": {
+                "id": "My.Package",
+                "version": "9.0.0",
+                "listed": true,
+                "dependencyGroups": [ { "targetFramework": "net8.0", "dependencies": [] } ]
+              }
+            }
+          ]
+        }
+        """;
+
+    [Fact]
+    public async Task GetLatestVersionWithFrameworkCheckAsync_WithoutVersionFilter_TakesTheNewestVersion() {
+        using var client = new HttpClient(new StaticResponseHandler(CapIndexJson, CapPageJson));
+        var request = new PackageVersionRequest {
+            PackageId = "My.Package",
+            AllowPrerelease = false,
+            CompatibleTargetFrameworks = ["net8.0"]
+        };
+
+        var result = await NugetMetadataService.GetLatestVersionWithFrameworkCheckAsync(client, new NugetMetadataOptions(), logger: null, request);
+
+        Assert.NotNull(result);
+        Assert.Contains("9.0.0", result!.TargetFrameworkVersions.Values);
+        Assert.Null(result.NewestOutsideFilter);
+    }
+
+    [Fact]
+    public async Task GetLatestVersionWithFrameworkCheckAsync_VersionFilterCapsTheResultAndReportsWhatItSkipped() {
+        using var client = new HttpClient(new StaticResponseHandler(CapIndexJson, CapPageJson));
+        var request = new PackageVersionRequest {
+            PackageId = "My.Package",
+            AllowPrerelease = false,
+            CompatibleTargetFrameworks = ["net8.0"],
+            VersionFilter = v => v.Major == 8
+        };
+
+        var result = await NugetMetadataService.GetLatestVersionWithFrameworkCheckAsync(client, new NugetMetadataOptions(), logger: null, request);
+
+        Assert.NotNull(result);
+        Assert.Contains("8.4.0", result!.TargetFrameworkVersions.Values);
+        Assert.DoesNotContain("9.0.0", result.TargetFrameworkVersions.Values);
+        Assert.Equal("9.0.0", result.NewestOutsideFilter);
+        Assert.False(result.NoVersionWithinFilter);
+    }
+
+    [Fact]
+    public async Task GetLatestVersionWithFrameworkCheckAsync_EmptyVersionWindowIsAResultNotALookupFailure() {
+        // Nothing in the feed satisfies the window. Returning null here would be read as a feed
+        // outage by the caller, which counts it as a failure and exits non-zero.
+        using var client = new HttpClient(new StaticResponseHandler(CapIndexJson, CapPageJson));
+        var request = new PackageVersionRequest {
+            PackageId = "My.Package",
+            AllowPrerelease = false,
+            CompatibleTargetFrameworks = ["net8.0"],
+            VersionFilter = v => v.Major == 42
+        };
+
+        var result = await NugetMetadataService.GetLatestVersionWithFrameworkCheckAsync(client, new NugetMetadataOptions(), logger: null, request);
+
+        Assert.NotNull(result);
+        Assert.True(result!.NoVersionWithinFilter);
+        Assert.Equal("9.0.0", result.NewestOutsideFilter);
+        Assert.Empty(result.TargetFrameworkVersions);
+    }
+
+    [Fact]
+    public async Task GetLatestVersionWithFrameworkCheckAsync_StillReturnsNullWhenTheFeedHasNothingUsable() {
+        // No filter involved: every listed version targets net8.0, which net472 cannot consume. That
+        // is still a genuine miss and must stay null, so the "nothing in window" path does not
+        // swallow real lookup problems.
+        using var client = new HttpClient(new StaticResponseHandler(CapIndexJson, CapPageJson));
+        var request = new PackageVersionRequest {
+            PackageId = "My.Package",
+            AllowPrerelease = false,
+            CompatibleTargetFrameworks = ["net472"]
+        };
+
+        var result = await NugetMetadataService.GetLatestVersionWithFrameworkCheckAsync(client, new NugetMetadataOptions(), logger: null, request);
+
+        Assert.Null(result);
+    }
 }

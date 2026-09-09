@@ -69,6 +69,9 @@ public static class NugetMetadataService {
             var allowPrerelease = request.AllowPrerelease;
             // Whether the feed lists any stable version at all, independent of framework matching.
             var sawListedStable = false;
+            // Newest listed version rejected by VersionFilter, reported so the caller can tell the
+            // user that an update exists outside the window they asked for.
+            string? newestOutsideFilter = null;
 retry:
             for (int i = index.Items.Count - 1; i >= 0; i--) {
                 var pageItem = index.Items[i];
@@ -108,6 +111,19 @@ retry:
                     if (!isPrerelease) sawListedStable = true;
                     if (!allowPrerelease && isPrerelease)
                         continue;
+
+                    // Version window (e.g. --max-bump minor). Applied before the framework check so a
+                    // capped run does not pay for TFM matching on versions it can never propose.
+                    // sawListedStable deliberately counts versions above the cap: the prerelease retry
+                    // asks "does this package have any stable release at all", not "within the window".
+                    if (request.VersionFilter is { } versionFilter) {
+                        if (nugetVersion is null) continue;
+                        if (!versionFilter(nugetVersion)) {
+                            // Pages are walked newest-first, so the first rejection is the newest one.
+                            newestOutsideFilter ??= versionItem.CatalogEntry.Version;
+                            continue;
+                        }
+                    }
 
                     var supportedFrameworks = new Dictionary<NuGetFramework, string>(request.CompatibleTargetFrameworks?.Count ?? 1);
                     var dependencyGroups = new Dictionary<NuGetFramework, DependencyGroup>(request.CompatibleTargetFrameworks?.Count ?? 1);
@@ -174,6 +190,7 @@ retry:
                             PackageId = request.PackageId,
                             TargetFrameworkVersions = supportedFrameworks,
                             IsPrerelease = isPrerelease,
+                            NewestOutsideFilter = newestOutsideFilter,
 
                             Dependencies = dependencyGroups
                         };
@@ -191,7 +208,23 @@ retry:
             // mismatch - so a stable-only feed could still yield a prerelease that --apply then pinned.
             if (!allowPrerelease && !request.AllowPrerelease && !sawListedStable) {
                 allowPrerelease = true;
+                // The second pass sees a different candidate set, so anything recorded in the first
+                // pass is not necessarily the newest rejected version any more.
+                newestOutsideFilter = null;
                 goto retry;
+            }
+
+            // A version window that excluded every candidate is a result, not a lookup failure. The
+            // caller counts null as a feed outage and exits non-zero, which would turn "pinned at a
+            // prerelease major with no stable release in that major" into a CI failure.
+            if (newestOutsideFilter is not null) {
+                logger?.WriteDebug($"No version within the requested window for {request.PackageId}; newest outside it is {newestOutsideFilter}");
+                return new PackageVersionResult {
+                    PackageId = request.PackageId,
+                    TargetFrameworkVersions = new Dictionary<NuGetFramework, string>(),
+                    NewestOutsideFilter = newestOutsideFilter,
+                    NoVersionWithinFilter = true
+                };
             }
 
             logger?.WriteDebug($"No matching version found for {request.PackageId} with any of the requested frameworks");
@@ -321,6 +354,13 @@ public record PackageVersionRequest {
     public required string PackageId { get; init; }
     public bool AllowPrerelease { get; init; }
     public bool IsPrivateAssets { get; init; } = false;
+
+    /// <summary>
+    /// Optional upper bound on the versions that may be proposed, e.g. "same major as the current
+    /// pin" for <c>--max-bump minor</c>. Null means every listed version is a candidate.
+    /// </summary>
+    public Func<NuGetVersion, bool>? VersionFilter { get; init; }
+
     public required IReadOnlyList<string> CompatibleTargetFrameworks { get; init; }
     public IEnumerable<NuGetFramework> CompatibleTargetFrameworksTyped => CompatibleTargetFrameworks
         .Where(x => !string.IsNullOrWhiteSpace(x))
@@ -337,6 +377,21 @@ public record PackageVersionResult {
     public required string PackageId { get; init; }
     public required Dictionary<NuGetFramework, string> TargetFrameworkVersions { get; init; }
     public bool IsPrerelease { get; init; }
+
+    /// <summary>
+    /// Newest listed version that <see cref="PackageVersionRequest.VersionFilter"/> rejected, or null
+    /// when no filter was set or nothing was rejected. Informational only - it has not been checked
+    /// for target framework compatibility.
+    /// </summary>
+    public string? NewestOutsideFilter { get; init; }
+
+    /// <summary>
+    /// True when <see cref="PackageVersionRequest.VersionFilter"/> excluded every candidate, so
+    /// <see cref="TargetFrameworkVersions"/> is empty by design. Distinguishes "nothing to propose
+    /// inside the window" from a failed lookup, which the caller must not treat the same way.
+    /// </summary>
+    public bool NoVersionWithinFilter { get; init; }
+
     public DateTime RetrievedAt { get; init; } = DateTime.UtcNow;
     public Dictionary<NuGetFramework, DependencyGroup>? Dependencies { get; internal set; }
 }
