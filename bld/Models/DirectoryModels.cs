@@ -7,6 +7,12 @@ internal enum DirType {
     OutDir,
     BaseOutputPath,
     BaseIntermediateOutputPath,
+    /// <summary>artifacts/bin/&lt;project&gt;/ — pivot subdirectories are the candidates.</summary>
+    ArtifactsBin,
+    /// <summary>artifacts/publish/&lt;project&gt;/ — pivot subdirectories are the candidates.</summary>
+    ArtifactsPublish,
+    PublishDir,
+    PackageOutputPath,
 }
 
 /// <summary>

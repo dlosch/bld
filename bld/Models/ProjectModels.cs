@@ -20,6 +20,16 @@ internal record ProjectInfo {
     public bool HasDockerProperties { get; init; }
     public string? OutDir { get; internal set; }
     public string? BaseOutputPath { get; internal set; }
+    public string? PublishDir { get; init; }
+
+    // SDK artifacts layout (UseArtifactsOutput=true): output lives under
+    // <ArtifactsPath>/<bin|obj|publish>/<ArtifactsProjectName>/<config>[_<tfm>][_<rid>]/ instead of bin/obj
+    // next to the project, so the bin/<Configuration>/<tfm> matching does not apply.
+    public bool UseArtifactsOutput { get; init; }
+    public string? ArtifactsPath { get; init; }
+    public string? ArtifactsBinOutputName { get; init; }
+    public string? ArtifactsPublishOutputName { get; init; }
+    public string? ArtifactsProjectName { get; init; }
 }
 
 /// <summary>

@@ -9,6 +9,8 @@ internal record CleaningOptions {
     public bool CleanOnlyNonCurrentTfms { get; init; } = false;
     public bool CleanObjDirectory { get; init; } = true;
     public bool KeepRestoreArtifacts { get; init; } = false;
+    /// <summary>Also mark PublishDir and PackageOutputPath (and artifacts/publish, artifacts/package).</summary>
+    public bool CleanPublishDirectory { get; init; } = false;
     public bool Force { get; init; } = false;
     public LogLevel LogLevel { get; init; } = LogLevel.Warning;
     public int Depth { get; init; } = 4;

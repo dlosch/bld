@@ -22,6 +22,11 @@ internal sealed class StatsCommand : BaseCommand {
         DefaultValueFactory = _ => false
     };
 
+    private readonly Option<bool> _publishOption = new Option<bool>("--publish") {
+        Description = "Also include publish output (PublishDir) and pack output (PackageOutputPath), including artifacts/publish and artifacts/package in the artifacts layout.",
+        DefaultValueFactory = _ => false
+    };
+
     public StatsCommand(IConsoleOutput console) : base("stats", "Compute statistics.", console) {
         Add(_rootOption);
         Add(_depthOption);
@@ -29,6 +34,7 @@ internal sealed class StatsCommand : BaseCommand {
         Add(_nonCurrentOption);
         Add(_objOption);
         Add(_keepAssetsOption);
+        Add(_publishOption);
 
         Add(_logLevelOption);
 
@@ -46,6 +52,7 @@ internal sealed class StatsCommand : BaseCommand {
             CleanOnlyNonCurrentTfms = parseResult.GetValue(_nonCurrentOption),
             CleanObjDirectory = parseResult.GetValue(_objOption),
             KeepRestoreArtifacts = parseResult.GetValue(_keepAssetsOption),
+            CleanPublishDirectory = parseResult.GetValue(_publishOption),
             LogLevel = parseResult.GetValue(_logLevelOption),
             Depth = parseResult.GetValue(_depthOption),
             VSToolsPath = parseResult.GetValue(_vsToolsPath),

@@ -64,6 +64,8 @@ Yes, you can just use git/source control to nuke anything not under source contr
 - in process evaluation of properties for each project and configuration using the Microsoft build assemblies and target files, just as a build would (note: the Microsoft.Build evaluation is *not* instant)
 - automatically resolves default msbuild install (typically .NET SDK) and resolves VSToolsPath for additional target files provided by Visual Studio installations (if available, not required)
 - enables you to delete only non-current build output (TagetFramework(s) no longer referenced in proj file), esp. useful after upgrading projects to a recent target framework
+- supports both the classic `bin/<Configuration>/<tfm>` layout and the SDK artifacts layout (`UseArtifactsOutput=true`, `artifacts/bin/<project>/<config>_<tfm>`)
+- cleans publish and pack output (`PublishDir`, `PackageOutputPath`, `artifacts/publish`, `artifacts/package`) when `--publish` is given
 - validates tfms for .net projects to make sure the correct stuff gets cleaned
 - by default doesn't delete, only dumps stats and the command line to delete folders. Nothing gets touched unless you specify --delete
 - support for linux
@@ -119,6 +121,7 @@ Purpose: enumerate build output, report what would be deleted, and either emit a
 - `--non-current`, `--noncurrent`, `-nc` — Restrict deletion to target-framework-specific directories *not* listed in the project’s current TFMs. Default: `false`.
 - `--obj`, `-obj` — Include `obj` / `BaseIntermediateOutputPath` directories. Default: `false` (bin-only).
 - `--keep-assets` — When cleaning `obj`, preserve NuGet restore artifacts (`project.assets.json`, etc.) and only delete build-output subdirectories. Default: `false`.
+- `--publish` — Also clean publish output (`PublishDir`) and pack output (`PackageOutputPath`). Covers explicitly configured publish directories and, in the artifacts layout, `artifacts/publish/<project>/` and `artifacts/package/`. Default: `false`, because publish output is often kept on purpose for a deployment.
 - `--output-file`, `-o` — Where to write the deletion script (`clean.cmd` or `clean.sh` by default depending on OS).
 - `--delete` — Execute deletions instead of just generating scripts. Default: `false` (dry-run).
 - `--force` — Skip confirmation prompts (requires explicit `--root` to avoid accidental repo-wide deletes). In non-interactive contexts (CI / piped stdin) a missing confirmation is treated as "no" (skip), so `--force` is required to actually delete unattended.
@@ -148,6 +151,7 @@ Purpose: compute what *would* be cleaned and show totals without generating scri
 - `--non-current`, `--noncurrent`, `-nc` — Only report TFM directories that no longer match current project TFMs. Default: `false`.
 - `--obj`, `-obj` — Include `obj` directories in the statistics. Default: `false`.
 - `--keep-assets` — With `--obj`, preserve NuGet restore artifacts and only count build-output subdirectories. Default: `false`.
+- `--publish` — Include publish output (`PublishDir`) and pack output (`PackageOutputPath`) in the statistics. Default: `false`.
 - Shares all global options (`--root`, `--depth`, `--log`, `--concurrency`, `--markdown`, `--vstoolspath`, `--novstoolspath`).
 
 **Behavior**
@@ -310,7 +314,7 @@ bld build-props --root C:\src\MyRepo --properties TargetFramework,LangVersion
 ## Detailed internals (clean & stats)
 
 - **Discovery pipeline**: `SlnScanner` finds solutions under `--root`/`--depth`, `SlnParser` enumerates project configs, and `ProjParser` evaluates MSBuild properties (OutDir, BaseIntermediateOutputPath, TFMs). `VSToolsPath` is resolved automatically unless `--novstoolspath` is specified.
-- **Marking logic**: `MarkDeleteProcessor` collects bin/obj candidates, deduplicates directories shared across configurations, and refuses to touch paths that look like project roots or nested solutions. When `--non-current` is set, TFM directories matching the project’s declared TFMs are skipped.
+- **Marking logic**: `MarkDeleteProcessor` collects bin/obj candidates, deduplicates directories shared across configurations, and refuses to touch paths that look like project roots or nested solutions. When `--non-current` is set, TFM directories matching the project’s declared TFMs are skipped. Projects with `UseArtifactsOutput=true` are handled through `artifacts/bin/<project>/`, where every subdirectory named `<config>[_<tfm>][_<rid>]` is a candidate. With `--publish`, `PublishDir` and `PackageOutputPath` are added in a second pass and dropped when they already sit inside a marked build-output directory (the default case). An `OutDir` that matches none of the known layouts is reported as a warning instead of being skipped silently.
 - **Stats vs clean**:
   - `stats` hands results to `MarkDeleteResultStatsProcessor`, which enumerates files (depth-limited) to compute counts and KiB/MiB totals without creating any output files.
   - `clean` hands results to either `MarkDeleteResultBatchFileProcessor` (default) or `MarkDeleteResultDeleteProcessor` when `--delete` is set. The batch processor writes platform-specific scripts (respecting `--output-file`) and prints a table. The delete processor prompts per directory unless `--force` is used.

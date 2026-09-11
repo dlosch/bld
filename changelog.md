@@ -5,6 +5,8 @@ All notable changes to this project are documented in this file.
 ## [Unreleased]
 
 ### Changes
+- [BUG] `clean`/`stats`: projects using the SDK artifacts layout (`UseArtifactsOutput=true`) were only cleaned when single-targeted; multi-targeted output under `artifacts/bin/<project>/<config>_<tfm>[_<rid>]/` was skipped without any message. Both are now recognized, `--non-current` applies to the TFM segment, and an `OutDir` that matches no known layout is reported as a warning.
+- extend `clean`/`stats`: `--publish` also cleans publish output (`PublishDir`) and pack output (`PackageOutputPath`), including `artifacts/publish/<project>/` and `artifacts/package/` in the artifacts layout. Off by default.
 - extend `outdated` command: `--max-bump <major|minor|patch>` caps how far a package may move from the version it is pinned at now. Versions above the cap are reported in a new `held` column instead of being applied.
 - extend `outdated` command: `--package`/`-p` and `--exclude` select a subset of packages by wildcard pattern.
 - extend `outdated` command: `--apply` and dry runs now check the packages they would update against the versions their dependencies will end up at, and hold back any package whose declared range would be violated. `--allow-conflicts` updates anyway. The check covers direct references only.

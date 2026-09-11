@@ -26,8 +26,15 @@ static class ProjConstants {
         "IsPackable",
 
         "PackageOutputPath",
+        "PublishDir",
         "PackageId",
         "AssemblyName",
+
+        "UseArtifactsOutput",
+        "ArtifactsPath",
+        "ArtifactsBinOutputName",
+        "ArtifactsPublishOutputName",
+        "ArtifactsProjectName",
 
         // ContainerBaseImage
         // ContainerFamily
