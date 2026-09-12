@@ -1,5 +1,14 @@
 namespace bld.Models;
 
+/// <summary>The MSBuild item a package comes from.</summary>
+internal enum PackageItemKind {
+    PackageReference,
+    /// <summary>Declared in Directory.Packages.props and applied to every project (analyzers, build SDKs).</summary>
+    GlobalPackageReference,
+    /// <summary>Fetched into the package cache only, with exact bracketed versions; never referenced.</summary>
+    PackageDownload,
+}
+
 /// <summary>
 /// Information about a NuGet package reference
 /// </summary>
@@ -7,11 +16,19 @@ internal record NugetPackageInfo {
     public string Name { get; init; } = string.Empty;
     public string Version { get; init; } = string.Empty;
     public NugetPackageCategory Category { get; init; }
+    public PackageItemKind Kind { get; init; } = PackageItemKind.PackageReference;
     public string? ProjectPath { get; init; }
     public string? WhitelistMatch { get; init; }
     public string? BlacklistMatch { get; init; }
     public string? MicrosoftMatch { get; init; }
     public string? TrustedMatch { get; init; }
+
+    /// <summary>Resolved through another package (from project.assets.json), not referenced by the project itself.</summary>
+    public bool IsTransitive { get; init; }
+    /// <summary>Target frameworks the package was resolved for; empty for direct references.</summary>
+    public IReadOnlyList<string> TargetFrameworks { get; init; } = Array.Empty<string>();
+    /// <summary>Packages that pull this one in (immediate parents); empty for direct references.</summary>
+    public IReadOnlyList<string> RequestedBy { get; init; } = Array.Empty<string>();
 }
 
 /// <summary>
@@ -73,19 +90,23 @@ internal enum NugetPackageCategory {
 internal record ProjectNugetAnalysis {
     public string ProjectPath { get; init; } = string.Empty;
     public string? ProjectName { get; init; }
+    /// <summary>Direct references, plus transitive ones when the analysis ran with --transitive.</summary>
     public IReadOnlyList<NugetPackageInfo> Packages { get; init; } = Array.Empty<NugetPackageInfo>();
 
+    public IEnumerable<NugetPackageInfo> DirectPackages => Packages.Where(p => !p.IsTransitive);
+    public IEnumerable<NugetPackageInfo> TransitivePackages => Packages.Where(p => p.IsTransitive);
+
     public IEnumerable<NugetPackageInfo> MicrosoftOfficialPackages =>
-        Packages.Where(p => p.Category == NugetPackageCategory.MicrosoftOfficial);
+        DirectPackages.Where(p => p.Category == NugetPackageCategory.MicrosoftOfficial);
 
     public IEnumerable<NugetPackageInfo> MicrosoftNonOfficialPackages =>
-        Packages.Where(p => p.Category == NugetPackageCategory.MicrosoftNonOfficial);
+        DirectPackages.Where(p => p.Category == NugetPackageCategory.MicrosoftNonOfficial);
 
     public IEnumerable<NugetPackageInfo> TrustedThirdPartyPackages =>
-        Packages.Where(p => p.Category == NugetPackageCategory.TrustedThirdParty);
+        DirectPackages.Where(p => p.Category == NugetPackageCategory.TrustedThirdParty);
 
     public IEnumerable<NugetPackageInfo> OtherPackages =>
-        Packages.Where(p => p.Category == NugetPackageCategory.Other);
+        DirectPackages.Where(p => p.Category == NugetPackageCategory.Other);
 }
 
 /// <summary>
@@ -108,4 +129,8 @@ internal record AggregatedPackage {
     public string Name { get; init; } = string.Empty;
     public NugetPackageCategory Category { get; init; }
     public IReadOnlyList<PackageOccurrence> Occurrences { get; init; } = Array.Empty<PackageOccurrence>();
+    /// <summary>True when no project references the package directly.</summary>
+    public bool IsTransitive { get; init; }
+    public IReadOnlyList<string> RequestedBy { get; init; } = Array.Empty<string>();
+    public PackageItemKind Kind { get; init; } = PackageItemKind.PackageReference;
 }

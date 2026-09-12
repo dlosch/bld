@@ -3,10 +3,11 @@
 using bld.Models;
 using bld.Services;
 using Microsoft.Build.Evaluation;
+using NuGet.Versioning;
 
 namespace bld.Infrastructure;
 
-internal record class Pkg(string Id, string? Version, string? VersionOverride = default, string? CpmVersion = default) {
+internal record class Pkg(string Id, string? Version, string? VersionOverride = default, string? CpmVersion = default, PackageItemKind Kind = PackageItemKind.PackageReference) {
     public string EffectiveVersion => VersionOverride ?? Version ?? CpmVersion ?? string.Empty;
 };
 
@@ -90,15 +91,28 @@ internal sealed class ProjParser(IConsoleOutput Output, ErrorSink ErrorSink, Cle
                                     pr.Xml?.ContainingProject?.FullPath)
                                 , StringComparer.OrdinalIgnoreCase);
 
+                // NuGet.targets turns every GlobalPackageReference into a PackageReference plus a
+                // PackageVersion item, and both carry NuGet.targets as their containing file. Re-point
+                // the version entry at the file that declares the GlobalPackageReference, or --apply
+                // would look for the entry inside the SDK and write nothing.
+                var globalItems = project.GetItems("GlobalPackageReference")
+                    .DistinctBy(g => g.EvaluatedInclude, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(g => g.EvaluatedInclude, g => g, StringComparer.OrdinalIgnoreCase);
+                if (versions is not null) {
+                    foreach (var (id, item) in globalItems) {
+                        versions[id] = new PackageVersionEntry(Meta(item, "Version"), item.Xml?.ContainingProject?.FullPath);
+                    }
+                }
+
                 // Determine the CPM file path. Prefer the actual file that declares the
                 // PackageVersion items (works for non-standard CPM filenames or files imported
                 // outside the standard auto-import chain). Fall back to the "Directory.Packages.props"
                 // import lookup, then to null when no source can be determined.
                 string? cpmFile = null;
                 if (usesCpm ?? false) {
-                    if (packageVersionItems is not null) {
-                        cpmFile = packageVersionItems
-                            .Select(pv => pv.Xml?.ContainingProject?.FullPath)
+                    if (versions is not null) {
+                        cpmFile = versions.Values
+                            .Select(pv => pv.SourceFile)
                             .Where(p => !string.IsNullOrEmpty(p))
                             .GroupBy(p => p, StringComparer.OrdinalIgnoreCase)
                             .OrderByDescending(g => g.Count())
@@ -112,28 +126,41 @@ internal sealed class ProjParser(IConsoleOutput Output, ErrorSink ErrorSink, Cle
                     }
                 }
 
+                // EvaluatedInclude, not Xml.Include: the raw attribute keeps property references
+                // ("$(Prefix)soft.Json") and, for a multi-id include ("A;B"), is the same string on
+                // every produced item - so one of them was dropped by DistinctBy and the package id
+                // sent to NuGet was one that does not exist. Orphan detection keys off this same
+                // dictionary, so a raw id there meant the matching PackageVersion looked unused.
+                // dotnet build picks the first duplicate, not the highest or lowest, and warns only.
+                var packageReferences = project.GetItems("PackageReference")
+                    .DistinctBy(pr => pr.EvaluatedInclude, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(pr => pr.EvaluatedInclude, pr =>
+                        new Pkg(pr.EvaluatedInclude
+                            , Meta(pr, "Version")
+                            , Meta(pr, "VersionOverride")
+                            , versions?.GetValueOrDefault(pr.EvaluatedInclude)?.Version
+                            , globalItems.ContainsKey(pr.EvaluatedInclude) ? PackageItemKind.GlobalPackageReference : PackageItemKind.PackageReference)
+                        , StringComparer.OrdinalIgnoreCase);
+
+                // PackageDownload pins exact versions in brackets, possibly several ("[1.2.3];[2.0.0]").
+                // The highest one is what an update is measured against.
+                foreach (var download in project.GetItems("PackageDownload").DistinctBy(pd => pd.EvaluatedInclude, StringComparer.OrdinalIgnoreCase)) {
+                    var id = download.EvaluatedInclude;
+                    if (string.IsNullOrWhiteSpace(id) || packageReferences.ContainsKey(id)) continue;
+                    var highest = HighestExactVersion(Meta(download, "Version"));
+                    if (highest is null) {
+                        Output.WriteDebug($"PackageDownload {id} in {projectPath} has no parseable version; skipped.");
+                        continue;
+                    }
+                    packageReferences[id] = new Pkg(id, highest.ToString(), Kind: PackageItemKind.PackageDownload);
+                }
+
                 var retVal = new ProjectPackageReferenceInfo(proj,
                     project.TfmOrTfmsSafe(),
                     usesCpm,
                     cpmFile,
-                        // EvaluatedInclude, not Xml.Include: the raw attribute keeps property references
-                        // ("$(Prefix)soft.Json") and, for a multi-id include ("A;B"), is the same string on
-                        // every produced item - so one of them was dropped by DistinctBy and the package id
-                        // sent to NuGet was one that does not exist. Orphan detection keys off this same
-                        // dictionary, so a raw id there meant the matching PackageVersion looked unused.
-                        // dotnet build picks the first duplicate, not the highest or lowest, and warns only.
-                        project.GetItems("PackageReference")
-                                .DistinctBy(pr => pr.EvaluatedInclude, StringComparer.OrdinalIgnoreCase)
-                                .ToDictionary(pr => pr.EvaluatedInclude, pr =>
-
-                                    new Pkg(pr.EvaluatedInclude
-                                        , Meta(pr, "Version")
-                                        , Meta(pr, "VersionOverride")
-                                        , versions?.GetValueOrDefault(pr.EvaluatedInclude)?.Version
-                                        )
-                                    , StringComparer.OrdinalIgnoreCase)
-                                ,
-                            versions
+                    packageReferences,
+                    versions
                 );
                 return retVal;
             }
@@ -169,6 +196,20 @@ internal sealed class ProjParser(IConsoleOutput Output, ErrorSink ErrorSink, Cle
             Output.WriteDebug($"{projectPath} could not be parsed for ProjectReferences: {xcptn.FormatMessage()}");
             return Array.Empty<string>();
         }
+    }
+
+    /// <summary>
+    /// The highest version in a PackageDownload Version value: a ';'-separated list of exact ranges
+    /// such as "[8.0.0]" or "[1.2.3];[2.0.0]". Null when nothing parses.
+    /// </summary>
+    internal static NuGetVersion? HighestExactVersion(string? raw) {
+        if (string.IsNullOrWhiteSpace(raw)) return null;
+        NuGetVersion? best = null;
+        foreach (var part in raw.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)) {
+            if (!VersionRange.TryParse(part, out var range) || range.MinVersion is null) continue;
+            if (best is null || range.MinVersion > best) best = range.MinVersion;
+        }
+        return best;
     }
 
     static bool? SafeBool(string value) => value is string && !string.IsNullOrEmpty(value) && bool.TryParse(value, out var bl) ? bl : default;

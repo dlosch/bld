@@ -57,7 +57,8 @@ internal sealed class NugetPackageExtractor {
     /// <summary>
     /// Analyzes a project and returns complete package analysis
     /// </summary>
-    public ProjectNugetAnalysis AnalyzeProject(ProjCfg projCfg, Dictionary<string, string> globalProperties) {
+    /// <param name="includeTransitive">Also list the packages resolved through others, read from project.assets.json.</param>
+    public ProjectNugetAnalysis AnalyzeProject(ProjCfg projCfg, Dictionary<string, string> globalProperties, bool includeTransitive = false) {
         var configuration = projCfg.Configuration ?? "Release";
         var key = (projCfg.Path, configuration);
 
@@ -65,7 +66,7 @@ internal sealed class NugetPackageExtractor {
             return cached;
         }
 
-        var (packages, projectName) = AnalyzeProjectInternal(projCfg, globalProperties);
+        var (packages, projectName) = AnalyzeProjectInternal(projCfg, globalProperties, includeTransitive);
         var analysis = new ProjectNugetAnalysis {
             ProjectPath = projCfg.Path,
             ProjectName = projectName,
@@ -76,7 +77,7 @@ internal sealed class NugetPackageExtractor {
         return analysis;
     }
 
-    private (List<NugetPackageInfo> Packages, string ProjectName) AnalyzeProjectInternal(ProjCfg projCfg, Dictionary<string, string> globalProperties) {
+    private (List<NugetPackageInfo> Packages, string ProjectName) AnalyzeProjectInternal(ProjCfg projCfg, Dictionary<string, string> globalProperties, bool includeTransitive) {
         var packages = new List<NugetPackageInfo>();
         var projectName = Path.GetFileNameWithoutExtension(projCfg.Path);
 
@@ -91,6 +92,12 @@ internal sealed class NugetPackageExtractor {
             // Load Directory.Packages.props if it exists for centrally managed versions
             var centralVersions = LoadCentralPackageVersions(projCfg.Path, projectCollection, properties);
 
+            // GlobalPackageReference items show up as PackageReference items with an empty Version
+            // (NuGet.targets adds them); the version lives on the GlobalPackageReference item itself.
+            var globalVersions = project.GetItems("GlobalPackageReference")
+                .DistinctBy(g => g.EvaluatedInclude, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(g => g.EvaluatedInclude, g => g.GetMetadataValue("Version"), StringComparer.OrdinalIgnoreCase);
+
             // Get PackageReference items
             var packageReferenceItems = project.GetItems("PackageReference");
 
@@ -99,33 +106,40 @@ internal sealed class NugetPackageExtractor {
                 var version = item.GetMetadataValue("Version");
                 // todo VersionOverride
 
+                if (string.IsNullOrWhiteSpace(packageName)) {
+                    continue;
+                }
+
+                var kind = globalVersions.ContainsKey(packageName) ? PackageItemKind.GlobalPackageReference : PackageItemKind.PackageReference;
+                if (string.IsNullOrWhiteSpace(version) && kind == PackageItemKind.GlobalPackageReference) {
+                    version = globalVersions[packageName];
+                }
+
                 // If no direct version, check centrally managed packages
                 if (string.IsNullOrWhiteSpace(version) && centralVersions.ContainsKey(packageName)) {
                     version = centralVersions[packageName];
                 }
 
-                if (string.IsNullOrWhiteSpace(packageName)) {
-                    continue;
-                }
+                AddPackage(packages, projCfg, packageName, version, kind);
+            }
 
-                var category = _categorizer.CategorizePackage(packageName, version);
-                var (whitelistMatch, blacklistMatch, microsoftMatch, trustedMatch) = _categorizer.GetAllMatches(packageName, version);
+            foreach (var item in project.GetItems("PackageDownload")) {
+                var packageName = item.EvaluatedInclude;
+                if (string.IsNullOrWhiteSpace(packageName)) continue;
+                if (packages.Any(p => string.Equals(p.Name, packageName, StringComparison.OrdinalIgnoreCase))) continue;
 
-                packages.Add(new NugetPackageInfo {
-                    Name = packageName,
-                    Version = string.IsNullOrWhiteSpace(version) ? "Unknown" : version,
-                    Category = category,
-                    ProjectPath = projCfg.Path,
-                    WhitelistMatch = whitelistMatch,
-                    BlacklistMatch = blacklistMatch,
-                    MicrosoftMatch = microsoftMatch,
-                    TrustedMatch = trustedMatch
-                });
+                var raw = item.GetMetadataValue("Version");
+                var version = ProjParser.HighestExactVersion(raw)?.ToString() ?? raw;
+                AddPackage(packages, projCfg, packageName, version, PackageItemKind.PackageDownload);
             }
 
             var name = project.GetPropertyValue("ProjectName");
             if (!string.IsNullOrWhiteSpace(name)) {
                 projectName = name;
+            }
+
+            if (includeTransitive) {
+                AddTransitivePackages(project, projCfg, projectName, packages);
             }
         }
         catch (Exception ex) {
@@ -134,5 +148,68 @@ internal sealed class NugetPackageExtractor {
         }
 
         return (packages, projectName);
+    }
+
+    private void AddPackage(List<NugetPackageInfo> packages, ProjCfg projCfg, string packageName, string? version, PackageItemKind kind) {
+        var category = _categorizer.CategorizePackage(packageName, version);
+        var (whitelistMatch, blacklistMatch, microsoftMatch, trustedMatch) = _categorizer.GetAllMatches(packageName, version);
+
+        packages.Add(new NugetPackageInfo {
+            Name = packageName,
+            Version = string.IsNullOrWhiteSpace(version) ? "Unknown" : version,
+            Category = category,
+            Kind = kind,
+            ProjectPath = projCfg.Path,
+            WhitelistMatch = whitelistMatch,
+            BlacklistMatch = blacklistMatch,
+            MicrosoftMatch = microsoftMatch,
+            TrustedMatch = trustedMatch
+        });
+    }
+
+    /// <summary>
+    /// Appends the packages restore resolved on top of the direct references. The assets file lives under
+    /// MSBuildProjectExtensionsPath (obj/ by default, artifacts/obj/&lt;project&gt;/ in the artifacts layout).
+    /// </summary>
+    private void AddTransitivePackages(Project project, ProjCfg projCfg, string projectName, List<NugetPackageInfo> packages) {
+        var extensionsPath = project.GetPropertyValue("MSBuildProjectExtensionsPath");
+        if (string.IsNullOrWhiteSpace(extensionsPath)) extensionsPath = "obj";
+        var assetsPath = ProjectAssetsReader.GetPath(DirExt.EnsureRooted(extensionsPath, projCfg.ProjDir));
+
+        IReadOnlyList<ResolvedPackage>? resolved;
+        try {
+            resolved = ProjectAssetsReader.TryRead(assetsPath);
+        }
+        catch (Exception ex) {
+            _console.WriteWarning($"Could not read {assetsPath}: {ex.FormatMessage()}. Only direct references are listed for {projectName}.");
+            return;
+        }
+
+        if (resolved is null) {
+            _console.WriteWarning($"No {ProjectAssetsReader.FileName} for {projectName} (expected {assetsPath}); run dotnet restore first. Only direct references are listed.");
+            return;
+        }
+
+        var directIds = packages.Select(p => p.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var package in resolved) {
+            if (package.IsDirect || directIds.Contains(package.Id)) continue;
+
+            var category = _categorizer.CategorizePackage(package.Id, package.Version);
+            var (whitelistMatch, blacklistMatch, microsoftMatch, trustedMatch) = _categorizer.GetAllMatches(package.Id, package.Version);
+
+            packages.Add(new NugetPackageInfo {
+                Name = package.Id,
+                Version = package.Version,
+                Category = category,
+                ProjectPath = projCfg.Path,
+                WhitelistMatch = whitelistMatch,
+                BlacklistMatch = blacklistMatch,
+                MicrosoftMatch = microsoftMatch,
+                TrustedMatch = trustedMatch,
+                IsTransitive = true,
+                TargetFrameworks = package.TargetFrameworks,
+                RequestedBy = package.RequestedBy,
+            });
+        }
     }
 }

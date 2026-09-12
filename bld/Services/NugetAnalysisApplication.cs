@@ -28,7 +28,7 @@ internal class NugetAnalysisApplication {
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    public async Task RunAsync(string[] rootPaths, CleaningOptions options, string? whitelistBlacklistFile, bool aggregate = false, bool showProjects = true, bool markdownOutput = false) {
+    public async Task RunAsync(string[] rootPaths, CleaningOptions options, string? whitelistBlacklistFile, bool aggregate = false, bool showProjects = true, bool markdownOutput = false, bool includeTransitive = false) {
         if (!_isInitialized) {
             throw new InvalidOperationException("Application not initialized. Call InitAsync first.");
         }
@@ -98,7 +98,7 @@ internal class NugetAnalysisApplication {
 
                     try {
                         var globalProperties = GetGlobalProperties(options);
-                        var analysis = packageExtractor.AnalyzeProject(projCfg, globalProperties);
+                        var analysis = packageExtractor.AnalyzeProject(projCfg, globalProperties, includeTransitive);
 
                         if (analysis.Packages.Any()) {
                             allProjectAnalyses.Add(analysis);
@@ -117,7 +117,7 @@ internal class NugetAnalysisApplication {
                 .ToList();
 
             if (markdownOutput) {
-                DisplayMarkdownResults(uniqueAnalyses);
+                DisplayMarkdownResults(uniqueAnalyses, includeTransitive);
             }
             else if (aggregate) {
                 DisplayAggregateResults(uniqueAnalyses, categorizer, showProjects);
@@ -158,18 +158,26 @@ internal class NugetAnalysisApplication {
         }
 
         // Summary
-        var totalPackages = analyses.SelectMany(a => a.Packages).Count();
-        var uniquePackages = analyses.SelectMany(a => a.Packages).Select(p => p.Name).Distinct().Count();
+        var totalPackages = analyses.SelectMany(a => a.DirectPackages).Count();
+        var uniquePackages = analyses.SelectMany(a => a.DirectPackages).Select(p => p.Name).Distinct().Count();
+        var transitive = analyses.SelectMany(a => a.TransitivePackages).ToList();
 
         _console.WriteRule("[bold green]Summary[/]");
         _console.WriteLine($"Total packages across all projects: {totalPackages}");
         _console.WriteLine($"Unique packages: {uniquePackages}");
+        if (transitive.Count > 0) {
+            _console.WriteLine($"Transitive packages: {transitive.Count} ({transitive.Select(p => p.Name).Distinct(StringComparer.OrdinalIgnoreCase).Count()} unique)");
+        }
     }
 
     private void DisplayProjectAnalysis(ProjectNugetAnalysis analysis, NugetPackageCategorizer categorizer) {
         var content = new List<string>();
         content.Add($"[dim]Path: {Markup.Escape(analysis.ProjectPath)}[/]");
-        content.Add($"[dim]Total packages: {analysis.Packages.Count}[/]");
+        content.Add($"[dim]Total packages: {analysis.DirectPackages.Count()}[/]");
+        var transitive = analysis.TransitivePackages.ToList();
+        if (transitive.Count > 0) {
+            content.Add($"[dim]Transitive packages: {transitive.Count}[/]");
+        }
         content.Add("");
 
         // Display packages by category
@@ -177,6 +185,15 @@ internal class NugetAnalysisApplication {
         AddCategorySection(content, "Microsoft Non-Official Packages", analysis.MicrosoftNonOfficialPackages);
         AddCategorySection(content, "Known Trusted Packages", analysis.TrustedThirdPartyPackages);
         AddCategorySection(content, "Other Packages", analysis.OtherPackages);
+
+        if (transitive.Count > 0) {
+            content.Add("[bold]Transitive Packages[/]");
+            content.Add("");
+            AddCategorySection(content, "Microsoft Official .NET Packages", transitive.Where(p => p.Category == NugetPackageCategory.MicrosoftOfficial));
+            AddCategorySection(content, "Microsoft Non-Official Packages", transitive.Where(p => p.Category == NugetPackageCategory.MicrosoftNonOfficial));
+            AddCategorySection(content, "Known Trusted Packages", transitive.Where(p => p.Category == NugetPackageCategory.TrustedThirdParty));
+            AddCategorySection(content, "Other Packages", transitive.Where(p => p.Category == NugetPackageCategory.Other));
+        }
 
         var table = new Table().Border(TableBorder.Rounded)
             .Title($"[bold blue]{Markup.Escape(analysis.ProjectName ?? "")}[/]")
@@ -195,7 +212,7 @@ internal class NugetAnalysisApplication {
         content.Add($"[bold yellow]{Markup.Escape(categoryName)}:[/]");
 
         foreach (var package in packageList.OrderBy(p => p.Name)) {
-            var packageInfo = $"• {Markup.Escape(package.Name)} ({Markup.Escape(package.Version)})";
+            var packageInfo = $"• {Markup.Escape(package.Name)} ({Markup.Escape(package.Version)}){KindSuffix(package.Kind)}";
 
             // Add coloring and pattern information based on whitelist/blacklist/microsoft/trusted
             if (!string.IsNullOrWhiteSpace(package.BlacklistMatch)) {
@@ -211,10 +228,20 @@ internal class NugetAnalysisApplication {
                 packageInfo = $"{packageInfo} ({Markup.Escape(package.TrustedMatch)})";
             }
 
+            if (package.IsTransitive && package.RequestedBy.Count > 0) {
+                packageInfo += $" [dim]via {Markup.Escape(string.Join(", ", package.RequestedBy))}[/]";
+            }
+
             content.Add(packageInfo);
         }
         content.Add("");
     }
+
+    private static string KindSuffix(PackageItemKind kind) => kind switch {
+        PackageItemKind.GlobalPackageReference => " [dim](global)[/]",
+        PackageItemKind.PackageDownload => " [dim](download)[/]",
+        _ => string.Empty,
+    };
 
     private void DisplayAggregateResults(List<ProjectNugetAnalysis> analyses, NugetPackageCategorizer categorizer, bool showProjects) {
         if (!analyses.Any()) {
@@ -235,6 +262,9 @@ internal class NugetAnalysisApplication {
             .Select(g => new AggregatedPackage {
                 Name = g.Key,
                 Category = g.First().Package.Category,
+                Kind = g.First().Package.Kind,
+                IsTransitive = g.All(pa => pa.Package.IsTransitive),
+                RequestedBy = g.SelectMany(pa => pa.Package.RequestedBy).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(p => p, StringComparer.OrdinalIgnoreCase).ToList(),
                 Occurrences = g.Select(pa => new PackageOccurrence {
                     ProjectName = pa.Analysis.ProjectName ?? "Unknown",
                     ProjectPath = pa.Analysis.ProjectPath,
@@ -269,12 +299,16 @@ internal class NugetAnalysisApplication {
         _console.WriteTable(table);
 
         // Summary
-        var totalPackages = allPackages.Count;
-        var uniquePackages = packageGroups.Count;
+        var totalPackages = allPackages.Count(pa => !pa.Package.IsTransitive);
+        var uniquePackages = packageGroups.Count(p => !p.IsTransitive);
+        var transitiveUnique = packageGroups.Count(p => p.IsTransitive);
 
         _console.WriteRule("[bold green]Summary[/]");
         _console.WriteLine($"Total package references across all projects: {totalPackages}");
         _console.WriteLine($"Unique packages: {uniquePackages}");
+        if (transitiveUnique > 0) {
+            _console.WriteLine($"Unique transitive packages: {transitiveUnique}");
+        }
     }
 
     private void AddAggregateCategorySection(List<string> content, string categoryName, List<AggregatedPackage> packages, bool showProjects) {
@@ -290,7 +324,7 @@ internal class NugetAnalysisApplication {
                 ? $"({Markup.Escape(versions[0])})" 
                 : $"(multiple versions: {string.Join(", ", versions.Select(Markup.Escape))})";
 
-            var packageInfo = $"• {Markup.Escape(pkg.Name)} {versionInfo}";
+            var packageInfo = $"• {Markup.Escape(pkg.Name)} {versionInfo}{KindSuffix(pkg.Kind)}";
 
             // Add coloring based on match type (use first occurrence)
             var firstOccurrence = pkg.Occurrences.First();
@@ -305,6 +339,12 @@ internal class NugetAnalysisApplication {
             }
             else if (!string.IsNullOrWhiteSpace(firstOccurrence.TrustedMatch)) {
                 packageInfo = $"{packageInfo} ({Markup.Escape(firstOccurrence.TrustedMatch)})";
+            }
+
+            if (pkg.IsTransitive) {
+                packageInfo += pkg.RequestedBy.Count > 0
+                    ? $" [dim]transitive via {Markup.Escape(string.Join(", ", pkg.RequestedBy))}[/]"
+                    : " [dim]transitive[/]";
             }
 
             content.Add(packageInfo);
@@ -324,7 +364,7 @@ internal class NugetAnalysisApplication {
         content.Add("");
     }
 
-    private void DisplayMarkdownResults(List<ProjectNugetAnalysis> analyses) {
+    private void DisplayMarkdownResults(List<ProjectNugetAnalysis> analyses, bool includeTransitive) {
         if (!analyses.Any()) {
             _console.WriteWarning("No projects with NuGet package references found.");
             return;
@@ -351,19 +391,27 @@ internal class NugetAnalysisApplication {
 
                 var trustedComment = GetTrustComment(g.Select(x => x.Package));
 
-                return (IReadOnlyList<string?>)new[] {
+                var row = new List<string?> {
                     g.Key,
                     versions.Length == 0 ? string.Empty : string.Join(", ", versions),
                     trustedComment,
                     string.Join("<br>", projects)
                 };
+                if (includeTransitive) {
+                    // "direct" as soon as one project references it itself.
+                    row.Add(g.All(x => x.Package.IsTransitive) ? "transitive" : "direct");
+                }
+                return (IReadOnlyList<string?>)row;
             })
             .ToList();
+
+        var headers = new List<string> { "Package name", "Package Version", "Trusted", "Projects" };
+        if (includeTransitive) headers.Add("Direct/Transitive");
 
         MarkdownTableFormatter.Write(
             _console,
             "NuGet packages (markdown)",
-            new[] { "Package name", "Package Version", "Trusted", "Projects" },
+            headers,
             rows);
     }
 

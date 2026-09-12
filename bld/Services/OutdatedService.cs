@@ -451,10 +451,15 @@ internal class OutdatedService {
             var currentMin = parsedVersions.Min()!;
             currentPins[packageReference.Key] = currentMin;
 
+            // A PackageDownload is fetched into the cache, not referenced, so it has no framework to be
+            // compatible with. Checking it against the project's TFM held back tooling packages that
+            // ship no lib/ folder at all.
+            var downloadOnly = packageReference.Value.All(u => u.Item.Kind == PackageItemKind.PackageDownload);
+
             var request = new PackageVersionRequest {
                 PackageId = packageReference.Key,
                 AllowPrerelease = includePrerelease,
-                CompatibleTargetFrameworks = SelectCompatibleTargetFrameworks(skipTfmCheck, packageReference.Value),
+                CompatibleTargetFrameworks = downloadOnly ? Array.Empty<string>() : SelectCompatibleTargetFrameworks(skipTfmCheck, packageReference.Value),
                 VersionFilter = maxBump == MaxBump.Major ? null : v => WithinBump(currentMin, v, maxBump)
             };
 
@@ -840,6 +845,7 @@ internal class OutdatedService {
                         projectUpdates[usage.ProjectPath] = pmap;
                     }
                     static VersionReason Reason(Pkg item) {
+                        if (item.Kind == PackageItemKind.PackageDownload) return VersionReason.PackageDownloadProj;
                         if (item.VersionOverride is not null) return VersionReason.VersionOverrideProj;
                         if (item.Version is not null) return VersionReason.PackageReferenceProj;
                         return VersionReason.PackageVersionCpm;
@@ -934,6 +940,7 @@ internal class OutdatedService {
                 static string Reason(VersionReason vr) => vr switch {
                     VersionReason.PackageReferenceProj => "Version in PackageReference in project file",
                     VersionReason.VersionOverrideProj => "VersionOverride in project file",
+                    VersionReason.PackageDownloadProj => "PackageDownload in project file",
                     VersionReason.PackageVersionCpm => "Central package management.",
                     _ => ""
                 };
@@ -1132,12 +1139,16 @@ internal class OutdatedService {
             await XmlProjectFile.EditAsync(propsPath, doc => {
                 var changed = false;
                 // Materialize to a list because we mutate the tree (ReplaceWith on comment-outs).
-                var packageVersionElements = doc.ElementsNamed("PackageVersion").ToList();
+                // GlobalPackageReference carries its own Version and is updated in place; it is never
+                // an orphan (it applies to every project), so only PackageVersion is commented out.
+                var packageVersionElements = doc.ElementsNamed("PackageVersion")
+                    .Concat(doc.ElementsNamed("GlobalPackageReference"))
+                    .ToList();
                 foreach (var element in packageVersionElements) {
                     var include = element.Attribute("Include")?.Value;
                     if (include is null) continue;
 
-                    if (commentSet.Contains(include)) {
+                    if (commentSet.Contains(include) && element.Name.LocalName == "PackageVersion") {
                         var serialized = element.ToString(SaveOptions.DisableFormatting);
                         // "--" is illegal inside XML comments; pad it so the resulting comment parses.
                         var body = " " + serialized.Replace("--", "- -") + " ";
@@ -1186,7 +1197,11 @@ internal class OutdatedService {
         return NuGetVersion.TryParse(version, out _);
     }
 
-    private async Task<bool> UpdatePackageVersionAsync(string projectPath, string packageId, (string target, string? currentVersion, VersionReason reason) newVersion, CancellationToken cancellationToken) {
+    internal async Task<bool> UpdatePackageVersionAsync(string projectPath, string packageId, (string target, string? currentVersion, VersionReason reason) newVersion, CancellationToken cancellationToken) {
+        if (newVersion.reason == VersionReason.PackageDownloadProj) {
+            return await UpdatePackageDownloadAsync(projectPath, packageId, newVersion.target, newVersion.currentVersion, cancellationToken);
+        }
+
         try {
             return await XmlProjectFile.EditAsync(projectPath, doc => {
                 var changed = false;
@@ -1237,6 +1252,59 @@ internal class OutdatedService {
                     else if (versionAttr is { }) versionAttr.Value = newVersion.target;
                     else versionElement!.Value = newVersion.target;
 
+                    changed = true;
+                }
+                return changed;
+            }, cancellationToken);
+        }
+        catch (Exception ex) {
+            _errorSink?.AddError($"Failed to update {projectPath}.", exception: ex);
+            _console.WriteError($"Failed to update {projectPath}: {ex.FormatMessage()}", ex);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// PackageDownload versions are exact ranges, "[8.0.0]", and one item may list several separated by
+    /// ';'. Only the entry reported as current moves; the others are deliberate pins of older versions.
+    /// </summary>
+    private async Task<bool> UpdatePackageDownloadAsync(string projectPath, string packageId, string target, string? current, CancellationToken cancellationToken) {
+        if (!NuGetVersion.TryParse(current, out var currentVersion)) {
+            _console.WriteWarning($"No parseable current version for PackageDownload {packageId} in {projectPath}; not updated.");
+            return false;
+        }
+
+        try {
+            return await XmlProjectFile.EditAsync(projectPath, doc => {
+                var changed = false;
+                var elements = doc.ElementsNamed("PackageDownload")
+                    .Where(e => string.Equals(e.Attribute("Include")?.Value, packageId, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+
+                foreach (var element in elements) {
+                    if (element.IsConditioned()) {
+                        _console.WriteWarning($"Skipping conditional PackageDownload {packageId} in {projectPath}; update it by hand.");
+                        continue;
+                    }
+
+                    var versionAttr = element.Attribute("Version");
+                    var versionElement = element.ChildNamed("Version");
+                    var value = versionAttr?.Value ?? versionElement?.Value;
+                    if (value is null) continue;
+
+                    var parts = value.Split(';').Select(p => p.Trim()).ToList();
+                    var index = parts.FindIndex(p => VersionRange.TryParse(p, out var range) && range.MinVersion is { } min && min == currentVersion);
+                    if (index < 0) {
+                        _console.WriteWarning($"PackageDownload {packageId} in {projectPath} has no entry for {current} (found '{value}'); not updated.");
+                        continue;
+                    }
+
+                    parts[index] = $"[{target}]";
+                    var updated = string.Join(";", parts);
+                    if (updated == value) continue;
+
+                    if (versionAttr is { }) versionAttr.Value = updated;
+                    else versionElement!.Value = updated;
                     changed = true;
                 }
                 return changed;
@@ -1420,6 +1488,7 @@ internal class OutdatedService {
 internal enum VersionReason {
     PackageReferenceProj,
     VersionOverrideProj,
+    PackageDownloadProj,
 
     PackageVersionCpm,
 }

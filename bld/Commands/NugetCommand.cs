@@ -22,6 +22,11 @@ internal sealed class NugetCommand : BaseCommand {
         DefaultValueFactory = _ => true
     };
 
+    private readonly Option<bool> _transitiveOption = new Option<bool>("--transitive") {
+        Description = "Include transitive dependencies resolved in project.assets.json (requires a prior restore).",
+        DefaultValueFactory = _ => false
+    };
+
     public NugetCommand(IConsoleOutput console) : base("nuget", "Analyze and categorize NuGet package references in projects.", console) {
         Add(_rootOption);
         Add(_depthOption);
@@ -34,6 +39,7 @@ internal sealed class NugetCommand : BaseCommand {
         Add(_whitelistBlacklistFileOption);
         Add(_aggregateOption);
         Add(_showProjectsOption);
+        Add(_transitiveOption);
         Add(_rootArgument);
     }
 
@@ -56,12 +62,13 @@ internal sealed class NugetCommand : BaseCommand {
         var whitelistBlacklistFile = parseResult.GetValue(_whitelistBlacklistFileOption);
         var aggregate = parseResult.GetValue(_aggregateOption);
         var showProjects = parseResult.GetValue(_showProjectsOption);
+        var includeTransitive = parseResult.GetValue(_transitiveOption);
 
         var rootPath = GetRootPath(parseResult);
 
         var app = new NugetAnalysisApplication(base.Output);
         await app.InitAsync(options);
-        await app.RunAsync(new[] { rootPath }, options, whitelistBlacklistFile, aggregate, showProjects, options.MarkdownOutput);
+        await app.RunAsync(new[] { rootPath }, options, whitelistBlacklistFile, aggregate, showProjects, options.MarkdownOutput, includeTransitive);
 
         return 0;
     }

@@ -169,7 +169,7 @@ bld stats --root MySolution.sln --non-current
 
 ### nuget
 - What it does: analyzes NuGet `PackageReference` usage across projects; can aggregate to a solution-wide view.
-- How it works: evaluates projects via MSBuild, parses package references, applies optional whitelist/blacklist categorization, and optionally aggregates with `--aggregate`/`--show-projects`.
+- How it works: evaluates projects via MSBuild, parses package references, applies optional whitelist/blacklist categorization, and optionally aggregates with `--aggregate`/`--show-projects`. `GlobalPackageReference` and `PackageDownload` items are listed too, marked `(global)` and `(download)`. With `--transitive` the resolved dependency graph from `project.assets.json` is included.
 
 Helpful when your favorite agent creates your shiny new project but adds a lot of strange nuget package references. Or even your co-worker.
 
@@ -203,11 +203,13 @@ Helpful when your favorite agent creates your shiny new project targeting a old 
 - `--whitelist-blacklist-file`, `--wbf` — Path to categorization rules.
 - `--aggregate`, `--agg` — Collapse results across projects (aggregate view). Default: `true`. Pass `--aggregate false` for the per-project view.
 - `--show-projects`, `--sp` — When aggregating, list referencing projects. Default: `true`.
+- `--transitive` — Also list the packages restore resolved through other packages, read from each project's `project.assets.json` (under `MSBuildProjectExtensionsPath`, i.e. `obj/`). Requires a prior `dotnet restore`; a project without the file is reported with a warning and listed with its direct references only. Transitive packages are categorized and matched against the whitelist/blacklist like direct ones and show which packages pull them in. Default: `false`.
 
 Example:
 
 ```powershell
 bld nuget --root C:\src\MyRepo --aggregate false
+bld nuget --root C:\src\MyRepo --transitive --wbf packages.rules
 ```
 
 ### tfm (BETA)
@@ -251,6 +253,8 @@ bld cpm --root MySolution.sln --apply --overwrite
 - `--verify-restore` — After `--apply`, run `dotnet restore` on the input and fail the command when NuGet reports errors.
 - `--source <name|url>` — Package source(s) to query: the name of a source in `nuget.config` or a v3 feed URL. May be repeated. Overrides the configuration, including package source mapping.
 - `--ignore-source-mapping` — Query every enabled source for every package instead of honoring the `packageSourceMapping` section.
+
+**Item types.** Besides `PackageReference` (inline, `VersionOverride`, or centrally managed), `outdated` checks `GlobalPackageReference` entries in `Directory.Packages.props` (updated in place there) and `PackageDownload` items (compared by their highest bracketed version, updated as `[x.y.z]`, and exempt from the TFM check because a download is never referenced). A `PackageVersion` that only a `GlobalPackageReference` uses is not an orphan.
 
 **Package sources.** `outdated` reads the `nuget.config` hierarchy as NuGet does, starting from the directory of the input (repo config, user config, machine config): enabled sources, `packageSourceMapping`, and `packageSourceCredentials` (clear-text or `%ENV_VAR%` references; credentials are sent as Basic auth, which is what Azure Artifacts and GitHub Packages expect for a PAT). Each source's service index is fetched once to find its registration endpoint. When several sources may serve a package, the highest version wins. A source that is unreachable, a v2 feed, or a local directory is skipped for the run with a warning. A package that source mapping assigns to no source is skipped with a warning and does not affect the exit code. Without any configured source, nuget.org is used.
 
