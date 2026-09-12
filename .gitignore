@@ -371,3 +371,9 @@ session.md
 
 # AI agent-generated docs (reviews, notes)
 agent-docs/
+
+# Local debug profiles (contain machine-specific paths)
+launchSettings.json
+
+# VS Code workspace settings (mcp.json contains machine-specific paths)
+.vscode/
