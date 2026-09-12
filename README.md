@@ -218,6 +218,9 @@ bld nuget --root C:\src\MyRepo --transitive --wbf packages.rules
 - `--to` — Target TFM (auto-detected from installed SDKs when omitted).
 - `--apply` — Persist changes instead of a dry-run.
 - `--update-packages` — With `--apply`, also bump `PackageReference`s to their latest stable version. This is a latest-version bump, not a framework-compatibility check, so it is off by default. Versions are looked up on the sources from the project's `nuget.config` hierarchy (with package source mapping), or nuget.org when none is configured.
+- `--update-global-json` — With `--apply`, set `sdk.version` in the governing `global.json` to the highest installed SDK of the target's major (prereleases only when `allowPrerelease` is set). Without `--apply`, report what would change. Only the version line is rewritten; indentation, line endings and BOM are kept.
+
+**global.json.** The command always looks for the `global.json` that governs the input (walking up from its directory, like the SDK does) and warns when its pin cannot build the target framework: a pinned major below the target with any `rollForward` other than `latestMajor` blocks the build, and `major` only rolls forward when the pinned SDK is not installed. Nothing is written without `--update-global-json`.
 
 Example:
 

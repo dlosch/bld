@@ -26,6 +26,11 @@ internal sealed class TfmCommand : BaseCommand {
         DefaultValueFactory = _ => false
     };
 
+    private readonly Option<bool> _updateGlobalJsonOption = new Option<bool>("--update-global-json") {
+        Description = "With --apply, set sdk.version in the governing global.json to the highest installed SDK of the target framework's major when the current pin cannot build it. Without --apply, report what would change.",
+        DefaultValueFactory = _ => false
+    };
+
     public TfmCommand(IConsoleOutput console) : base("tfm", "Migrate TargetFramework/TargetFrameworks between versions.", console) {
         Add(_rootOption);
         Add(_depthOption);
@@ -33,6 +38,7 @@ internal sealed class TfmCommand : BaseCommand {
         Add(_toOption);
         Add(_applyOption);
         Add(_updatePackagesOption);
+        Add(_updateGlobalJsonOption);
         Add(_logLevelOption);
         Add(_vsToolsPath);
         Add(_noResolveVsToolsPath);
@@ -65,6 +71,7 @@ internal sealed class TfmCommand : BaseCommand {
         var to = parseResult.GetValue(_toOption);
         var apply = parseResult.GetValue(_applyOption);
         var updatePackages = parseResult.GetValue(_updatePackagesOption);
+        var updateGlobalJson = parseResult.GetValue(_updateGlobalJsonOption);
 
         // Auto-detect highest SDK version if --to is not specified
         if (string.IsNullOrEmpty(to)) {
@@ -94,13 +101,88 @@ internal sealed class TfmCommand : BaseCommand {
         Output.WriteInfo($"Migrating projects from {string.Join(", ", fromTfms)} to {to} in: {rootPath}");
         Output.WriteInfo($"Mode: {(apply ? "Apply changes" : "Dry run")}");
 
+        // A global.json pinned to an older SDK makes the migrated projects fail to build, so say so
+        // before the migration output rather than leaving it to the next dotnet build.
+        var globalJson = CheckGlobalJson(rootPath, to);
+
         try {
             using var tfmService = new TfmService(Output, options);
-            return await tfmService.MigrateTargetFrameworkAsync(rootPath, fromTfms, to, apply, updatePackages, cancellationToken);
+            var exitCode = await tfmService.MigrateTargetFrameworkAsync(rootPath, fromTfms, to, apply, updatePackages, cancellationToken);
+
+            if (updateGlobalJson && globalJson is { } pin && pin.Verdict != GlobalJsonVerdict.Ok) {
+                if (!apply) {
+                    Output.WriteLine($"Would set sdk.version in {pin.Path} to the highest installed {GlobalJsonFile.RequiredSdkMajor(to)}.x SDK (dry run).");
+                }
+                else if (exitCode != 0) {
+                    Output.WriteWarning($"Migration reported errors; {pin.Path} was not changed.");
+                }
+                else if (!await UpdateGlobalJsonAsync(pin.Path, pin.Sdk, to, cancellationToken)) {
+                    exitCode = 1;
+                }
+            }
+            return exitCode;
         }
         catch (Exception ex) {
             Output.WriteError($"Error migrating target frameworks: {ex.FormatMessage()}");
             return 1;
+        }
+    }
+
+    private (string Path, GlobalJsonSdk Sdk, GlobalJsonVerdict Verdict)? CheckGlobalJson(string rootPath, string toTfm) {
+        var requiredMajor = GlobalJsonFile.RequiredSdkMajor(toTfm);
+        if (requiredMajor is null) return null;
+
+        var startDirectory = Directory.Exists(rootPath) ? rootPath : Path.GetDirectoryName(rootPath);
+        if (string.IsNullOrEmpty(startDirectory)) return null;
+        var path = GlobalJsonFile.Find(startDirectory);
+        if (path is null) return null;
+
+        GlobalJsonSdk? sdk;
+        try {
+            sdk = GlobalJsonFile.Read(path);
+        }
+        catch (Exception ex) {
+            Output.WriteWarning($"Could not read {path}: {ex.FormatMessage()}");
+            return null;
+        }
+        if (sdk is null) return null;
+
+        var (verdict, reason) = GlobalJsonFile.Evaluate(sdk, requiredMajor.Value);
+        switch (verdict) {
+            case GlobalJsonVerdict.Ok:
+                Output.WriteInfo($"{path}: {reason}.");
+                break;
+            case GlobalJsonVerdict.MayRollForward:
+                Output.WriteWarning($"{path} {reason}. Pass --update-global-json to pin a {requiredMajor}.x SDK, or edit it by hand.");
+                break;
+            default:
+                Output.WriteWarning($"{path} {reason}. Pass --update-global-json or edit it by hand.");
+                break;
+        }
+        return (path, sdk, verdict);
+    }
+
+    private async Task<bool> UpdateGlobalJsonAsync(string path, GlobalJsonSdk sdk, string toTfm, CancellationToken cancellationToken) {
+        var requiredMajor = GlobalJsonFile.RequiredSdkMajor(toTfm)!.Value;
+        var installed = await ListInstalledSdksAsync();
+        var candidate = installed
+            .Where(v => v.Major == requiredMajor && (!v.IsPrerelease || (sdk.AllowPrerelease ?? false)))
+            .OrderByDescending(v => v)
+            .FirstOrDefault();
+
+        if (candidate is null) {
+            Output.WriteError($"No {requiredMajor}.x SDK is installed{((sdk.AllowPrerelease ?? false) ? "" : " (prereleases excluded; set allowPrerelease in global.json to use one)")}; {path} was not changed.");
+            return false;
+        }
+
+        try {
+            await GlobalJsonFile.WriteVersionAsync(path, candidate.ToString(), cancellationToken);
+            Output.WriteLine($"Updated {path}: sdk.version {sdk.Version} -> {candidate}");
+            return true;
+        }
+        catch (Exception ex) {
+            Output.WriteError($"Failed to update {path}: {ex.FormatMessage()}");
+            return false;
         }
     }
 
@@ -236,6 +318,18 @@ internal sealed class TfmCommand : BaseCommand {
     }
 
     private async Task<string?> DetectHighestSdkVersionAsync() {
+        var versions = await ListInstalledSdksAsync();
+        if (versions.Count == 0) {
+            return null;
+        }
+
+        var highest = versions.Max();
+        return highest != null ? $"net{highest.Major}.{highest.Minor}" : null;
+    }
+
+    /// <summary>Every SDK `dotnet --list-sdks` reports; empty when dotnet cannot be run.</summary>
+    private async Task<List<NuGetVersion>> ListInstalledSdksAsync() {
+        var versions = new List<NuGetVersion>();
         try {
             // Run 'dotnet --list-sdks' to get installed SDKs
             var process = new System.Diagnostics.Process {
@@ -255,13 +349,10 @@ internal sealed class TfmCommand : BaseCommand {
 
             if (process.ExitCode != 0) {
                 Output.WriteVerbose("Failed to list installed SDKs");
-                return null;
+                return versions;
             }
 
-            // todo possibly better to use SemVer package
-            // Parse output to find highest version
             var lines = output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
-            var versions = new List<NuGetVersion>();
 
             foreach (var line in lines) {
                 // Example line: "8.0.100 [C:\Program Files\dotnet\sdk]"
@@ -270,18 +361,11 @@ internal sealed class TfmCommand : BaseCommand {
                     versions.Add(version);
                 }
             }
-
-            if (versions.Count == 0) {
-                return null;
-            }
-
-            var highest = versions.Max();
-            return highest != null ? $"net{highest.Major}.{highest.Minor}" : null;
         }
         catch (Exception ex) {
             Output.WriteVerbose($"Error detecting SDK versions: {ex.FormatMessage()}");
-            return null;
         }
+        return versions;
     }
 
     /// <summary>
