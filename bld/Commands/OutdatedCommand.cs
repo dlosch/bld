@@ -57,6 +57,16 @@ internal sealed class OutdatedCommand : BaseCommand {
         DefaultValueFactory = _ => false
     };
 
+    private readonly Option<string[]> _sourceOption = new Option<string[]>("--source") {
+        Description = "Package source(s) to query: the name of a source in nuget.config or a v3 feed URL. May be repeated. Overrides nuget.config, including package source mapping. Default: the enabled sources from the nuget.config hierarchy, or nuget.org if there is none.",
+        AllowMultipleArgumentsPerToken = true
+    };
+
+    private readonly Option<bool> _ignoreSourceMappingOption = new Option<bool>("--ignore-source-mapping") {
+        Description = "Query every enabled source for every package instead of honoring the packageSourceMapping section of nuget.config.",
+        DefaultValueFactory = _ => false
+    };
+
     private readonly Option<bool> _interactiveOption = new Option<bool>("--interactive", "-i") {
         Description = "Prompt yes/no for each outdated package before applying. If you skip a package that another picked package depends on at a higher version, the conflict is surfaced so you can include the dependency, skip the picker, or accept the risk. Implies --apply.",
         DefaultValueFactory = _ => false
@@ -76,6 +86,8 @@ internal sealed class OutdatedCommand : BaseCommand {
         Add(_excludeOption);
         Add(_allowConflictsOption);
         Add(_verifyRestoreOption);
+        Add(_sourceOption);
+        Add(_ignoreSourceMappingOption);
         Add(_logLevelOption);
         Add(_vsToolsPath);
         Add(_noResolveVsToolsPath);
@@ -117,8 +129,10 @@ internal sealed class OutdatedCommand : BaseCommand {
         var excludePatterns = OutdatedService.SplitPatterns(parseResult.GetValue(_excludeOption));
         var allowConflicts = parseResult.GetValue(_allowConflictsOption);
         var verifyRestore = parseResult.GetValue(_verifyRestoreOption);
+        var sources = parseResult.GetValue(_sourceOption) ?? Array.Empty<string>();
+        var ignoreSourceMapping = parseResult.GetValue(_ignoreSourceMappingOption);
 
         var service = new OutdatedService(Output, options);
-        return await service.CheckOutdatedPackagesAsync(rootValue, applyUpdates, skipTfmCheck, includePrerelease, listOrphans, commentOrphans, interactive, maxBump, includePatterns, excludePatterns, allowConflicts, verifyRestore, cancellationToken);
+        return await service.CheckOutdatedPackagesAsync(rootValue, applyUpdates, skipTfmCheck, includePrerelease, listOrphans, commentOrphans, interactive, maxBump, includePatterns, excludePatterns, allowConflicts, verifyRestore, sources, ignoreSourceMapping, cancellationToken);
     }
 }

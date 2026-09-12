@@ -206,7 +206,7 @@ internal class OutdatedService {
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    public async Task<int> CheckOutdatedPackagesAsync(string rootPath, bool updatePackages, bool skipTfmCheck, bool includePrerelease, bool listOrphans, bool commentOrphans, bool interactive, MaxBump maxBump, IReadOnlyList<string> includePatterns, IReadOnlyList<string> excludePatterns, bool allowConflicts, bool verifyRestore, CancellationToken cancellationToken) {
+    public async Task<int> CheckOutdatedPackagesAsync(string rootPath, bool updatePackages, bool skipTfmCheck, bool includePrerelease, bool listOrphans, bool commentOrphans, bool interactive, MaxBump maxBump, IReadOnlyList<string> includePatterns, IReadOnlyList<string> excludePatterns, bool allowConflicts, bool verifyRestore, IReadOnlyList<string> sources, bool ignoreSourceMapping, CancellationToken cancellationToken) {
         MSBuildService.RegisterMSBuildDefaults(_console, _options);
 
         _console.WriteRule("[bold blue]bld outdated (BETA)[/]");
@@ -399,6 +399,38 @@ internal class OutdatedService {
         var options = new NugetMetadataOptions { MaxParallelRequests = parallelOptions.MaxDegreeOfParallelism /* configure */ };
         using var client = NugetMetadataService.CreateHttpClient(options);
 
+        // Feeds come from the nuget.config hierarchy seen from the input, not from the working directory,
+        // so `bld outdated path/to/Other.sln` uses that repo's sources.
+        PackageSourceResolver sourceResolver;
+        try {
+            var settingsRoot = Directory.Exists(rootPath) ? rootPath : Path.GetDirectoryName(rootPath) ?? rootPath;
+            sourceResolver = new PackageSourceResolver(_console, client, PackageSourceResolver.LoadSettings(settingsRoot), sources, ignoreSourceMapping, options.RegistrationBaseUrl);
+        }
+        catch (Exception ex) {
+            _console.WriteError($"Could not read the NuGet configuration: {ex.FormatMessage()}");
+            return 1;
+        }
+        _console.WriteDebug($"Package sources: {sourceResolver.Describe()}");
+
+        // One package, every feed that may serve it, merged to the newest answer. A feed that is down
+        // was dropped by the resolver with a warning; if that leaves nothing, the lookup fails like an
+        // outage does today. A package that source mapping assigns to no source is not a failure of
+        // this tool - the resolver already warned - so it is skipped without touching the exit code.
+        async Task<(PackageVersionResult? Result, bool Skipped)> QueryFeedsAsync(PackageVersionRequest request, CancellationToken ct) {
+            if (sourceResolver.IsUnmapped(request.PackageId)) return (null, true);
+
+            var feeds = await sourceResolver.GetFeedsForAsync(request.PackageId, ct);
+            if (feeds.Count == 0) {
+                _console.WriteWarning($"No usable package source for {request.PackageId}.");
+                return (null, false);
+            }
+            var results = new List<PackageVersionResult?>(feeds.Count);
+            foreach (var feed in feeds) {
+                results.Add(await NugetMetadataService.GetLatestVersionWithFrameworkCheckAsync(client, options, _console, request, feed, ct));
+            }
+            return (NugetMetadataService.PickNewest(results), false);
+        }
+
         await Parallel.ForEachAsync(allPackageReferences, parallelOptions, async (packageReference, ct) => {
 
             if (packageReference.Value is null || !packageReference.Value.Any()) {
@@ -426,7 +458,8 @@ internal class OutdatedService {
                 VersionFilter = maxBump == MaxBump.Major ? null : v => WithinBump(currentMin, v, maxBump)
             };
 
-            var result = await NugetMetadataService.GetLatestVersionWithFrameworkCheckAsync(client, options, _console, request, ct);
+            var (result, skipped) = await QueryFeedsAsync(request, ct);
+            if (skipped) return;
             if (result is null) {
                 // Count it: a network or feed outage made every lookup return null and the command
                 // still exited 0, so CI read "no updates" as success.
@@ -530,7 +563,7 @@ internal class OutdatedService {
                         AllowPrerelease = includePrerelease,
                         CompatibleTargetFrameworks = tfmList
                     };
-                    var result = await NugetMetadataService.GetLatestVersionWithFrameworkCheckAsync(client, options, _console, request, ct);
+                    var (result, _) = await QueryFeedsAsync(request, ct);
                     if (result?.TargetFrameworkVersions is null || result.TargetFrameworkVersions.Count == 0) {
                         _console.WriteDebug($"No NuGet metadata for orphan {orphan.PackageId} in {orphan.CpmFile}");
                         return;

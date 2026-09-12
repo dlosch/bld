@@ -1,6 +1,7 @@
 using bld.Infrastructure;
 using bld.Models;
 using NuGet.Common;
+using NuGet.Configuration;
 using NuGet.Frameworks;
 using NuGet.Protocol;
 using NuGet.Protocol.Core.Types;
@@ -535,17 +536,41 @@ internal class TfmService : IDisposable {
     // NOTE: this does not verify the newer version actually supports targetTfm — full
     // framework-compatibility analysis would require resolving each package's dependency
     // groups. It is a "latest stable" suggestion, surfaced only under --update-packages.
+    /// <summary>
+    /// The enabled sources from the nuget.config hierarchy as seen from the project, with package source
+    /// mapping when configured. Only api.nuget.org was queried before, so packages on a private feed were
+    /// never offered an update.
+    /// </summary>
+    private static (IReadOnlyList<SourceRepository> Repositories, PackageSourceMapping? Mapping) LoadSourceRepositories(string projectPath) {
+        var settings = Settings.LoadDefaultSettings(Path.GetDirectoryName(projectPath));
+        var provider = new SourceRepositoryProvider(new PackageSourceProvider(settings), Repository.Provider.GetCoreV3());
+        var repositories = provider.GetRepositories().Where(r => r.PackageSource.IsEnabled).ToList();
+        if (repositories.Count == 0) {
+            repositories.Add(Repository.Factory.GetCoreV3(NuGetConstants.V3FeedUrl));
+        }
+        var mapping = PackageSourceMapping.GetPackageSourceMapping(settings);
+        return (repositories, mapping.IsEnabled ? mapping : null);
+    }
+
     private async Task<List<PackageCompatibilityIssue>> FindNewerStablePackageVersionsAsync(ProjectMigrationInfo project, string targetTfm, CancellationToken cancellationToken) {
         var issues = new List<PackageCompatibilityIssue>();
-        var packageSource = Repository.Factory.GetCoreV3("https://api.nuget.org/v3/index.json");
-        var packageMetadataResource = await packageSource.GetResourceAsync<PackageMetadataResource>(cancellationToken);
-        if (packageMetadataResource is null) {
-            return issues;
-        }
+        var (repositories, mapping) = LoadSourceRepositories(project.ProjectPath);
+        _console.WriteDebug($"Package sources for {Path.GetFileName(project.ProjectPath)}: {string.Join(", ", repositories.Select(r => r.PackageSource.Name))}");
 
         foreach (var package in project.PackageReferences) {
             try {
-                var metadata = await packageMetadataResource.GetMetadataAsync(package.Id, true, true, _cache, _logger, cancellationToken);
+                var candidates = repositories;
+                if (mapping is not null) {
+                    var names = mapping.GetConfiguredPackageSources(package.Id);
+                    candidates = repositories.Where(r => names.Contains(r.PackageSource.Name, StringComparer.OrdinalIgnoreCase)).ToList();
+                }
+
+                var metadata = new List<IPackageSearchMetadata>();
+                foreach (var repository in candidates) {
+                    var packageMetadataResource = await repository.GetResourceAsync<PackageMetadataResource>(cancellationToken);
+                    if (packageMetadataResource is null) continue;
+                    metadata.AddRange(await packageMetadataResource.GetMetadataAsync(package.Id, true, true, _cache, _logger, cancellationToken));
+                }
 
                 if (!NuGetVersion.TryParse(package.Version, out var currentVersion)) {
                     continue;

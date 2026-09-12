@@ -215,7 +215,7 @@ bld nuget --root C:\src\MyRepo --aggregate false
 - `--from` — Comma-separated source TFMs (auto-detected when possible).
 - `--to` — Target TFM (auto-detected from installed SDKs when omitted).
 - `--apply` — Persist changes instead of a dry-run.
-- `--update-packages` — With `--apply`, also bump `PackageReference`s to their latest stable version. This is a latest-version bump, not a framework-compatibility check, so it is off by default.
+- `--update-packages` — With `--apply`, also bump `PackageReference`s to their latest stable version. This is a latest-version bump, not a framework-compatibility check, so it is off by default. Versions are looked up on the sources from the project's `nuget.config` hierarchy (with package source mapping), or nuget.org when none is configured.
 
 Example:
 
@@ -249,11 +249,16 @@ bld cpm --root MySolution.sln --apply --overwrite
 - `--exclude <pattern>` — Skip packages whose id matches one of these patterns. Same syntax as `--package` and applied after it.
 - `--allow-conflicts` — Update packages even when a dependency they require stays at a version that does not satisfy their declared range. Without this, such packages are held back.
 - `--verify-restore` — After `--apply`, run `dotnet restore` on the input and fail the command when NuGet reports errors.
+- `--source <name|url>` — Package source(s) to query: the name of a source in `nuget.config` or a v3 feed URL. May be repeated. Overrides the configuration, including package source mapping.
+- `--ignore-source-mapping` — Query every enabled source for every package instead of honoring the `packageSourceMapping` section.
+
+**Package sources.** `outdated` reads the `nuget.config` hierarchy as NuGet does, starting from the directory of the input (repo config, user config, machine config): enabled sources, `packageSourceMapping`, and `packageSourceCredentials` (clear-text or `%ENV_VAR%` references; credentials are sent as Basic auth, which is what Azure Artifacts and GitHub Packages expect for a PAT). Each source's service index is fetched once to find its registration endpoint. When several sources may serve a package, the highest version wins. A source that is unreachable, a v2 feed, or a local directory is skipped for the run with a warning. A package that source mapping assigns to no source is skipped with a warning and does not affect the exit code. Without any configured source, nuget.org is used.
 
 Examples:
 
 ```powershell
 bld outdated --root C:\src\MyRepo --prerelease
+bld outdated --root C:\src\MyRepo --source internal --source nuget.org
 bld outdated --root C:\src\MyRepo --max-bump minor --apply
 bld outdated --root C:\src\MyRepo -p "Serilog.*" -p "xunit*" --exclude "Serilog.Sinks.Seq" --max-bump minor --apply
 ```

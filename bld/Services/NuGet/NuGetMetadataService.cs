@@ -30,11 +30,13 @@ public static class NugetMetadataService {
     private static FrameworkReducer _frameworkReducer = new FrameworkReducer();
     private static DefaultCompatibilityProvider _compatibilityProvider = new DefaultCompatibilityProvider();
 
+    /// <param name="feed">Registration endpoint and credentials to use; null means nuget.org as configured in <paramref name="options"/>.</param>
     internal static async ValueTask<PackageVersionResult?> GetLatestVersionWithFrameworkCheckAsync(
         HttpClient httpClient,
         NugetMetadataOptions options,
         IConsoleOutput? logger,
         PackageVersionRequest request,
+        PackageFeed? feed = null,
         CancellationToken cancellationToken = default) {
         ArgumentNullException.ThrowIfNull(httpClient);
         ArgumentNullException.ThrowIfNull(options);
@@ -43,11 +45,21 @@ public static class NugetMetadataService {
         if (string.IsNullOrWhiteSpace(request.PackageId))
             throw new ArgumentException("PackageId cannot be null or empty", nameof(request));
 
+        // Every request goes through here so the feed's credentials also reach the page URLs the
+        // registration index hands back.
+        async Task<HttpResponseMessage> GetAsync(string url) {
+            using var message = new HttpRequestMessage(HttpMethod.Get, url);
+            if (feed?.Authorization is { } authorization) message.Headers.Authorization = authorization;
+            return await httpClient.SendAsync(message, cancellationToken);
+        }
+
         try {
-            var indexUrl = $"https://api.nuget.org/v3/registration5-gz-semver2/{request.PackageId.ToLowerInvariant()}/index.json";
+            var registrationBase = feed?.RegistrationBaseUrl ?? options.RegistrationBaseUrl;
+            if (!registrationBase.EndsWith('/')) registrationBase += "/";
+            var indexUrl = $"{registrationBase}{request.PackageId.ToLowerInvariant()}/index.json";
             logger?.WriteDebug($"Getting registration index for package {request.PackageId} at {indexUrl}");
 
-            var indexResponse = await httpClient.GetAsync(indexUrl, cancellationToken);
+            var indexResponse = await GetAsync(indexUrl);
 
             if (!indexResponse.IsSuccessStatusCode) {
                 if (indexResponse.StatusCode == System.Net.HttpStatusCode.NotFound) {
@@ -80,7 +92,7 @@ retry:
                     var pageUrl = pageItem.Id;
                     logger?.WriteDebug($"Requesting page {pageUrl} for {request.PackageId}");
 
-                    var pageResponse = await httpClient.GetAsync(pageUrl, cancellationToken);
+                    var pageResponse = await GetAsync(pageUrl);
                     if (!pageResponse.IsSuccessStatusCode) {
                         logger?.WriteInfo($"Failed to get page {pageUrl} for {request.PackageId}. Status: {pageResponse.StatusCode}");
                         continue;
@@ -231,9 +243,59 @@ retry:
             return null;
         }
         catch (Exception ex) {
-            logger?.WriteError($"Error fetching package metadata for {request.PackageId}", ex);
+            logger?.WriteError($"Error fetching package metadata for {request.PackageId}{(feed is null ? "" : $" from {feed.Name}")}: {ex.FormatMessage()}", ex);
             return null;
         }
+    }
+
+    /// <summary>
+    /// Merges the per-feed answers for one package: the highest version wins, "nothing inside the
+    /// --max-bump window" only counts when no feed had a candidate, and the held-back version is the
+    /// newest any feed rejected. Null when no feed knows the package.
+    /// </summary>
+    internal static PackageVersionResult? PickNewest(IEnumerable<PackageVersionResult?> results) {
+        PackageVersionResult? best = null;
+        NuGetVersion? bestVersion = null;
+        string? newestOutside = null;
+        NuGetVersion? newestOutsideVersion = null;
+        var sawWindowMiss = false;
+        string? packageId = null;
+
+        foreach (var result in results) {
+            if (result is null) continue;
+            packageId ??= result.PackageId;
+
+            if (result.NewestOutsideFilter is { } outside && NuGetVersion.TryParse(outside, out var outsideVersion)
+                && (newestOutsideVersion is null || outsideVersion > newestOutsideVersion)) {
+                newestOutside = outside;
+                newestOutsideVersion = outsideVersion;
+            }
+
+            if (result.NoVersionWithinFilter) {
+                sawWindowMiss = true;
+                continue;
+            }
+
+            var versionText = result.TargetFrameworkVersions.Values.FirstOrDefault();
+            if (!NuGetVersion.TryParse(versionText, out var version)) continue;
+            if (bestVersion is null || version > bestVersion) {
+                best = result;
+                bestVersion = version;
+            }
+        }
+
+        if (best is not null) {
+            return newestOutside is null ? best : best with { NewestOutsideFilter = newestOutside };
+        }
+        if (sawWindowMiss) {
+            return new PackageVersionResult {
+                PackageId = packageId ?? string.Empty,
+                TargetFrameworkVersions = new Dictionary<NuGetFramework, string>(),
+                NewestOutsideFilter = newestOutside,
+                NoVersionWithinFilter = true,
+            };
+        }
+        return null;
     }
 }
 
