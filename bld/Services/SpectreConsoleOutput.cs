@@ -80,11 +80,13 @@ internal class SpectreConsoleOutput : IConsoleOutput {
         }
     }
 
+    public bool CanPrompt => !Console.IsInputRedirected && AnsiConsole.Profile.Capabilities.Interactive;
+
     public bool Confirm(string message, bool defaultValue = false) {
         // In non-interactive contexts (CI, piped/redirected stdin) AnsiConsole.Confirm throws while
         // trying to read input. Fall back to the supplied default so callers (e.g. clean --delete,
         // the batch-file overwrite prompt) skip safely instead of crashing with a stack trace.
-        if (Console.IsInputRedirected || !AnsiConsole.Profile.Capabilities.Interactive) {
+        if (!CanPrompt) {
             WriteWarning($"Non-interactive input; assuming '{(defaultValue ? "yes" : "no")}' for prompt: {message}");
             return defaultValue;
         }
@@ -92,12 +94,41 @@ internal class SpectreConsoleOutput : IConsoleOutput {
         return AnsiConsole.Confirm(Markup.Escape(message), defaultValue);
     }
 
+    // Unlike Confirm these have no sensible fallback answer, so they refuse instead of letting
+    // Spectre throw somewhere inside its input loop. Callers are expected to check CanPrompt first.
     public T Prompt<T>(SelectionPrompt<T> prompt) where T : notnull {
+        if (!CanPrompt) throw new InvalidOperationException("Interactive prompt requires a terminal");
         return AnsiConsole.Prompt(prompt);
     }
 
     public List<T> MultiPrompt<T>(MultiSelectionPrompt<T> prompt) where T : notnull {
+        if (!CanPrompt) throw new InvalidOperationException("Interactive prompt requires a terminal");
         return AnsiConsole.Prompt(prompt);
+    }
+
+    public PickerOutcome RunPicker(PickerModel model, string title) {
+        if (!CanPrompt) throw new InvalidOperationException("Interactive prompt requires a terminal");
+
+        var state = new PickerState(model);
+        // Height minus the title, the instruction line, the blank line and the two overflow hints.
+        var pageSize = Math.Clamp(AnsiConsole.Profile.Height - 6, 5, 30);
+
+        AnsiConsole.Live(PackagePickerRenderer.Render(state, title, pageSize))
+            .AutoClear(false)
+            .Start(ctx => {
+                // Live draws nothing until the first Refresh, and the loop below only refreshes
+                // after a key: the picker was invisible until the user pressed something.
+                ctx.Refresh();
+                while (!state.Done) {
+                    var key = AnsiConsole.Console.Input.ReadKey(intercept: true);
+                    if (key is null) break; // input ended under us
+                    state.Handle(PackagePickerRenderer.MapKey(key.Value));
+                    ctx.UpdateTarget(PackagePickerRenderer.Render(state, title, pageSize));
+                    ctx.Refresh();
+                }
+            });
+
+        return state.Result();
     }
 
     public void StartProgress(string description, Action<ProgressContext> action) {

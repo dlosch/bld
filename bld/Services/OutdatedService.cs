@@ -69,6 +69,61 @@ internal class OutdatedService {
     }
 
     /// <summary>
+    /// The candidate a cap selects. The classes are cumulative, so <c>minor</c> already means "the
+    /// highest version with the same major"; the fallbacks only matter when the pinned version is
+    /// not listed on the feed at all and a class stayed empty.
+    /// </summary>
+    internal static VersionCandidate? CandidateForBump(PackageVersionCandidates candidates, MaxBump bump) => bump switch {
+        MaxBump.Patch => candidates.Patch,
+        MaxBump.Minor => candidates.Minor ?? candidates.Patch,
+        _ => candidates.Major ?? candidates.Minor ?? candidates.Patch
+    };
+
+    /// <summary>Whether a package id matches one <c>--package</c>-style wildcard pattern.</summary>
+    internal static bool Matches(string id, string pattern) =>
+        WhitelistBlacklistParser.FindMatchingPattern(id, new[] { pattern }) is not null;
+
+    /// <summary>
+    /// Parses <c>--max-bump-for "&lt;pattern&gt;=&lt;level&gt;"</c> values, accepting the same
+    /// repetition and ';'-separated lists as <c>--package</c>.
+    /// </summary>
+    /// <exception cref="FormatException">An entry has no '=' or names an unknown level.</exception>
+    internal static IReadOnlyList<(string Pattern, MaxBump Level)> ParseBumpOverrides(string[]? raw) {
+        var overrides = new List<(string, MaxBump)>();
+        foreach (var entry in SplitPatterns(raw)) {
+            var separator = entry.LastIndexOf('=');
+            if (separator <= 0 || separator == entry.Length - 1) {
+                throw new FormatException($"--max-bump-for expects \"<pattern>=<major|minor|patch>\", got \"{entry}\".");
+            }
+            var level = entry[(separator + 1)..].Trim();
+            if (!Enum.TryParse<MaxBump>(level, ignoreCase: true, out var parsed)) {
+                throw new FormatException($"--max-bump-for: unknown level \"{level}\" in \"{entry}\". Use major, minor or patch.");
+            }
+            overrides.Add((entry[..separator].Trim(), parsed));
+        }
+        return overrides;
+    }
+
+    /// <summary>
+    /// The cap that applies to one package: the most specific matching <c>--max-bump-for</c>
+    /// pattern, or <paramref name="global"/> when none matches. Specificity is the number of
+    /// non-wildcard characters, so "Microsoft.Extensions.*" beats "Microsoft.*"; ties go to the
+    /// pattern given last.
+    /// </summary>
+    internal static MaxBump EffectiveBump(string id, MaxBump global, IReadOnlyList<(string Pattern, MaxBump Level)> overrides) {
+        var effective = global;
+        var bestSpecificity = -1;
+        foreach (var (pattern, level) in overrides) {
+            if (!Matches(id, pattern)) continue;
+            var specificity = pattern.Count(c => c != '*');
+            if (specificity < bestSpecificity) continue;
+            bestSpecificity = specificity;
+            effective = level;
+        }
+        return effective;
+    }
+
+    /// <summary>
     /// Package ids named by a project file's raw XML, regardless of any Condition. MSBuild evaluates
     /// one TFM and configuration at a time, so a reference inside
     /// &lt;ItemGroup Condition="'$(TargetFramework)'=='net472'"&gt; is invisible to the evaluated view -
@@ -205,8 +260,202 @@ internal class OutdatedService {
         return accepted;
     }
 
+    private static bool IsPreselected(BumpKind bump, Preselect preselect) => preselect switch {
+        Preselect.All => true,
+        Preselect.NoMajor => bump != BumpKind.Major,
+        Preselect.Patch => bump == BumpKind.Patch,
+        _ => false
+    };
+
+    /// <summary>
+    /// Everything the picker shows, as data: which groups exist, which rows they hold, and what is
+    /// pre-selected. Built without Spectre so the layout can be asserted in tests.
+    /// </summary>
+    /// <summary>
+    /// Every target offered for one package: the one the cap picked plus each candidate class above
+    /// the current pin, ascending and deduplicated.
+    /// </summary>
+    internal static IReadOnlyList<PickerTarget> TargetsFor(NuGetVersion current, NuGetVersion chosen, PackageVersionCandidates? candidates) {
+        var versions = new List<NuGetVersion> { chosen };
+        foreach (var candidate in new[] { candidates?.Patch, candidates?.Minor, candidates?.Major }) {
+            if (candidate is null) continue;
+            if (!NuGetVersion.TryParse(candidate.Version, out var version)) continue;
+            if (version <= current) continue; // not an update
+            versions.Add(version);
+        }
+        return versions
+            .Distinct()
+            .OrderBy(v => v)
+            .Select(v => new PickerTarget(v, PackageGrouper.Classify(current, v)))
+            .ToList();
+    }
+
+    internal static PickerModel BuildPickerModel(
+        IReadOnlyDictionary<string, (NuGetVersion CurrentMin, NuGetVersion Latest)> outdated,
+        GroupingOptions grouping,
+        Preselect preselect,
+        IReadOnlyDictionary<string, PackageVersionCandidates>? candidates = null,
+        IReadOnlySet<string>? neverPreselect = null) {
+
+        var rows = new Dictionary<string, PickerRow>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (id, versions) in outdated) {
+            var bump = PackageGrouper.Classify(versions.CurrentMin, versions.Latest);
+            var targets = TargetsFor(versions.CurrentMin, versions.Latest,
+                candidates is not null && candidates.TryGetValue(id, out var c) ? c : null);
+            var defaultTarget = targets.ToList().FindIndex(t => t.Version.Equals(versions.Latest));
+            // A package the cap excluded on purpose starts unchecked no matter what --preselect says:
+            // it is only in the list so the user can reach it, not to be taken by default.
+            var preselected = IsPreselected(bump, preselect) && !(neverPreselect?.Contains(id) ?? false);
+            rows[id] = new PickerRow(id, versions.CurrentMin, targets, Math.Max(0, defaultTarget), preselected);
+        }
+
+        var groups = grouping.GroupBy switch {
+            GroupBy.Prefix => PackageGrouper.GroupByPrefix(rows.Keys, grouping.Depth, grouping.MinSize),
+            GroupBy.Bump => PackageGrouper.GroupByBump(rows.Values.Select(r => (r.Id, r.Current, r.Target))),
+            // One nameless group: the picker renders it without a group row, exactly as before.
+            _ => new[] { new PackageGroup(string.Empty, rows.Keys.OrderBy(id => id, StringComparer.OrdinalIgnoreCase).ToList()) }
+        };
+
+        return new PickerModel(groups
+            .Select(g => new PickerGroup(g.Name, g.Ids.Select(id => rows[id]).ToList()))
+            .ToList());
+    }
+
+    /// <summary>The candidate holding a specific version, so its dependency manifest can be found.</summary>
+    internal static VersionCandidate? CandidateWithVersion(PackageVersionCandidates candidates, NuGetVersion version) {
+        foreach (var candidate in new[] { candidates.Patch, candidates.Minor, candidates.Major }) {
+            if (candidate is null) continue;
+            if (NuGetVersion.TryParse(candidate.Version, out var parsed) && parsed.Equals(version)) return candidate;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// The <c>--max-bump-for</c> class a repeated run needs for one package, or null when the cap in
+    /// force picks the chosen version by itself. Lowering counts as much as raising: taking the patch
+    /// under a major cap is only reproducible with an explicit override.
+    /// </summary>
+    internal static BumpKind? RepeatOverride(NuGetVersion current, NuGetVersion chosen, PackageVersionCandidates? candidates, MaxBump cap) {
+        var defaultTarget = candidates is null ? null : CandidateForBump(candidates, cap);
+        if (defaultTarget is not null && NuGetVersion.TryParse(defaultTarget.Version, out var version) && version.Equals(chosen)) return null;
+        return PackageGrouper.Classify(current, chosen);
+    }
+
+    /// <summary>
+    /// Group assignment for the report table. A held-back-only row has no update target, so its
+    /// held version stands in for one when grouping by bump class.
+    /// </summary>
+    internal static IReadOnlyList<PackageGroup> BuildReportGroups(
+        IEnumerable<(string Id, NuGetVersion CurrentMin, NuGetVersion Latest, string? Held)> rows,
+        GroupingOptions grouping) {
+
+        var list = rows.ToList();
+        return grouping.GroupBy switch {
+            GroupBy.Prefix => PackageGrouper.GroupByPrefix(list.Select(r => r.Id), grouping.Depth, grouping.MinSize),
+            GroupBy.Bump => PackageGrouper.GroupByBump(list.Select(r => (r.Id, r.CurrentMin, ReportTarget(r)))),
+            _ => new[] { new PackageGroup(string.Empty, list.Select(r => r.Id).ToList()) }
+        };
+
+        static NuGetVersion ReportTarget((string Id, NuGetVersion CurrentMin, NuGetVersion Latest, string? Held) row) =>
+            row.Latest > row.CurrentMin || row.Held is null || !NuGetVersion.TryParse(row.Held, out var held)
+                ? row.Latest
+                : held;
+    }
+
+    /// <summary>
+    /// The command line that reproduces the picker's selection without any prompt. A fully selected
+    /// prefix group collapses to one <c>-p "&lt;prefix&gt;.*"</c>.
+    /// </summary>
+    /// <remarks>
+    /// This reproduces the <em>selection</em>, not necessarily the result: a later run can see newer
+    /// versions than this one did.
+    /// </remarks>
+    internal static string BuildRepeatCommand(
+        string input,
+        IReadOnlyList<PickerGroup> groups,
+        ISet<string> chosen,
+        IReadOnlyList<(string Pattern, MaxBump Level)> patternOverrides,
+        IReadOnlyDictionary<string, BumpKind> bumpOverrides,
+        MaxBump globalBump,
+        bool prerelease,
+        IReadOnlyList<string> sources) {
+
+        var parts = new List<string> { "bld", "outdated", QuoteArgument(input), "--apply" };
+        if (prerelease) parts.Add("--prerelease");
+        foreach (var source in sources) {
+            parts.Add("--source");
+            parts.Add(QuoteArgument(source));
+        }
+
+        var covered = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var group in groups) {
+            var selected = group.Rows.Where(r => chosen.Contains(r.Id)).ToList();
+            if (selected.Count == 0) continue;
+            // "(other)" and the bump groups are not patterns, so they always resolve to single ids.
+            if (selected.Count == group.Rows.Count && group.Name.EndsWith(".*", StringComparison.Ordinal)) {
+                parts.Add("-p");
+                parts.Add(QuoteArgument(group.Name));
+                foreach (var row in selected) covered.Add(row.Id);
+                continue;
+            }
+            foreach (var row in selected) {
+                parts.Add("-p");
+                parts.Add(QuoteArgument(row.Id));
+                covered.Add(row.Id);
+            }
+        }
+
+        // Released held versions were never rows in the main picker, so name them explicitly.
+        foreach (var id in chosen.Where(id => !covered.Contains(id)).OrderBy(id => id, StringComparer.OrdinalIgnoreCase)) {
+            parts.Add("-p");
+            parts.Add(QuoteArgument(id));
+        }
+
+        if (globalBump != MaxBump.Major) {
+            parts.Add("--max-bump");
+            parts.Add(globalBump.ToString().ToLowerInvariant());
+        }
+        // The run's own pattern overrides first, so that a per-package override below wins the tie
+        // when both name the same id.
+        foreach (var (pattern, level) in patternOverrides) {
+            parts.Add("--max-bump-for");
+            parts.Add(QuoteArgument($"{pattern}={level.ToString().ToLowerInvariant()}"));
+        }
+        foreach (var (id, bump) in bumpOverrides.OrderBy(o => o.Key, StringComparer.OrdinalIgnoreCase)) {
+            parts.Add("--max-bump-for");
+            parts.Add(QuoteArgument($"{id}={bump.ToString().ToLowerInvariant()}"));
+        }
+
+        return string.Join(' ', parts);
+    }
+
+    // '*' and '?' are quoted too: an unquoted -p Serilog.* would be glob-expanded by the shell
+    // before bld ever sees the pattern.
+    private static readonly char[] ShellUnsafeCharacters = { ' ', '\t', '"', '\'', '&', '|', '<', '>', '^', '(', ')', ';', '*', '?' };
+
+    private static string QuoteArgument(string value) =>
+        value.Length == 0 || value.IndexOfAny(ShellUnsafeCharacters) >= 0
+            ? "\"" + value.Replace("\"", "\\\"") + "\""
+            : value;
+
+    /// <summary>
+    /// Counts rather than the name of the <c>--preselect</c> mode: rows above the cap are never
+    /// pre-selected, so "all pre-selected" would be a lie on exactly the run where it matters.
+    /// </summary>
+    internal static string PickerTitle(int count, int heldCount, int preselectedCount, string capDescription) {
+        var held = heldCount > 0 ? $", {heldCount} above {capDescription}" : string.Empty;
+        return $"[bold]Select packages to update[/] [grey]{Markup.Escape($"({count} listed{held}; {preselectedCount} pre-selected)")}[/]";
+    }
+
     [MethodImpl(MethodImplOptions.NoInlining)]
-    public async Task<int> CheckOutdatedPackagesAsync(string rootPath, bool updatePackages, bool skipTfmCheck, bool includePrerelease, bool listOrphans, bool commentOrphans, bool interactive, MaxBump maxBump, IReadOnlyList<string> includePatterns, IReadOnlyList<string> excludePatterns, bool allowConflicts, bool verifyRestore, IReadOnlyList<string> sources, bool ignoreSourceMapping, CancellationToken cancellationToken) {
+    public async Task<int> CheckOutdatedPackagesAsync(string rootPath, bool updatePackages, bool skipTfmCheck, bool includePrerelease, bool listOrphans, bool commentOrphans, bool interactive, MaxBump maxBump, IReadOnlyList<(string Pattern, MaxBump Level)> bumpOverrides, IReadOnlyList<string> includePatterns, IReadOnlyList<string> excludePatterns, bool allowConflicts, bool verifyRestore, IReadOnlyList<string> sources, bool ignoreSourceMapping, GroupingOptions grouping, Preselect preselect, bool evalCache, CancellationToken cancellationToken) {
+        // Before anything is evaluated or fetched: a picker we cannot show makes the whole run
+        // pointless, and --interactive implies --apply.
+        if (interactive && !_console.CanPrompt) {
+            _console.WriteError("--interactive needs an interactive terminal. Use --apply with -p/--exclude and --max-bump instead.");
+            return 1;
+        }
+
         MSBuildService.RegisterMSBuildDefaults(_console, _options);
 
         _console.WriteRule("[bold blue]bld outdated (BETA)[/]");
@@ -247,7 +496,11 @@ internal class OutdatedService {
         };
 
         try {
-            var projParser = new ProjParser(_console, errorSink, _options);
+            using var projParser = new ProjParser(_console, errorSink, _options);
+            if (evalCache) {
+                projParser.Cache = new EvaluationCache(Path.Combine(BldHome.Cache, "eval"), ProjParser.ToolsIdentity, _console);
+                _console.WriteDebug($"Evaluation cache: {Path.Combine(BldHome.Cache, "eval")}");
+            }
 
             var allSlns = new ConcurrentBag<string>();
             await foreach (var sln in slnScanner.Enumerate(rootPath)) {
@@ -264,112 +517,123 @@ internal class OutdatedService {
                 }
             });
 
-            // Walk ProjectReferences transitively so a single csproj input (or a slnx that omits a
-            // referenced project) still picks up packages from projects it depends on. Children
-            // inherit Configuration/Platform from the parent so config/platform-conditional
+            // Only the Release configuration is analyzed, so only that one is evaluated. Its
+            // ProjectReferences come out of the same evaluation as the PackageReferences and are
+            // followed transitively, one level at a time, so a single csproj input (or a slnx that
+            // omits a referenced project) still picks up packages from projects it depends on.
+            // Children inherit Configuration/Platform from the parent so config/platform-conditional
             // <ProjectReference> items evaluate the same way `dotnet build` would resolve them.
+            // Walking the references used to be a second, sequential evaluation of every
+            // configuration before the analysis even started.
             var visitedProjectPaths = new HashSet<string>(allProjCfgs.Select(p => p.Path), StringComparer.OrdinalIgnoreCase);
-            var refQueue = new Queue<ProjCfg>(allProjCfgs);
-            while (refQueue.Count > 0) {
-                var parent = refQueue.Dequeue();
-                foreach (var refPath in projParser.GetProjectReferences(parent.Path, parent.Configuration, parent.Platform)) {
-                    if (visitedProjectPaths.Add(refPath)) {
-                        var newCfg = new ProjCfg(new Proj(refPath, null), parent.Configuration, parent.Platform);
-                        refQueue.Enqueue(newCfg);
-                        if (cache.Add(newCfg)) {
-                            allProjCfgs.Add(newCfg);
-                            _console.WriteDebug($"Discovered ProjectReference target: {refPath} [{parent.Configuration}|{parent.Platform}]");
-                        }
-                    }
-                }
-            }
+            var frontier = allProjCfgs
+                .Where(p => string.Equals(p.Configuration, "Release", StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            var evaluationWatch = Stopwatch.StartNew();
+            var evaluated = 0;
 
-            await _console.StartStatusAsync($"Analyzing {allProjCfgs.Count} project configurations...", async ctx => {
-                var count = 0;
-                var total = allProjCfgs.Count;
+            await _console.StartStatusAsync($"Analyzing {frontier.Count} project configurations...", async ctx => {
+                while (frontier.Count > 0) {
+                    var discovered = new ConcurrentBag<ProjCfg>();
+                    var total = evaluated + frontier.Count;
 
-                await Parallel.ForEachAsync(allProjCfgs, parallelOptions, async (projCfg, ct) => {
-                    var current = Interlocked.Increment(ref count);
-                    ctx.Status($"Analyzing projects: {current}/{total} ([bold]{Markup.Escape(Path.GetFileName(projCfg.Path))}[/])");
+                    await Parallel.ForEachAsync(frontier, parallelOptions, async (projCfg, ct) => {
+                        var current = Interlocked.Increment(ref evaluated);
+                        ctx.Status($"Analyzing projects: {current}/{total} ([bold]{Markup.Escape(Path.GetFileName(projCfg.Path))}[/])");
 
-                    // Only process "Release" configuration as per spec
-                    if (!string.Equals(projCfg.Configuration, "Release", StringComparison.OrdinalIgnoreCase)) return;
+                        // Any throw here escaped Parallel.ForEachAsync, cancelling every project not yet
+                        // scanned - and the run then carried on to report and even --apply against that
+                        // partial view. Contain it per project and record the failure instead.
+                        try {
+                            // Read declared package ids straight from the project XML as well. MSBuild evaluates
+                            // one TFM/configuration at a time, so items inside a conditional ItemGroup are absent
+                            // from the evaluated view; without this they look like unreferenced CPM orphans.
+                            foreach (var declared in ReadDeclaredPackageIds(projCfg.Path)) declaredPackageIds.TryAdd(declared, 0);
 
-                    // Any throw here escaped Parallel.ForEachAsync, cancelling every project not yet
-                    // scanned - and the run then carried on to report and even --apply against that
-                    // partial view. Contain it per project and record the failure instead.
-                    try {
-                    // Read declared package ids straight from the project XML as well. MSBuild evaluates
-                    // one TFM/configuration at a time, so items inside a conditional ItemGroup are absent
-                    // from the evaluated view; without this they look like unreferenced CPM orphans.
-                    foreach (var declared in ReadDeclaredPackageIds(projCfg.Path)) declaredPackageIds.TryAdd(declared, 0);
+                            var refs = projParser.GetPackageReferences(projCfg);
+                            if (refs is null) Interlocked.Increment(ref evaluationFailures);
 
-                    var refs = projParser.GetPackageReferences(projCfg);
-                    if (refs is null) Interlocked.Increment(ref evaluationFailures);
-
-                    if (refs is not null) {
-                        if (refs.TargetFrameworks is { Length: > 0 }) {
-                            foreach (var tfm in refs.TargetFrameworks) allTfms.TryAdd(tfm, 0);
-                        }
-                        if ((refs.UseCpm ?? false) && refs.PackageVersions is { Count: > 0 }) {
-                            // Attribute each PackageVersion to the actual file where it was declared,
-                            // so split CPM setups (Directory.Packages.props + imported props) report and
-                            // edit the correct file on --apply / --comment-orphans.
-                            var unattributed = 0;
-                            foreach (var (id, entry) in refs.PackageVersions) {
-                                var sourceFile = entry.SourceFile ?? refs.CpmFile;
-                                if (string.IsNullOrEmpty(sourceFile)) {
-                                    unattributed++;
-                                    continue;
+                            if (refs is not null) {
+                                foreach (var refPath in refs.ProjectReferences) {
+                                    bool isNew;
+                                    lock (visitedProjectPaths) isNew = visitedProjectPaths.Add(refPath);
+                                    if (!isNew) continue;
+                                    var child = new ProjCfg(new Proj(refPath, null), projCfg.Configuration, projCfg.Platform);
+                                    if (cache.Add(child)) {
+                                        discovered.Add(child);
+                                        _console.WriteDebug($"Discovered ProjectReference target: {refPath} [{projCfg.Configuration}|{projCfg.Platform}]");
+                                    }
                                 }
-                                var dict = cpmFileEntries.GetOrAdd(sourceFile, _ => new ConcurrentDictionary<string, string?>(StringComparer.OrdinalIgnoreCase));
-                                dict[id] = entry.Version;
+
+                                if (refs.TargetFrameworks is { Length: > 0 }) {
+                                    foreach (var tfm in refs.TargetFrameworks) allTfms.TryAdd(tfm, 0);
+                                }
+                                if ((refs.UseCpm ?? false) && refs.PackageVersions is { Count: > 0 }) {
+                                    // Attribute each PackageVersion to the actual file where it was declared,
+                                    // so split CPM setups (Directory.Packages.props + imported props) report and
+                                    // edit the correct file on --apply / --comment-orphans.
+                                    var unattributed = 0;
+                                    foreach (var (id, entry) in refs.PackageVersions) {
+                                        var sourceFile = entry.SourceFile ?? refs.CpmFile;
+                                        if (string.IsNullOrEmpty(sourceFile)) {
+                                            unattributed++;
+                                            continue;
+                                        }
+                                        var dict = cpmFileEntries.GetOrAdd(sourceFile, _ => new ConcurrentDictionary<string, string?>(StringComparer.OrdinalIgnoreCase));
+                                        dict[id] = entry.Version;
+                                    }
+                                    if (unattributed > 0) {
+                                        _console.WriteWarning($"{projCfg.Path}: {unattributed} PackageVersion entries could not be attributed to a source file and will be skipped for orphan detection.");
+                                    }
+                                }
                             }
-                            if (unattributed > 0) {
-                                _console.WriteWarning($"{projCfg.Path}: {unattributed} PackageVersion entries could not be attributed to a source file and will be skipped for orphan detection.");
+
+                            if (refs?.PackageReferences is null || !refs.PackageReferences.Any()) {
+                                _console.WriteDebug($"No references in {projCfg.Path}");
+                                return;
+                            }
+
+                            var exnm = refs.PackageReferences.Select(re => {
+                                // Point each PackageReference at the actual file that declares its PackageVersion,
+                                // not just the project's primary CPM file. Falls back to CpmFile when no entry is
+                                // tracked (e.g., VersionOverride-only refs).
+                                string? propsPath = refs.CpmFile;
+                                if (refs.PackageVersions is not null && refs.PackageVersions.TryGetValue(re.Key, out var entry)) {
+                                    propsPath = entry.SourceFile ?? refs.CpmFile;
+                                }
+                                return new PackageInfo {
+                                    Id = re.Key,
+                                    FromProps = refs.UseCpm ?? false,
+                                    TargetFramework = refs.TargetFramework,
+                                    TargetFrameworks = refs.TargetFrameworks,
+                                    ProjectPath = refs.Proj.Path,
+                                    PropsPath = propsPath,
+                                    Item = re.Value
+                                };
+                            });
+
+                            var bad = exnm.Where(e => string.IsNullOrEmpty(e.Version)).ToList();
+                            if (bad.Any()) _console.WriteWarning($"Project {projCfg.Path} has package references with no resolvable version: {string.Join(", ", bad.Select(b => b.Id))}");
+
+                            foreach (var pkg in exnm) {
+                                var list = allPackageReferences.GetOrAdd(pkg.Id, _ => new PackageInfoContainer());
+                                list.Add(pkg);
                             }
                         }
-                    }
-
-                    if (refs?.PackageReferences is null || !refs.PackageReferences.Any()) {
-                        _console.WriteDebug($"No references in {projCfg.Path}");
-                        return;
-                    }
-
-                    var exnm = refs.PackageReferences.Select(re => {
-                        // Point each PackageReference at the actual file that declares its PackageVersion,
-                        // not just the project's primary CPM file. Falls back to CpmFile when no entry is
-                        // tracked (e.g., VersionOverride-only refs).
-                        string? propsPath = refs.CpmFile;
-                        if (refs.PackageVersions is not null && refs.PackageVersions.TryGetValue(re.Key, out var entry)) {
-                            propsPath = entry.SourceFile ?? refs.CpmFile;
+                        catch (Exception ex) {
+                            Interlocked.Increment(ref evaluationFailures);
+                            errorSink.AddError("Failed to analyze project.", exception: ex, config: projCfg);
+                            _console.WriteError($"Failed to analyze {projCfg.Path}: {ex.FormatMessage()}", ex);
                         }
-                        return new PackageInfo {
-                            Id = re.Key,
-                            FromProps = refs.UseCpm ?? false,
-                            TargetFramework = refs.TargetFramework,
-                            TargetFrameworks = refs.TargetFrameworks,
-                            ProjectPath = refs.Proj.Path,
-                            PropsPath = propsPath,
-                            Item = re.Value
-                        };
                     });
 
-                    var bad = exnm.Where(e => string.IsNullOrEmpty(e.Version)).ToList();
-                    if (bad.Any()) _console.WriteWarning($"Project {projCfg.Path} has package references with no resolvable version: {string.Join(", ", bad.Select(b => b.Id))}");
-
-                    foreach (var pkg in exnm) {
-                        var list = allPackageReferences.GetOrAdd(pkg.Id, _ => new PackageInfoContainer());
-                        list.Add(pkg);
-                    }
-                    }
-                    catch (Exception ex) {
-                        Interlocked.Increment(ref evaluationFailures);
-                        errorSink.AddError("Failed to analyze project.", exception: ex, config: projCfg);
-                        _console.WriteError($"Failed to analyze {projCfg.Path}: {ex.FormatMessage()}", ex);
-                    }
-                });
+                    frontier = discovered.ToList();
+                }
             });
+            _console.WriteInfo($"Evaluated {evaluated} project configuration(s) in {evaluationWatch.Elapsed}");
+            if (projParser.Cache is { } evaluationCache) {
+                _console.WriteLine($"Evaluation from cache: {evaluationCache.Hits} of {evaluationCache.Hits + evaluationCache.Misses} project configuration(s).");
+            }
         }
         catch (Exception ex) {
             Interlocked.Increment(ref evaluationFailures);
@@ -395,6 +659,9 @@ internal class OutdatedService {
         // NuGet metadata (with dependency manifest) cached per outdated package so the interactive
         // mode can detect transitive conflicts without re-querying NuGet.
         var packageMetadata = new ConcurrentDictionary<string, PackageVersionResult>(StringComparer.OrdinalIgnoreCase);
+        // Every target the feeds offer per package (highest patch / minor / major), so the picker can
+        // move a package between them without another lookup.
+        var candidatesPerPackage = new ConcurrentDictionary<string, PackageVersionCandidates>(StringComparer.OrdinalIgnoreCase);
 
         var options = new NugetMetadataOptions { MaxParallelRequests = parallelOptions.MaxDegreeOfParallelism /* configure */ };
         using var client = NugetMetadataService.CreateHttpClient(options);
@@ -424,14 +691,18 @@ internal class OutdatedService {
                 _console.WriteWarning($"No usable package source for {request.PackageId}.");
                 return (null, false);
             }
-            var results = new List<PackageVersionResult?>(feeds.Count);
-            foreach (var feed in feeds) {
-                results.Add(await NugetMetadataService.GetLatestVersionWithFrameworkCheckAsync(client, options, _console, request, feed, ct));
-            }
+            // Every feed at once: with a private feed next to nuget.org, asking them one after the
+            // other doubled the time per package.
+            var results = await Task.WhenAll(feeds.Select(feed =>
+                NugetMetadataService.GetLatestVersionWithFrameworkCheckAsync(client, options, _console, request, feed, ct).AsTask()));
             return (NugetMetadataService.PickNewest(results), false);
         }
 
-        await Parallel.ForEachAsync(allPackageReferences, parallelOptions, async (packageReference, ct) => {
+        // The lookups are I/O bound, and --concurrency is sized for MSBuild evaluation: on a laptop
+        // it defaults to 4, which fetched a few hundred packages in as many sequential rounds.
+        var metadataParallelism = new ParallelOptions { MaxDegreeOfParallelism = Math.Max(parallelOptions.MaxDegreeOfParallelism, 16) };
+        var metadataWatch = Stopwatch.StartNew();
+        await Parallel.ForEachAsync(allPackageReferences, metadataParallelism, async (packageReference, ct) => {
 
             if (packageReference.Value is null || !packageReference.Value.Any()) {
                 _console.WriteWarning($"No references found for package {packageReference.Key}");
@@ -456,11 +727,18 @@ internal class OutdatedService {
             // ship no lib/ folder at all.
             var downloadOnly = packageReference.Value.All(u => u.Item.Kind == PackageItemKind.PackageDownload);
 
+            // --max-bump-for can lower or raise the cap for this package specifically.
+            var packageBump = EffectiveBump(packageReference.Key, maxBump, bumpOverrides);
+
+            // Baseline instead of a version filter: the walk collects the highest compatible version
+            // per bump class in one pass, so the cap picks from that set rather than constraining the
+            // fetch. That is what lets the picker offer alternatives, and it guarantees every option
+            // has passed the target framework check.
             var request = new PackageVersionRequest {
                 PackageId = packageReference.Key,
                 AllowPrerelease = includePrerelease,
                 CompatibleTargetFrameworks = downloadOnly ? Array.Empty<string>() : SelectCompatibleTargetFrameworks(skipTfmCheck, packageReference.Value),
-                VersionFilter = maxBump == MaxBump.Major ? null : v => WithinBump(currentMin, v, maxBump)
+                Baseline = currentMin
             };
 
             var (result, skipped) = await QueryFeedsAsync(request, ct);
@@ -472,74 +750,52 @@ internal class OutdatedService {
                 _console.WriteWarning($"Failed to retrieve NuGet metadata for {request.PackageId}.");
                 return;
             }
-
-            if (result.NewestOutsideFilter is { } heldVersion) {
-                heldPerPackage[packageReference.Key] = (currentMin, heldVersion);
-            }
-
-            // The window excluded everything, so there is no version to compare against. Reported as
-            // held above; not a failure, and not something to run the target-version logic over.
-            if (result.NoVersionWithinFilter) {
-                _console.WriteDebug($"No version within the --max-bump window for {packageReference.Key}; newest outside it is {result.NewestOutsideFilter}.");
+            if (result.Candidates is not { } candidates || candidates.IsEmpty) {
+                _console.WriteInfo($"No compatible version found for {packageReference.Key} {packageReference.Value.Tfm}.");
                 return;
             }
 
-            try {
-                var targetVer = default(string?);
-                if (request.CompatibleTargetFrameworks is { } && request.CompatibleTargetFrameworks.Count > 1) {
-                    foreach (var item in request.CompatibleTargetFrameworksTyped) {
-                        var curVer = default(string?);
-                        var exists = result?.TargetFrameworkVersions?.TryGetValue(item, out curVer) ?? false;
+            candidatesPerPackage[packageReference.Key] = candidates;
 
-                        if (curVer is not null && targetVer is not null && 0 != string.Compare(curVer, targetVer, StringComparison.OrdinalIgnoreCase)) {
-                            _console.WriteWarning($"Package {packageReference.Key} has multiple target framework versions: {targetVer} vs {curVer} for {string.Join(',', request.CompatibleTargetFrameworks)}");
-                        }
+            var target = CandidateForBump(candidates, packageBump);
+            var highest = candidates.Highest;
 
-                        targetVer ??= curVer;
-                    }
-                }
-                else {
-                    if (result.TargetFrameworkVersions.Values.Distinct().Count() == 1) {
-                        targetVer = result.TargetFrameworkVersions.Values.First();
-                    }
-
-                    else {
-                        targetVer = result?.TargetFrameworkVersions?[packageReference.Value.Select(u => NuGetFramework.Parse(u.TargetFramework)).First()];
-                    }
-                }
-
-
-
-                if (targetVer is null) {
-                    _console.WriteInfo($"No compatible version found for {packageReference.Key} {packageReference.Value.Tfm} {result?.ToString()} {string.Join(',', result?.TargetFrameworkVersions?.Select(x => x.Key.GetShortFolderName()) ?? Array.Empty<string>())}");
-                    return;
-                }
-                if (!NuGetVersion.TryParse(targetVer, out var latestVer)) {
-                    _console.WriteInfo($"Failed to parse version for {packageReference.Key}: {targetVer}");
-                    return;
-                }
-                if (currentMin >= latestVer) {
-                    _console.WriteDebug($"Package {packageReference.Key} is up to date ({currentMin} >= {latestVer})");
-                    return;
-                }
-
-                outdatedPerPackage.AddOrUpdate(
-                    packageReference.Key,
-                    key => (currentMin, NuGetVersion.Parse(targetVer)),
-                    (key, existing) => {
-                        // Always keep the lowest currentMin and highest Latest
-                        var newLatest = NuGetVersion.Parse(targetVer);
-                        var minCurrent = existing.CurrentMin < currentMin ? existing.CurrentMin : currentMin;
-                        var maxLatest = existing.Latest > newLatest ? existing.Latest : newLatest;
-                        return (minCurrent, maxLatest);
-                    }
-                );
-                packageMetadata[packageReference.Key] = result!;
+            // Anything above the cap is reported as held, whether or not the cap itself yielded an
+            // update. Unlike before, this version has been target framework checked, so releasing it
+            // in the picker is safe.
+            if (highest is not null && NuGetVersion.TryParse(highest.Version, out var highestVer) && highestVer > currentMin
+                && (target is null || !string.Equals(target.Version, highest.Version, StringComparison.OrdinalIgnoreCase))) {
+                heldPerPackage[packageReference.Key] = (currentMin, highest.Version);
             }
-            catch (Exception xcptn) {
-                _console.WriteWarning($"Failed to parse version for {packageReference.Key}: {packageReference.Value.Tfm} {string.Join(',', result?.TargetFrameworkVersions?.Select(x => x.Key.GetShortFolderName()) ?? Array.Empty<string>())} {xcptn.FormatMessage()}");
+
+            if (target is null) {
+                _console.WriteDebug($"No version within the bump cap for {packageReference.Key}; newest compatible is {highest?.Version}.");
+                return;
             }
+            if (!NuGetVersion.TryParse(target.Version, out var latestVer)) {
+                _console.WriteInfo($"Failed to parse version for {packageReference.Key}: {target.Version}");
+                return;
+            }
+            if (currentMin >= latestVer) {
+                _console.WriteDebug($"Package {packageReference.Key} is up to date ({currentMin} >= {latestVer})");
+                return;
+            }
+
+            outdatedPerPackage.AddOrUpdate(
+                packageReference.Key,
+                key => (currentMin, latestVer),
+                (key, existing) => {
+                    // Always keep the lowest currentMin and highest Latest
+                    var minCurrent = existing.CurrentMin < currentMin ? existing.CurrentMin : currentMin;
+                    var maxLatest = existing.Latest > latestVer ? existing.Latest : latestVer;
+                    return (minCurrent, maxLatest);
+                }
+            );
+            // The dependency manifest differs per version, and the conflict check has to see the one
+            // belonging to the target actually proposed.
+            packageMetadata[packageReference.Key] = result with { Dependencies = target.Dependencies };
         });
+        _console.WriteInfo($"Fetched metadata for {allPackageReferences.Count} package(s) in {metadataWatch.Elapsed}");
 
         // Orphan CPM entries: PackageVersion items declared in a Directory.Packages.props but with
         // no matching PackageReference anywhere in scope. Detection is opt-in via --orphaned (list
@@ -623,6 +879,12 @@ internal class OutdatedService {
             }
         }
 
+        // With --max-bump-for in play there is no single cap left to name, so the messages describe
+        // it generically instead of quoting a level that only applies to some packages.
+        var capDescription = bumpOverrides.Count > 0
+            ? "the bump cap"
+            : $"--max-bump {maxBump.ToString().ToLowerInvariant()}";
+
         // Dependency consistency check for non-interactive runs. --interactive resolves the same
         // conflicts through its own prompts below, so running both would ask and warn twice.
         var conflictHeldBack = 0;
@@ -636,7 +898,7 @@ internal class OutdatedService {
                 // Still in the map at callback time: every outdated package starts accepted here, so
                 // not being accepted means an earlier conflict in this same pass dropped it.
                 if (outdatedPerPackage.ContainsKey(depId)) return "held back earlier in this run";
-                if (heldPerPackage.ContainsKey(depId)) return "capped by --max-bump";
+                if (heldPerPackage.ContainsKey(depId)) return $"capped by {capDescription}";
                 return "no newer version available";
             }
 
@@ -667,30 +929,59 @@ internal class OutdatedService {
             }
         }
 
-        if (interactive && outdatedPerPackage.Count > 0) {
+        if (interactive && (outdatedPerPackage.Count > 0 || !heldPerPackage.IsEmpty)) {
             _console.WriteRule("[bold yellow]Interactive update selection[/]");
 
-            var sortedIds = outdatedPerPackage.Keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase).ToArray();
-            var maxIdWidth = sortedIds.Max(id => id.Length);
-            var prompt = new MultiSelectionPrompt<string>()
-                .Title($"Select packages to update ({sortedIds.Length} outdated, all pre-selected):")
-                .PageSize(Math.Min(20, Math.Max(5, sortedIds.Length)))
-                .MoreChoicesText("[grey](move up/down to see more)[/]")
-                .InstructionsText("[grey](press [blue]<space>[/] to toggle, [green]<enter>[/] to confirm)[/]")
-                .UseConverter(id => {
-                    var v = outdatedPerPackage[id];
-                    return $"{id.PadRight(maxIdWidth)}  {v.CurrentMin} -> {v.Latest}";
-                });
-
-            foreach (var id in sortedIds) {
-                prompt.AddChoice(id);
-                prompt.Select(id);
+            // Packages the cap held back are rows too, with only the version above the cap to offer.
+            // They start unchecked; taking one is the same decision as the old "release individually"
+            // prompt, just reachable with the same keys as everything else.
+            var pickerInput = new Dictionary<string, (NuGetVersion CurrentMin, NuGetVersion Latest)>(outdatedPerPackage, StringComparer.OrdinalIgnoreCase);
+            var heldOnly = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var (id, entry) in heldPerPackage) {
+                if (pickerInput.ContainsKey(id)) continue;
+                if (!NuGetVersion.TryParse(entry.Held, out var heldVersion)) continue;
+                pickerInput[id] = (entry.CurrentMin, heldVersion);
+                heldOnly.Add(id);
             }
 
-            var initial = _console.MultiPrompt(prompt);
+            var model = BuildPickerModel(pickerInput, grouping, preselect, candidatesPerPackage, heldOnly);
+            var pickerGroups = model.Groups;
+            var preselectedCount = model.Groups.SelectMany(g => g.Rows).Count(r => r.Preselected);
+            var outcome = _console.RunPicker(model, PickerTitle(pickerInput.Count, heldOnly.Count, preselectedCount, capDescription));
+            if (outcome.Cancelled) {
+                _console.WriteLine("Nothing written.");
+                stopwatch.Stop();
+                errorSink.WriteTo();
+                return ExitCode(errorSink, evaluationFailures, metadataFailures);
+            }
+
+            // Whatever the picker settled on replaces what the cap proposed, including targets above
+            // it. The dependency manifest has to follow the chosen version, not the default one.
+            var accepted = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var chosenTargets = new Dictionary<string, NuGetVersion>(StringComparer.OrdinalIgnoreCase);
+            foreach (var (id, target) in outcome.Selected) {
+                accepted.Add(id);
+                chosenTargets[id] = target;
+                var current = pickerInput[id].CurrentMin;
+                outdatedPerPackage[id] = (current, target);
+                // A held version stays in the report unless the chosen target reaches it: taking the
+                // in-cap update does not make the newer major go away.
+                if (heldPerPackage.TryGetValue(id, out var held) && NuGetVersion.TryParse(held.Held, out var heldVersion) && target >= heldVersion) {
+                    heldPerPackage.TryRemove(id, out _);
+                }
+                if (candidatesPerPackage.TryGetValue(id, out var packageCandidates)
+                    && CandidateWithVersion(packageCandidates, target) is { } candidate) {
+                    packageMetadata[id] = new PackageVersionResult {
+                        PackageId = id,
+                        TargetFrameworkVersions = candidate.TargetFrameworkVersions,
+                        Dependencies = candidate.Dependencies,
+                        Candidates = packageCandidates
+                    };
+                }
+            }
 
             var picks = ResolveInteractivePicks(
-                initial,
+                accepted,
                 outdatedPerPackage,
                 packageMetadata,
                 (pickerId, pickerLatest, depId, depRange, depCurrent, depAlreadyIncluded) => {
@@ -715,6 +1006,20 @@ internal class OutdatedService {
                 }
             }
             _console.WriteInfo($"Interactive selection: {picks.Count} package(s) selected, {dropped} skipped.");
+
+            if (picks.Count > 0) {
+                // A target other than the one the cap would pick needs a per-package override to
+                // be reproducible, whether it lies above or below the cap.
+                var overrides = new Dictionary<string, BumpKind>(StringComparer.OrdinalIgnoreCase);
+                foreach (var id in picks) {
+                    if (!chosenTargets.TryGetValue(id, out var target)) continue;
+                    if (!pickerInput.TryGetValue(id, out var versions)) continue;
+                    candidatesPerPackage.TryGetValue(id, out var packageCandidates);
+                    if (RepeatOverride(versions.CurrentMin, target, packageCandidates, EffectiveBump(id, maxBump, bumpOverrides)) is { } bump) overrides[id] = bump;
+                }
+                _console.WriteLine("To repeat without prompts:");
+                _console.WriteLine("  " + BuildRepeatCommand(rootPath, pickerGroups, picks, bumpOverrides, overrides, maxBump, includePrerelease, sources));
+            }
         }
 
         if (outdatedPerPackage.Count == 0 && heldPerPackage.IsEmpty && orphansToComment.IsEmpty) {
@@ -763,19 +1068,39 @@ internal class OutdatedService {
             .Max();
 
         if (reportRows.Count > 0) {
+            // Only an explicit --group-by groups the report; without it the output stays byte-identical.
+            var reportGroups = grouping.GroupReport && grouping.GroupBy != GroupBy.None
+                ? BuildReportGroups(reportRows, grouping)
+                : null;
+            var rowsById = reportRows.ToDictionary(row => row.Id, StringComparer.OrdinalIgnoreCase);
+            var rendered = reportGroups is null
+                ? reportRows.Select(row => (Group: (string?)null, Row: row)).ToList()
+                : reportGroups.SelectMany(g => g.Ids.Select(id => (Group: (string?)g.Name, Row: rowsById[id]))).ToList();
+
             _console.WriteLine(outdatedPerPackage.Count > 0
                 ? $"\nFound {outdatedPerPackage.Count} packages with available updates:"
-                : $"\nNo updates available within --max-bump {maxBump.ToString().ToLowerInvariant()}, but newer versions exist:");
+                : $"\nNo updates available within {capDescription}, but newer versions exist:");
             if (_options.MarkdownOutput) {
-                var rows = reportRows
-                    .Select(row => (IReadOnlyList<string?>)new[] {
-                        row.Id,
-                        PlainVersion(row.CurrentMin),
-                        PlainVersion(row.Latest),
-                        row.Held ?? string.Empty
-                    });
+                var headers = reportGroups is null
+                    ? new[] { "PackageId", "Current", "Latest", "Held" }
+                    : new[] { "PackageId", "Current", "Latest", "Held", "Group" };
+                var rows = rendered
+                    .Select(entry => (IReadOnlyList<string?>)(reportGroups is null
+                        ? new[] {
+                            entry.Row.Id,
+                            PlainVersion(entry.Row.CurrentMin),
+                            PlainVersion(entry.Row.Latest),
+                            entry.Row.Held ?? string.Empty
+                        }
+                        : new[] {
+                            entry.Row.Id,
+                            PlainVersion(entry.Row.CurrentMin),
+                            PlainVersion(entry.Row.Latest),
+                            entry.Row.Held ?? string.Empty,
+                            entry.Group ?? string.Empty
+                        }));
 
-                MarkdownTableFormatter.Write(_console, "Outdated packages (markdown)", new[] { "PackageId", "Current", "Latest", "Held" }, rows);
+                MarkdownTableFormatter.Write(_console, "Outdated packages (markdown)", headers, rows);
             }
             else {
                 var table = new Table().Border(TableBorder.Rounded);
@@ -784,19 +1109,24 @@ internal class OutdatedService {
                 table.AddColumn(new TableColumn("latest").LeftAligned());
                 table.AddColumn(new TableColumn("held").LeftAligned());
 
-                foreach (var row in reportRows) {
+                string? renderedGroup = null;
+                foreach (var entry in rendered) {
+                    if (reportGroups is not null && entry.Group != renderedGroup) {
+                        renderedGroup = entry.Group;
+                        table.AddRow($"[grey]{Markup.Escape(renderedGroup ?? string.Empty)}[/]");
+                    }
                     table.AddRow(
-                        Markup.Escape(row.Id ?? ""),
-                        FormatVersion(row.CurrentMin, maxMajorLength),
-                        GetFormattedVersion(row.CurrentMin, row.Latest, maxMajorLength),
-                        row.Held is null ? "" : Markup.Escape(row.Held)
+                        Markup.Escape(entry.Row.Id ?? ""),
+                        FormatVersion(entry.Row.CurrentMin, maxMajorLength),
+                        GetFormattedVersion(entry.Row.CurrentMin, entry.Row.Latest, maxMajorLength),
+                        entry.Row.Held is null ? "" : Markup.Escape(entry.Row.Held)
                     );
                 }
                 _console.WriteTable(table);
             }
 
             if (!heldPerPackage.IsEmpty) {
-                _console.WriteLine($"{heldPerPackage.Count} package(s) have newer versions held back by --max-bump {maxBump.ToString().ToLowerInvariant()}.");
+                _console.WriteLine($"{heldPerPackage.Count} package(s) have newer versions held back by {capDescription}.");
             }
         }
 
@@ -1492,6 +1822,36 @@ internal enum VersionReason {
 
     PackageVersionCpm,
 }
+
+/// <summary>Which rows the interactive picker starts out with a check mark on.</summary>
+internal enum Preselect {
+    /// <summary>Everything, as before the option existed.</summary>
+    All,
+    /// <summary>Everything except major bumps.</summary>
+    NoMajor,
+    /// <summary>Patch bumps only.</summary>
+    Patch,
+    /// <summary>Nothing.</summary>
+    None,
+}
+
+/// <summary>One version a package can be moved to, and the size of that step.</summary>
+internal sealed record PickerTarget(NuGetVersion Version, BumpKind Bump);
+
+/// <summary>
+/// A package in the picker with every target the feeds offer for it, ordered ascending.
+/// <paramref name="DefaultTarget"/> is the one the bump cap picked; the user can move along the list
+/// without another lookup.
+/// </summary>
+internal sealed record PickerRow(string Id, NuGetVersion Current, IReadOnlyList<PickerTarget> Targets, int DefaultTarget, bool Preselected) {
+    internal PickerTarget Default => Targets[DefaultTarget];
+    internal NuGetVersion Target => Default.Version;
+    internal BumpKind Bump => Default.Bump;
+}
+
+internal sealed record PickerGroup(string Name, IReadOnlyList<PickerRow> Rows);
+
+internal sealed record PickerModel(IReadOnlyList<PickerGroup> Groups);
 
 /// <summary>
 /// How far a package may be moved by <c>--apply</c>, relative to the version it is pinned at now.

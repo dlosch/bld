@@ -37,6 +37,60 @@ internal sealed class OutdatedCommand : BaseCommand {
         DefaultValueFactory = _ => MaxBump.Major
     };
 
+    private readonly Option<string[]> _maxBumpForOption = new Option<string[]>("--max-bump-for") {
+        Description = "Override --max-bump for the packages matching a pattern: \"<pattern>=<major|minor|patch>\". Same wildcard syntax as --package, may be repeated, accepts ';'-separated lists. The most specific matching pattern wins.",
+        AllowMultipleArgumentsPerToken = true,
+        Validators = {
+            v => {
+                try {
+                    OutdatedService.ParseBumpOverrides(v.GetValueOrDefault<string[]?>());
+                }
+                catch (FormatException ex) {
+                    v.AddError(ex.Message);
+                }
+            }
+        }
+    };
+
+    private readonly Option<GroupBy> _groupByOption = new Option<GroupBy>("--group-by") {
+        Description = "How --interactive groups the packages it offers: 'prefix' (common package id prefix, the default), 'bump' (patch/minor/major) or 'none' (one flat list). When given explicitly, the report table is grouped the same way.",
+        DefaultValueFactory = _ => GroupBy.Prefix
+    };
+
+    private readonly Option<int> _groupDepthOption = new Option<int>("--group-depth") {
+        Description = "Maximum prefix length in dot-separated segments for --group-by prefix.",
+        DefaultValueFactory = _ => 2,
+        Validators = {
+            v => {
+                if (v.GetValueOrDefault<int>() < 1) v.AddError("Group depth must be at least 1.");
+            }
+        }
+    };
+
+    private readonly Option<int> _groupMinOption = new Option<int>("--group-min") {
+        Description = "Smallest number of packages a --group-by prefix group must have; smaller ones are dissolved into '(other)'.",
+        DefaultValueFactory = _ => 2,
+        Validators = {
+            v => {
+                if (v.GetValueOrDefault<int>() < 1) v.AddError("Group size must be at least 1.");
+            }
+        }
+    };
+
+    private readonly Option<Preselect> _preselectOption = new Option<Preselect>("--preselect") {
+        Description = "Which packages --interactive starts out with a check mark on: 'all' (the default), 'no-major', 'patch' or 'none'.",
+        DefaultValueFactory = _ => Preselect.All,
+        // The enum member is NoMajor; spelling the option value "no-major" is what reads naturally
+        // on a command line, so accept both.
+        CustomParser = result => {
+            var token = result.Tokens.SingleOrDefault()?.Value;
+            if (token is null) return Preselect.All;
+            if (Enum.TryParse<Preselect>(token.Replace("-", string.Empty), ignoreCase: true, out var value)) return value;
+            result.AddError($"--preselect: unknown value \"{token}\". Use all, no-major, patch or none.");
+            return Preselect.All;
+        }
+    };
+
     private readonly Option<string[]> _packageOption = new Option<string[]>("--package", "-p") {
         Description = "Only consider packages whose id matches one of these patterns. Supports '*' wildcards, is case-insensitive, may be repeated, and accepts ';'-separated lists. Default: all packages.",
         AllowMultipleArgumentsPerToken = true
@@ -68,7 +122,12 @@ internal sealed class OutdatedCommand : BaseCommand {
     };
 
     private readonly Option<bool> _interactiveOption = new Option<bool>("--interactive", "-i") {
-        Description = "Prompt yes/no for each outdated package before applying. If you skip a package that another picked package depends on at a higher version, the conflict is surfaced so you can include the dependency, skip the picker, or accept the risk. Implies --apply.",
+        Description = "Pick the packages to update from a grouped list before applying, and the target version per package (space toggles, left/right change the target, enter confirms, esc cancels). Dependency conflicts between what you picked and what stays are surfaced so you can include the other package, skip the picked one, or accept the risk. Implies --apply and needs an interactive terminal.",
+        DefaultValueFactory = _ => false
+    };
+
+    private readonly Option<bool> _evalCacheOption = new Option<bool>("--eval-cache") {
+        Description = "Skip the MSBuild evaluation of a project configuration when every file that fed its last evaluation is unchanged (kept under BLD_HOME or the local application data folder). Opt-in: MSBuild properties set through environment variables are not detected.",
         DefaultValueFactory = _ => false
     };
 
@@ -82,12 +141,18 @@ internal sealed class OutdatedCommand : BaseCommand {
         Add(_commentOrphansOption);
         Add(_interactiveOption);
         Add(_maxBumpOption);
+        Add(_maxBumpForOption);
+        Add(_groupByOption);
+        Add(_groupDepthOption);
+        Add(_groupMinOption);
+        Add(_preselectOption);
         Add(_packageOption);
         Add(_excludeOption);
         Add(_allowConflictsOption);
         Add(_verifyRestoreOption);
         Add(_sourceOption);
         Add(_ignoreSourceMappingOption);
+        Add(_evalCacheOption);
         Add(_logLevelOption);
         Add(_vsToolsPath);
         Add(_noResolveVsToolsPath);
@@ -125,14 +190,33 @@ internal sealed class OutdatedCommand : BaseCommand {
         if (interactive) applyUpdates = true;
 
         var maxBump = parseResult.GetValue(_maxBumpOption);
+        // Already validated during parsing, so this cannot throw here.
+        var bumpOverrides = OutdatedService.ParseBumpOverrides(parseResult.GetValue(_maxBumpForOption));
+
+        // The report is only grouped when --group-by was actually typed; the default keeps the
+        // existing output.
+        var groupByExplicit = parseResult.GetResult(_groupByOption)?.Implicit == false;
+        var grouping = new GroupingOptions(
+            parseResult.GetValue(_groupByOption),
+            parseResult.GetValue(_groupDepthOption),
+            parseResult.GetValue(_groupMinOption),
+            groupByExplicit);
+
+        var preselect = parseResult.GetValue(_preselectOption);
+        if (!interactive && parseResult.GetResult(_preselectOption)?.Implicit == false) {
+            Output.WriteWarning("--preselect only applies to --interactive; ignoring it.");
+            preselect = Preselect.All;
+        }
+
         var includePatterns = OutdatedService.SplitPatterns(parseResult.GetValue(_packageOption));
         var excludePatterns = OutdatedService.SplitPatterns(parseResult.GetValue(_excludeOption));
         var allowConflicts = parseResult.GetValue(_allowConflictsOption);
         var verifyRestore = parseResult.GetValue(_verifyRestoreOption);
         var sources = parseResult.GetValue(_sourceOption) ?? Array.Empty<string>();
         var ignoreSourceMapping = parseResult.GetValue(_ignoreSourceMappingOption);
+        var evalCache = parseResult.GetValue(_evalCacheOption);
 
         var service = new OutdatedService(Output, options);
-        return await service.CheckOutdatedPackagesAsync(rootValue, applyUpdates, skipTfmCheck, includePrerelease, listOrphans, commentOrphans, interactive, maxBump, includePatterns, excludePatterns, allowConflicts, verifyRestore, sources, ignoreSourceMapping, cancellationToken);
+        return await service.CheckOutdatedPackagesAsync(rootValue, applyUpdates, skipTfmCheck, includePrerelease, listOrphans, commentOrphans, interactive, maxBump, bumpOverrides, includePatterns, excludePatterns, allowConflicts, verifyRestore, sources, ignoreSourceMapping, grouping, preselect, evalCache, cancellationToken);
     }
 }

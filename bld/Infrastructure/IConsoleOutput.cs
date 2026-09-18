@@ -1,3 +1,4 @@
+using bld.Services;
 using Spectre.Console;
 
 namespace bld.Infrastructure;
@@ -27,9 +28,22 @@ internal interface IConsoleOutput {
     void WriteTable(Table table);
     void WriteRule(string title);
 
+    /// <summary>
+    /// Whether <see cref="Prompt{T}"/> and <see cref="MultiPrompt{T}"/> can actually read input.
+    /// False for redirected stdin and non-interactive terminals, where both throw.
+    /// </summary>
+    bool CanPrompt { get; }
+
     bool Confirm(string message, bool defaultValue = false);
     T Prompt<T>(SelectionPrompt<T> prompt) where T : notnull;
     List<T> MultiPrompt<T>(MultiSelectionPrompt<T> prompt) where T : notnull;
+
+    /// <summary>
+    /// Drives the package picker until the user confirms or cancels. The caller supplies the model;
+    /// the implementation owns only the key loop and the drawing, so the decisions stay in
+    /// <see cref="PickerState"/>.
+    /// </summary>
+    PickerOutcome RunPicker(PickerModel model, string title);
 
     void StartProgress(string description, Action<ProgressContext> action);
     Task StartProgressAsync(string description, Func<ProgressContext, Task> action);

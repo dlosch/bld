@@ -105,6 +105,191 @@ public class OutdatedServiceTests {
         Assert.Empty(OutdatedService.SplitPatterns(null));
     }
 
+    [Theory]
+    [InlineData(new[] { "Serilog.*=patch" }, 1)]
+    [InlineData(new[] { "Serilog.*=patch;xunit*=major" }, 2)]
+    [InlineData(new string[0], 0)]
+    public void ParseBumpOverrides_AcceptsRepeatedAndSemicolonSeparatedValues(string[] raw, int expected) {
+        Assert.Equal(expected, OutdatedService.ParseBumpOverrides(raw).Count);
+    }
+
+    [Theory]
+    [InlineData("Serilog.*")]
+    [InlineData("=minor")]
+    [InlineData("Serilog.*=")]
+    [InlineData("Serilog.*=tiny")]
+    public void ParseBumpOverrides_RejectsMalformedValues(string raw) {
+        Assert.Throws<FormatException>(() => OutdatedService.ParseBumpOverrides(new[] { raw }));
+    }
+
+    [Fact]
+    public void EffectiveBump_FallsBackToTheGlobalCapWithoutAMatch() {
+        var overrides = OutdatedService.ParseBumpOverrides(new[] { "Serilog.*=patch" });
+
+        Assert.Equal(MaxBump.Minor, OutdatedService.EffectiveBump("Polly", MaxBump.Minor, overrides));
+    }
+
+    [Fact]
+    public void EffectiveBump_MostSpecificPatternWins() {
+        var overrides = OutdatedService.ParseBumpOverrides(new[] { "Microsoft.*=patch", "Microsoft.Extensions.*=minor" });
+
+        Assert.Equal(MaxBump.Minor, OutdatedService.EffectiveBump("Microsoft.Extensions.Hosting", MaxBump.Major, overrides));
+        Assert.Equal(MaxBump.Patch, OutdatedService.EffectiveBump("Microsoft.Data.SqlClient", MaxBump.Major, overrides));
+    }
+
+    [Fact]
+    public void EffectiveBump_EquallySpecificPatterns_LastOneWins() {
+        var overrides = OutdatedService.ParseBumpOverrides(new[] { "Serilog.*=patch", "Serilog.*=major" });
+
+        Assert.Equal(MaxBump.Major, OutdatedService.EffectiveBump("Serilog.Sinks.File", MaxBump.Minor, overrides));
+    }
+
+    private static Dictionary<string, (NuGetVersion CurrentMin, NuGetVersion Latest)> Outdated(params (string Id, string Current, string Latest)[] rows) =>
+        rows.ToDictionary(
+            r => r.Id,
+            r => (NuGetVersion.Parse(r.Current), NuGetVersion.Parse(r.Latest)),
+            StringComparer.OrdinalIgnoreCase);
+
+    [Theory]
+    [InlineData("All", "Serilog,Serilog.Sinks.File,Polly")]
+    [InlineData("NoMajor", "Serilog,Serilog.Sinks.File")]
+    [InlineData("Patch", "Serilog.Sinks.File")]
+    [InlineData("None", "")]
+    public void BuildPickerModel_PreselectionFollowsTheBumpClass(string preselect, string expected) {
+        var outdated = Outdated(
+            ("Serilog", "4.0.1", "4.1.0"),            // minor
+            ("Serilog.Sinks.File", "5.0.0", "5.0.1"), // patch
+            ("Polly", "8.4.1", "9.0.0"));             // major
+
+        var model = OutdatedService.BuildPickerModel(outdated, GroupingOptions.Default, Enum.Parse<Preselect>(preselect));
+
+        var selected = model.Groups
+            .SelectMany(g => g.Rows)
+            .Where(r => r.Preselected)
+            .Select(r => r.Id)
+            .OrderBy(id => id, StringComparer.OrdinalIgnoreCase);
+        var expectedIds = expected.Split(',', StringSplitOptions.RemoveEmptyEntries)
+            .OrderBy(id => id, StringComparer.OrdinalIgnoreCase);
+        Assert.Equal(expectedIds, selected);
+    }
+
+    [Fact]
+    public void BuildPickerModel_GroupByNoneProducesOneNamelessGroup() {
+        var outdated = Outdated(("Zeta", "1.0.0", "1.0.1"), ("Alpha", "1.0.0", "2.0.0"));
+
+        var model = OutdatedService.BuildPickerModel(
+            outdated,
+            GroupingOptions.Default with { GroupBy = GroupBy.None },
+            Preselect.All);
+
+        var group = Assert.Single(model.Groups);
+        Assert.Equal(string.Empty, group.Name);
+        Assert.Equal(new[] { "Alpha", "Zeta" }, group.Rows.Select(r => r.Id));
+    }
+
+    private static PackageVersionCandidates PollyCandidates() {
+        static VersionCandidate V(string version) => new() { Version = version, TargetFrameworkVersions = [] };
+        return new PackageVersionCandidates { Patch = V("8.4.2"), Minor = V("8.5.0"), Major = V("9.0.0") };
+    }
+
+    [Theory]
+    [InlineData("9.0.0", "Major", null)]      // what the cap picks anyway
+    [InlineData("8.4.2", "Major", "Patch")]   // lowered below the cap
+    [InlineData("8.5.0", "Major", "Minor")]
+    [InlineData("8.5.0", "Minor", null)]
+    [InlineData("9.0.0", "Minor", "Major")]   // raised above the cap
+    [InlineData("8.4.2", "Patch", null)]
+    public void RepeatOverride_NamesEveryTargetTheCapWouldNotPickItself(string chosen, string cap, string? expected) {
+        var result = OutdatedService.RepeatOverride(NuGetVersion.Parse("8.4.1"), NuGetVersion.Parse(chosen), PollyCandidates(), Enum.Parse<MaxBump>(cap));
+
+        Assert.Equal(expected is null ? null : Enum.Parse<BumpKind>(expected), result);
+    }
+
+    [Fact]
+    public void BuildRepeatCommand_CollapsesFullyChosenPrefixGroups() {
+        var outdated = Outdated(
+            ("Serilog", "4.0.1", "4.1.0"),
+            ("Serilog.Sinks.File", "5.0.0", "5.0.1"),
+            ("Microsoft.Extensions.Hosting", "9.0.8", "9.0.9"),
+            ("Microsoft.Extensions.Logging", "9.0.8", "9.0.9"),
+            ("Polly", "8.4.1", "8.5.0"));
+        var model = OutdatedService.BuildPickerModel(outdated, GroupingOptions.Default, Preselect.All);
+
+        var command = OutdatedService.BuildRepeatCommand(
+            "MyRepo.slnx",
+            model.Groups,
+            new HashSet<string>(new[] { "Microsoft.Extensions.Hosting", "Microsoft.Extensions.Logging", "Serilog", "Polly" }, StringComparer.OrdinalIgnoreCase),
+            Array.Empty<(string, MaxBump)>(),
+            new Dictionary<string, BumpKind>(),
+            MaxBump.Minor,
+            prerelease: false,
+            sources: Array.Empty<string>());
+
+        Assert.Equal(
+            "bld outdated MyRepo.slnx --apply -p \"Microsoft.Extensions.*\" -p Serilog -p Polly --max-bump minor",
+            command);
+    }
+
+    [Fact]
+    public void BuildRepeatCommand_NamesTargetsAboveTheCapExplicitly() {
+        var outdated = Outdated(("Polly", "8.4.1", "8.5.0"));
+        var model = OutdatedService.BuildPickerModel(outdated, GroupingOptions.Default, Preselect.All);
+
+        var command = OutdatedService.BuildRepeatCommand(
+            "MyRepo.slnx",
+            model.Groups,
+            new HashSet<string>(new[] { "Polly", "xunit" }, StringComparer.OrdinalIgnoreCase),
+            Array.Empty<(string, MaxBump)>(),
+            new Dictionary<string, BumpKind>(StringComparer.OrdinalIgnoreCase) { ["xunit"] = BumpKind.Major },
+            MaxBump.Minor,
+            prerelease: true,
+            sources: new[] { "internal" });
+
+        Assert.Equal(
+            "bld outdated MyRepo.slnx --apply --prerelease --source internal -p Polly -p xunit --max-bump minor --max-bump-for xunit=major",
+            command);
+    }
+
+    [Fact]
+    public void BuildRepeatCommand_CarriesTheRunsPatternOverridesBeforeThePerPackageOnes() {
+        // The run capped Serilog.* at patch; the user then raised Serilog.Sinks.File by hand. Both
+        // have to be in the repeated command, the per-package one last so it wins the tie.
+        var outdated = Outdated(("Serilog", "4.0.1", "4.0.2"), ("Serilog.Sinks.File", "5.0.0", "6.0.0"));
+        var model = OutdatedService.BuildPickerModel(outdated, GroupingOptions.Default, Preselect.All);
+
+        var command = OutdatedService.BuildRepeatCommand(
+            "MyRepo.slnx",
+            model.Groups,
+            new HashSet<string>(new[] { "Serilog", "Serilog.Sinks.File" }, StringComparer.OrdinalIgnoreCase),
+            OutdatedService.ParseBumpOverrides(new[] { "Serilog.*=patch" }),
+            new Dictionary<string, BumpKind>(StringComparer.OrdinalIgnoreCase) { ["Serilog.Sinks.File"] = BumpKind.Major },
+            MaxBump.Major,
+            prerelease: false,
+            sources: Array.Empty<string>());
+
+        Assert.Equal(
+            "bld outdated MyRepo.slnx --apply -p \"Serilog.*\" --max-bump-for \"Serilog.*=patch\" --max-bump-for Serilog.Sinks.File=major",
+            command);
+    }
+
+    [Fact]
+    public async Task CheckOutdatedPackagesAsync_InteractiveWithoutATerminalFailsBeforeDoingAnything() {
+        var console = new TestConsole { CanPrompt = false };
+        var service = new OutdatedService(console, new CleaningOptions());
+
+        var exitCode = await service.CheckOutdatedPackagesAsync(
+            Path.GetTempPath(), updatePackages: true, skipTfmCheck: false, includePrerelease: false,
+            listOrphans: false, commentOrphans: false, interactive: true, MaxBump.Major,
+            Array.Empty<(string, MaxBump)>(), Array.Empty<string>(), Array.Empty<string>(),
+            allowConflicts: false, verifyRestore: false, Array.Empty<string>(), ignoreSourceMapping: false,
+            GroupingOptions.Default, Preselect.All, evalCache: false, CancellationToken.None);
+
+        Assert.Equal(1, exitCode);
+        var message = Assert.Single(console.Messages);
+        Assert.Equal("Error", message.Level);
+        Assert.Contains("--interactive needs an interactive terminal", message.Message);
+    }
+
     private static PackageVersionResult MetaWithDep(string depId, string depRange) => new() {
         PackageId = "Picker",
         TargetFrameworkVersions = new Dictionary<NuGetFramework, string>(),
