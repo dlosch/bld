@@ -82,7 +82,7 @@ internal sealed class PolicyService {
 
     public void Save() {
         Directory.CreateDirectory(Path.GetDirectoryName(FilePath)!);
-        var temp = FilePath + ".tmp";
+        var temp = FilePath + ".bldtmp";
         File.WriteAllText(temp, JsonSerializer.Serialize(new PolicyFile(Rules), PolicyJsonContext.Default.PolicyFile));
         File.Move(temp, FilePath, overwrite: true);
     }
