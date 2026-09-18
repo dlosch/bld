@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented in this file.
 
-## [Unreleased]
+## [0.4.1] - 2026-09-18
 
 ### Changes
 - [BUG] `outdated --interactive` and `outdated undo -i`: the picker showed at most 30 rows, leaving the rest of a tall terminal empty. It now uses the whole height, less the header lines as they wrap at the terminal width.
