@@ -22,8 +22,13 @@ internal sealed class TfmCommand : BaseCommand {
     };
 
     private readonly Option<bool> _updatePackagesOption = new Option<bool>("--update-packages") {
-        Description = "With --apply, also bump PackageReferences to their latest stable version. Note: this is a latest-version bump, not a framework-compatibility check.",
+        Description = "With --apply, run `outdated --apply` on the same input after the migration, so packages are updated to versions that support the new target framework, within --max-bump and the saved package policies.",
         DefaultValueFactory = _ => false
+    };
+
+    private readonly Option<MaxBump> _maxBumpOption = new Option<MaxBump>("--max-bump") {
+        Description = "With --update-packages: largest version step to propose, as in `outdated --max-bump`.",
+        DefaultValueFactory = _ => MaxBump.Major
     };
 
     private readonly Option<bool> _updateGlobalJsonOption = new Option<bool>("--update-global-json") {
@@ -38,6 +43,7 @@ internal sealed class TfmCommand : BaseCommand {
         Add(_toOption);
         Add(_applyOption);
         Add(_updatePackagesOption);
+        Add(_maxBumpOption);
         Add(_updateGlobalJsonOption);
         Add(_logLevelOption);
         Add(_vsToolsPath);
@@ -71,7 +77,19 @@ internal sealed class TfmCommand : BaseCommand {
         var to = parseResult.GetValue(_toOption);
         var apply = parseResult.GetValue(_applyOption);
         var updatePackages = parseResult.GetValue(_updatePackagesOption);
+        var maxBump = parseResult.GetValue(_maxBumpOption);
         var updateGlobalJson = parseResult.GetValue(_updateGlobalJsonOption);
+
+        PolicyService? policies = null;
+        if (updatePackages) {
+            try {
+                policies = PolicyService.Load(PolicyService.DefaultPath);
+            }
+            catch (InvalidDataException ex) {
+                Output.WriteError(ex.Message);
+                return 1;
+            }
+        }
 
         // Auto-detect highest SDK version if --to is not specified
         if (string.IsNullOrEmpty(to)) {
@@ -106,8 +124,8 @@ internal sealed class TfmCommand : BaseCommand {
         var globalJson = CheckGlobalJson(rootPath, to);
 
         try {
-            using var tfmService = new TfmService(Output, options);
-            var exitCode = await tfmService.MigrateTargetFrameworkAsync(rootPath, fromTfms, to, apply, updatePackages, cancellationToken);
+            var tfmService = new TfmService(Output, options);
+            var exitCode = await tfmService.MigrateTargetFrameworkAsync(rootPath, fromTfms, to, apply, updatePackages, maxBump, policies, cancellationToken);
 
             if (updateGlobalJson && globalJson is { } pin && pin.Verdict != GlobalJsonVerdict.Ok) {
                 if (!apply) {

@@ -1,10 +1,6 @@
 using bld.Infrastructure;
 using bld.Models;
-using NuGet.Common;
-using NuGet.Configuration;
 using NuGet.Frameworks;
-using NuGet.Protocol;
-using NuGet.Protocol.Core.Types;
 using NuGet.Versioning;
 using Spectre.Console;
 using System.Collections.Concurrent;
@@ -16,32 +12,31 @@ using System.Xml.Linq;
 
 namespace bld.Services;
 
-internal class TfmService : IDisposable {
+internal class TfmService {
     private readonly IConsoleOutput _console;
     private readonly CleaningOptions _options;
-    private readonly SourceCacheContext _cache;
-    private readonly ILogger _logger;
-    private bool _disposed;
 
     public TfmService(IConsoleOutput console, CleaningOptions options) {
         _console = console;
         _options = options;
-        _cache = new SourceCacheContext();
-        _logger = new NuGetLogger(_console);
     }
 
-    public void Dispose() {
-        if (!_disposed) {
-            _cache.Dispose();
-            _disposed = true;
-        }
-    }
-
+    /// <param name="maxBump">Cap for <paramref name="updatePackages"/>, as in <c>outdated --max-bump</c>.</param>
+    /// <param name="policies">Package policies for <paramref name="updatePackages"/>; null applies none.</param>
     [MethodImpl(MethodImplOptions.NoInlining)]
-    public async Task<int> MigrateTargetFrameworkAsync(string rootPath, List<string> fromTfms, string toTfm, bool applyChanges, bool updatePackages, CancellationToken cancellationToken) {
+    public async Task<int> MigrateTargetFrameworkAsync(string rootPath, List<string> fromTfms, string toTfm, bool applyChanges, bool updatePackages, MaxBump maxBump, PolicyService? policies, CancellationToken cancellationToken) {
         // Initialize MSBuild before any Microsoft.Build.* types are loaded
         MSBuildInitializer.Initialize(_console, _options);
 
+        // One sink for the whole run: solution and project load failures used to be collected and
+        // then dropped, so a project that failed to parse simply went missing from the migration.
+        var errorSink = new ErrorSink(_console);
+        var exitCode = await MigrateCoreAsync(rootPath, fromTfms, toTfm, applyChanges, updatePackages, maxBump, policies, errorSink, cancellationToken);
+        errorSink.WriteTo();
+        return errorSink.HasErrors ? 1 : exitCode;
+    }
+
+    private async Task<int> MigrateCoreAsync(string rootPath, List<string> fromTfms, string toTfm, bool applyChanges, bool updatePackages, MaxBump maxBump, PolicyService? policies, ErrorSink errorSink, CancellationToken cancellationToken) {
         var fromTfmsDisplay = string.Join(", ", fromTfms);
         _console.WriteInfo($"Migrating projects from {fromTfmsDisplay} to {toTfm}...");
 
@@ -57,7 +52,7 @@ internal class TfmService : IDisposable {
         // Check if the root path is a direct project file
         if (File.Exists(rootPath) && SlnScanner.IsProjectFile(rootPath)) {
             _console.WriteVerbose($"Processing direct project file: {rootPath}");
-            var migrationInfo = await AnalyzeProjectForMigrationAsync(rootPath, fromTfms, toTfm, eolTfms, cancellationToken);
+            var migrationInfo = await AnalyzeProjectForMigrationAsync(rootPath, fromTfms, toTfm, eolTfms, errorSink, cancellationToken);
 
             if (migrationInfo != null) {
                 projectsToMigrate.Add(migrationInfo);
@@ -65,7 +60,6 @@ internal class TfmService : IDisposable {
         }
         else {
             // Use the existing solution-based logic
-            var errorSink = new ErrorSink(_console);
             var slnScanner = new SlnScanner(_options, errorSink);
             var slnParser = new SlnParser(_console, errorSink);
             var fileSystem = new FileSystem(_console, errorSink);
@@ -97,7 +91,7 @@ internal class TfmService : IDisposable {
                     var current = Interlocked.Increment(ref count);
                     ctx.Status($"Analyzing projects: {current}/{total} ([bold]{Markup.Escape(Path.GetFileName(projCfg.Path))}[/])");
 
-                    var migrationInfo = await AnalyzeProjectForMigrationAsync(projCfg.Path, fromTfms, toTfm, eolTfms, cancellationToken);
+                    var migrationInfo = await AnalyzeProjectForMigrationAsync(projCfg.Path, fromTfms, toTfm, eolTfms, errorSink, cancellationToken);
 
                     if (migrationInfo != null) {
                         projectsToMigrate.Add(migrationInfo);
@@ -141,49 +135,28 @@ internal class TfmService : IDisposable {
                 }
             }
 
-            // Step 2 (opt-in): bump packages to their latest stable version. This is NOT a
-            // framework-compatibility check — it just finds newer stable releases — so it is
-            // gated behind --update-packages to avoid surprise version bumps during migration.
-            if (updatePackages) {
-                _console.WriteInfo("\nChecking for newer stable package versions...");
-                var updateCandidates = new List<PackageCompatibilityIssue>();
-
-                foreach (var project in distinctProjects) {
-                    var issues = await FindNewerStablePackageVersionsAsync(project, toTfm, cancellationToken);
-                    updateCandidates.AddRange(issues);
-                }
-
-                if (updateCandidates.Count > 0) {
-                    _console.WriteWarning($"Found {updateCandidates.Count} package(s) with a newer stable version:");
-                    foreach (var issue in updateCandidates) {
-                        _console.WriteWarning($"  {issue.PackageId} {issue.CurrentVersion} in {Path.GetFileName(issue.ProjectPath)}");
-                        if (!string.IsNullOrEmpty(issue.RecommendedVersion)) {
-                            _console.WriteLine($"    → Latest stable: {issue.RecommendedVersion}");
-                        }
-                    }
-
-                    var updatedPackages = 0;
-                    foreach (var issue in updateCandidates.Where(i => !string.IsNullOrEmpty(i.RecommendedVersion))) {
-                        if (await UpdatePackageVersionInProjectAsync(issue.ProjectPath, issue.PackageId, issue.RecommendedVersion!, cancellationToken)) {
-                            _console.WriteLine($"Updated {issue.PackageId} to {issue.RecommendedVersion} in {Path.GetFileName(issue.ProjectPath)}");
-                            updatedPackages++;
-                        }
-                    }
-
-                    if (updatedPackages > 0) {
-                        _console.WriteLine($"Updated {updatedPackages} package(s) to latest stable");
-                    }
-                }
-                else {
-                    _console.WriteLine("All packages are already at their latest stable version.");
-                }
-            }
-
             if (notMigrated > 0) {
                 _console.WriteWarning($"Migration finished: {migrated} project(s) updated to {toTfm}, {notMigrated} left unchanged.");
                 return 1;
             }
             _console.WriteLine($"Migration complete! Migrated {migrated} projects to {toTfm}");
+
+            // Step 2 (opt-in): update packages through `outdated --apply` over the same input. It
+            // runs after the frameworks are written, so the evaluation it checks compatibility
+            // against already shows the new target. That gives the migration the full outdated
+            // behaviour - framework check, bump cap, policies, dependency check, central package
+            // management - instead of the latest-stable bump it used to do on its own.
+            if (updatePackages) {
+                _console.WriteRule("[bold yellow]Package updates for the migrated frameworks[/]");
+                var outdated = new OutdatedService(_console, _options);
+                var packageExit = await outdated.CheckOutdatedPackagesAsync(
+                    rootPath, updatePackages: true, skipTfmCheck: false, includePrerelease: false,
+                    listOrphans: false, commentOrphans: false, interactive: false, maxBump,
+                    Array.Empty<(string, MaxBump)>(), Array.Empty<string>(), Array.Empty<string>(),
+                    allowConflicts: false, verifyRestore: false, Array.Empty<string>(), ignoreSourceMapping: false,
+                    GroupingOptions.Default, Preselect.All, evalCache: false, policies, ignorePolicy: false, cancellationToken);
+                if (packageExit != 0) return packageExit;
+            }
         }
         else {
             var actualMigrated = distinctProjects.Where(project => {
@@ -272,15 +245,19 @@ internal class TfmService : IDisposable {
                 _console.WriteTable(table);
             }
             _console.WriteLine("\nUse --apply to perform the migration.");
+            if (updatePackages) {
+                // Checking packages now would test them against the frameworks the projects still
+                // have; the real check runs against the new target after the migration is written.
+                _console.WriteLine($"With --apply, --update-packages then runs `outdated --apply` against {toTfm} on the same input.");
+            }
         }
 
         return 0;
     }
 
-    private async Task<ProjectMigrationInfo?> AnalyzeProjectForMigrationAsync(string projectPath, List<string> fromTfms, string toTfm, ISet<string> eolTfms, CancellationToken cancellationToken) {
+    private async Task<ProjectMigrationInfo?> AnalyzeProjectForMigrationAsync(string projectPath, List<string> fromTfms, string toTfm, ISet<string> eolTfms, ErrorSink errorSink, CancellationToken cancellationToken) {
         try {
             // Use ProjParser to load project properties (this handles variable evaluation)
-            var errorSink = new ErrorSink(_console);
             var projParser = new ProjParser(_console, errorSink, _options);
             var proj = new Proj(projectPath, null);
             var projCfg = new ProjCfg(proj, null, null); // No specific configuration
@@ -326,13 +303,10 @@ internal class TfmService : IDisposable {
                     return null;
                 }
 
-                // Extract package references using XML parsing (as allowed by the comment)
-                var packageReferences = await ExtractPackageReferencesAsync(projectPath);
 
                 return new ProjectMigrationInfo {
                     ProjectPath = projectPath,
                     CurrentTfm = tfmValue,
-                    PackageReferences = packageReferences,
                     UsesTargetFrameworks = false,
                     TargetFrameworksToUpdate = new List<string>()
                 };
@@ -384,14 +358,11 @@ internal class TfmService : IDisposable {
                     return null;
                 }
 
-                // Extract package references using XML parsing (as allowed by the comment)
-                var packageReferences = await ExtractPackageReferencesAsync(projectPath);
                 var tfmsValue = string.Join(";", tfms);
 
                 return new ProjectMigrationInfo {
                     ProjectPath = projectPath,
                     CurrentTfm = tfmsValue,
-                    PackageReferences = packageReferences,
                     UsesTargetFrameworks = true,
                     TargetFrameworksToUpdate = tfmsToUpdate
                 };
@@ -435,14 +406,11 @@ internal class TfmService : IDisposable {
                     return null;
                 }
 
-                // Extract package references using XML parsing (as allowed by the comment)
-                var packageReferences = await ExtractPackageReferencesAsync(projectPath);
                 var tfmsValue = string.Join(";", tfms);
 
                 return new ProjectMigrationInfo {
                     ProjectPath = projectPath,
                     CurrentTfm = tfmsValue,
-                    PackageReferences = packageReferences,
                     UsesTargetFrameworks = true,
                     TargetFrameworksToUpdate = tfmsToUpdate
                 };
@@ -530,146 +498,6 @@ internal class TfmService : IDisposable {
             _console.WriteError($"Failed to update {project.ProjectPath}: {ex.FormatMessage()}", ex);
             return false;
         }
-    }
-
-    // Finds packages that have a newer *stable* version than the one currently referenced.
-    // NOTE: this does not verify the newer version actually supports targetTfm — full
-    // framework-compatibility analysis would require resolving each package's dependency
-    // groups. It is a "latest stable" suggestion, surfaced only under --update-packages.
-    /// <summary>
-    /// The enabled sources from the nuget.config hierarchy as seen from the project, with package source
-    /// mapping when configured. Only api.nuget.org was queried before, so packages on a private feed were
-    /// never offered an update.
-    /// </summary>
-    private static (IReadOnlyList<SourceRepository> Repositories, PackageSourceMapping? Mapping) LoadSourceRepositories(string projectPath) {
-        var settings = Settings.LoadDefaultSettings(Path.GetDirectoryName(projectPath));
-        var provider = new SourceRepositoryProvider(new PackageSourceProvider(settings), Repository.Provider.GetCoreV3());
-        var repositories = provider.GetRepositories().Where(r => r.PackageSource.IsEnabled).ToList();
-        if (repositories.Count == 0) {
-            repositories.Add(Repository.Factory.GetCoreV3(NuGetConstants.V3FeedUrl));
-        }
-        var mapping = PackageSourceMapping.GetPackageSourceMapping(settings);
-        return (repositories, mapping.IsEnabled ? mapping : null);
-    }
-
-    private async Task<List<PackageCompatibilityIssue>> FindNewerStablePackageVersionsAsync(ProjectMigrationInfo project, string targetTfm, CancellationToken cancellationToken) {
-        var issues = new List<PackageCompatibilityIssue>();
-        var (repositories, mapping) = LoadSourceRepositories(project.ProjectPath);
-        _console.WriteDebug($"Package sources for {Path.GetFileName(project.ProjectPath)}: {string.Join(", ", repositories.Select(r => r.PackageSource.Name))}");
-
-        foreach (var package in project.PackageReferences) {
-            try {
-                var candidates = repositories;
-                if (mapping is not null) {
-                    var names = mapping.GetConfiguredPackageSources(package.Id);
-                    candidates = repositories.Where(r => names.Contains(r.PackageSource.Name, StringComparer.OrdinalIgnoreCase)).ToList();
-                }
-
-                var metadata = new List<IPackageSearchMetadata>();
-                foreach (var repository in candidates) {
-                    var packageMetadataResource = await repository.GetResourceAsync<PackageMetadataResource>(cancellationToken);
-                    if (packageMetadataResource is null) continue;
-                    metadata.AddRange(await packageMetadataResource.GetMetadataAsync(package.Id, true, true, _cache, _logger, cancellationToken));
-                }
-
-                if (!NuGetVersion.TryParse(package.Version, out var currentVersion)) {
-                    continue;
-                }
-
-                var currentMetadata = metadata.FirstOrDefault(m => m.Identity.Version == currentVersion);
-                if (currentMetadata != null) {
-                    var latestStable = metadata.Where(m => !m.Identity.Version.IsPrerelease)
-                                                  .OrderByDescending(m => m.Identity.Version)
-                                                  .FirstOrDefault();
-
-                    if (latestStable != null && latestStable.Identity.Version > currentVersion) {
-                        issues.Add(new PackageCompatibilityIssue {
-                            ProjectPath = project.ProjectPath,
-                            PackageId = package.Id,
-                            CurrentVersion = package.Version,
-                            RecommendedVersion = latestStable.Identity.Version.ToString(),
-                            TargetFramework = targetTfm
-                        });
-                    }
-                }
-            }
-            catch (Exception ex) {
-                _console.WriteWarning($"Failed to query versions for {package.Id}: {ex.FormatMessage()}");
-            }
-        }
-
-        return issues;
-    }
-
-    private async Task<bool> UpdatePackageVersionInProjectAsync(string projectPath, string packageId, string newVersion, CancellationToken cancellationToken) {
-        try {
-            return await XmlProjectFile.EditAsync(projectPath, doc => {
-                var changed = false;
-                var packageRefElements = doc.ElementsNamed("PackageReference")
-                    .Where(e => string.Equals(e.Attribute("Include")?.Value, packageId, StringComparison.OrdinalIgnoreCase))
-                    .ToList();
-
-                // A condition-scoped reference belongs to a framework this migration is not targeting;
-                // bumping it can pin a version that framework does not support.
-                foreach (var element in packageRefElements) {
-                    if (element.IsConditioned()) {
-                        _console.WriteWarning($"Skipping conditional {packageId} reference in {Path.GetFileName(projectPath)}; update it by hand.");
-                        continue;
-                    }
-
-                    var versionAttr = element.Attribute("Version");
-                    var versionElement = element.ChildNamed("Version");
-                    var currentValue = versionAttr?.Value ?? versionElement?.Value;
-                    if (!OutdatedService.IsLiteralVersion(currentValue)) {
-                        if (currentValue is { }) _console.WriteWarning($"Leaving {packageId} at '{currentValue}' in {Path.GetFileName(projectPath)}: not a literal version.");
-                        continue;
-                    }
-
-                    if (versionAttr != null) {
-                        versionAttr.Value = newVersion;
-                        changed = true;
-                    }
-                    else if (versionElement != null) {
-                        versionElement.Value = newVersion;
-                        changed = true;
-                    }
-                }
-                return changed;
-            }, cancellationToken);
-        }
-        catch (Exception ex) {
-            _console.WriteError($"Failed to update {projectPath}: {ex.FormatMessage()}", ex);
-            return false;
-        }
-    }
-
-    private async Task<List<PackageInfo>> ExtractPackageReferencesAsync(string projectPath) {
-        var packageReferences = new List<PackageInfo>();
-
-        try {
-            using var stream = File.OpenRead(projectPath);
-            var doc = await XDocument.LoadAsync(stream, LoadOptions.None, default);
-            var packageRefElements = doc.Descendants("PackageReference");
-
-            foreach (var element in packageRefElements) {
-                var include = element.Attribute("Include")?.Value;
-                var version = element.Attribute("Version")?.Value ??
-                             element.Element("Version")?.Value;
-
-                if (!string.IsNullOrEmpty(include) && !string.IsNullOrEmpty(version)) {
-                    packageReferences.Add(new PackageInfo {
-                        Id = include,
-                        Version = version,
-                        ProjectPath = projectPath
-                    });
-                }
-            }
-        }
-        catch (Exception ex) {
-            _console.WriteWarning($"Failed to extract package references from {projectPath}: {ex.FormatMessage()}");
-        }
-
-        return packageReferences;
     }
 
     // Computes the resulting TFM list. EOL TFMs are dropped. With an explicit --from, matched source
@@ -911,68 +739,7 @@ internal class TfmService : IDisposable {
     private class ProjectMigrationInfo {
         public string ProjectPath { get; set; } = string.Empty;
         public string CurrentTfm { get; set; } = string.Empty;
-        public List<PackageInfo> PackageReferences { get; set; } = new();
         public bool UsesTargetFrameworks { get; set; }
         public List<string> TargetFrameworksToUpdate { get; set; } = new();
-    }
-
-    private class PackageInfo {
-        public string Id { get; set; } = string.Empty;
-        public string Version { get; set; } = string.Empty;
-        public string ProjectPath { get; set; } = string.Empty;
-    }
-
-    private class PackageCompatibilityIssue {
-        public string ProjectPath { get; set; } = string.Empty;
-        public string PackageId { get; set; } = string.Empty;
-        public string CurrentVersion { get; set; } = string.Empty;
-        public string? RecommendedVersion { get; set; }
-        public string TargetFramework { get; set; } = string.Empty;
-    }
-
-    private class NuGetLogger : global::NuGet.Common.ILogger {
-        private readonly IConsoleOutput _console;
-
-        public NuGetLogger(IConsoleOutput console) {
-            _console = console;
-        }
-
-        public void LogDebug(string data) => _console.WriteVerbose(data);
-        public void LogVerbose(string data) => _console.WriteVerbose(data);
-        public void LogInformation(string data) => _console.WriteInfo(data);
-        public void LogMinimal(string data) => _console.WriteInfo(data);
-        public void LogWarning(string data) => _console.WriteWarning(data);
-        public void LogError(string data) => _console.WriteError(data);
-        public void LogInformationSummary(string data) => _console.WriteInfo(data);
-        public void Log(global::NuGet.Common.LogLevel level, string data) {
-            switch (level) {
-                case global::NuGet.Common.LogLevel.Debug:
-                case global::NuGet.Common.LogLevel.Verbose:
-                    LogVerbose(data);
-                    break;
-                case global::NuGet.Common.LogLevel.Information:
-                case global::NuGet.Common.LogLevel.Minimal:
-                    LogInformation(data);
-                    break;
-                case global::NuGet.Common.LogLevel.Warning:
-                    LogWarning(data);
-                    break;
-                case global::NuGet.Common.LogLevel.Error:
-                    LogError(data);
-                    break;
-            }
-        }
-
-        public Task LogAsync(global::NuGet.Common.LogLevel level, string data) {
-            Log(level, data);
-            return Task.CompletedTask;
-        }
-
-        public void Log(ILogMessage message) => Log(message.Level, message.Message);
-
-        public Task LogAsync(ILogMessage message) {
-            Log(message);
-            return Task.CompletedTask;
-        }
     }
 }

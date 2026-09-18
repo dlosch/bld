@@ -174,8 +174,8 @@ bld stats --root MySolution.sln --non-current
 Helpful when your favorite agent creates your shiny new project but adds a lot of strange nuget package references. Or even your co-worker.
 
 ### tfm
-- What it does: migrates target frameworks (e.g., `net6.0` → `net8.0`). With `--update-packages` it can also bump `PackageReference` versions to the latest stable release.
-- How it works: scans solutions/projects, infers current TFMs, optionally auto-detects target TFM, and rewrites the TFM when `--apply` is set. `--update-packages` is a latest-stable-version bump, not a framework-compatibility check.
+- What it does: migrates target frameworks (e.g., `net6.0` → `net8.0`). With `--update-packages` it also updates the packages to versions that support the new target, through `outdated`.
+- How it works: scans solutions/projects, infers current TFMs, optionally auto-detects target TFM, and rewrites the TFM when `--apply` is set. `--update-packages` then runs `outdated --apply` on the same input, so the compatibility check sees the new frameworks.
 
 Helpful when your favorite agent creates your shiny new project targeting a old version of .NET.
 
@@ -217,7 +217,8 @@ bld nuget --root C:\src\MyRepo --transitive --wbf packages.rules
 - `--from` — Comma-separated source TFMs (auto-detected when possible).
 - `--to` — Target TFM (auto-detected from installed SDKs when omitted).
 - `--apply` — Persist changes instead of a dry-run.
-- `--update-packages` — With `--apply`, also bump `PackageReference`s to their latest stable version. This is a latest-version bump, not a framework-compatibility check, so it is off by default. Versions are looked up on the sources from the project's `nuget.config` hierarchy (with package source mapping), or nuget.org when none is configured.
+- `--update-packages` — With `--apply`, run `outdated --apply` on the same input once the frameworks are written. That gives the migration everything `outdated` does: versions are checked for compatibility with the new target framework, capped by `--max-bump` and the saved package policies, checked for dependency conflicts, and written to `Directory.Packages.props` under central package management. Sources come from the `nuget.config` hierarchy. Without `--apply` the packages are not checked, because they would be tested against the frameworks the projects still have.
+- `--max-bump <major|minor|patch>` — With `--update-packages`: the largest version step to propose, as in `outdated --max-bump`. Default: `major`.
 - `--update-global-json` — With `--apply`, set `sdk.version` in the governing `global.json` to the highest installed SDK of the target's major (prereleases only when `allowPrerelease` is set). Without `--apply`, report what would change. Only the version line is rewritten; indentation, line endings and BOM are kept.
 
 **global.json.** The command always looks for the `global.json` that governs the input (walking up from its directory, like the SDK does) and warns when its pin cannot build the target framework: a pinned major below the target with any `rollForward` other than `latestMajor` blocks the build, and `major` only rolls forward when the pinned SDK is not installed. Nothing is written without `--update-global-json`.

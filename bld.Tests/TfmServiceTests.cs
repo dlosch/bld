@@ -153,7 +153,7 @@ public class NetUtilTests {
 
 public class GetUpdatedTfmsTests {
     private static string[] Run(List<string> current, List<string> from, string to, params string[] eol) {
-        using var svc = new bld.Services.TfmService(new TestConsole(), new CleaningOptions());
+        var svc = new bld.Services.TfmService(new TestConsole(), new CleaningOptions());
         return svc.GetUpdatedTfms(current, from, to, new HashSet<string>(eol, StringComparer.OrdinalIgnoreCase)).ToArray();
     }
 

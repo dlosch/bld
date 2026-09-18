@@ -15,7 +15,7 @@ public class TfmCpmApplyTests {
     public void GetUpdatedTfms_MigratesTheRequestedTfmEvenWhenItIsEndOfLife() {
         // Dropping EOL entries before matching --from discarded the very TFM being migrated, leaving
         // an empty list that was then written as <TargetFrameworks></TargetFrameworks>.
-        using var service = NewTfmService();
+        var service = NewTfmService();
 
         var result = service.GetUpdatedTfms(["net6.0", "net7.0"], ["net6.0"], "net10.0", Eol("net6.0", "net7.0"));
 
@@ -24,7 +24,7 @@ public class TfmCpmApplyTests {
 
     [Fact]
     public void GetUpdatedTfms_NeverReturnsAnEmptyList() {
-        using var service = NewTfmService();
+        var service = NewTfmService();
 
         var result = service.GetUpdatedTfms(["net6.0"], [], "net10.0", Eol("net6.0"));
 
@@ -34,7 +34,7 @@ public class TfmCpmApplyTests {
 
     [Fact]
     public void GetUpdatedTfms_KeepsFrameworksThatAreNotEndOfLife() {
-        using var service = NewTfmService();
+        var service = NewTfmService();
 
         var result = service.GetUpdatedTfms(["netstandard2.0", "net8.0"], [], "net10.0", Eol("net6.0"));
 
@@ -44,7 +44,7 @@ public class TfmCpmApplyTests {
 
     [Fact]
     public void WillUpdateSingleTfm_MatchesTheWriterSoPreviewAndApplyAgree() {
-        using var service = NewTfmService();
+        var service = NewTfmService();
 
         // The dry run used to list these; the writer then declined them while still reporting success.
         Assert.False(service.WillUpdateSingleTfm("netstandard2.0", "net10.0", Eol()));
