@@ -126,7 +126,7 @@ internal class BuildPropsService {
 
             DisplayListOnly(imports.ToList(), rootPath);
             errorSink.WriteTo();
-            return 0;
+            return errorSink.HasErrors ? 1 : 0;
         }
 
         // Full evaluation — extract properties and overrides
@@ -166,7 +166,8 @@ internal class BuildPropsService {
         }
 
         errorSink.WriteTo();
-        return 0;
+        // A project that could not be evaluated is a failure of the analysis, not a footnote.
+        return errorSink.HasErrors || skipped > 0 ? 1 : 0;
     }
 
     /// <summary>

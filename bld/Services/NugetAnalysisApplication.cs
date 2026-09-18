@@ -28,7 +28,8 @@ internal class NugetAnalysisApplication {
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    public async Task RunAsync(string[] rootPaths, CleaningOptions options, string? whitelistBlacklistFile, bool aggregate = false, bool showProjects = true, bool markdownOutput = false, bool includeTransitive = false) {
+    /// <returns>1 when any solution or project could not be analyzed, otherwise 0.</returns>
+    public async Task<int> RunAsync(string[] rootPaths, CleaningOptions options, string? whitelistBlacklistFile, bool aggregate = false, bool showProjects = true, bool markdownOutput = false, bool includeTransitive = false) {
         if (!_isInitialized) {
             throw new InvalidOperationException("Application not initialized. Call InitAsync first.");
         }
@@ -52,7 +53,7 @@ internal class NugetAnalysisApplication {
             }
             catch (Exception ex) {
                 _console.WriteError($"Failed to parse whitelist/blacklist file: {ex.FormatMessage()}");
-                return;
+                return 1;
             }
         }
 
@@ -132,6 +133,8 @@ internal class NugetAnalysisApplication {
             _console.WriteInfo($"Analysis completed in {stopwatch.Elapsed:mm\\:ss\\.fff}");
             errorSink.WriteTo();
         }
+        // The errors were always printed; the exit code just never followed them.
+        return errorSink.HasErrors ? 1 : 0;
     }
 
     private static Dictionary<string, string> GetGlobalProperties(CleaningOptions options) {

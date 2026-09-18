@@ -68,8 +68,6 @@ internal sealed class NugetCommand : BaseCommand {
 
         var app = new NugetAnalysisApplication(base.Output);
         await app.InitAsync(options);
-        await app.RunAsync(new[] { rootPath }, options, whitelistBlacklistFile, aggregate, showProjects, options.MarkdownOutput, includeTransitive);
-
-        return 0;
+        return await app.RunAsync(new[] { rootPath }, options, whitelistBlacklistFile, aggregate, showProjects, options.MarkdownOutput, includeTransitive);
     }
 }

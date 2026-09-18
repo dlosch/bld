@@ -134,6 +134,7 @@ internal class CpmService {
         }
 
         if (solutionData.Count == 0) {
+            errorSink.WriteTo();
             _console.WriteError("No solution files found. Central Package Management requires a solution file.");
             return false;
         }
@@ -196,7 +197,10 @@ internal class CpmService {
             }
         }
 
-        return succeeded;
+        // Solution and project load failures were collected here and never shown; a props file
+        // built from a partial view of the solution must not count as success.
+        errorSink.WriteTo();
+        return succeeded && !errorSink.HasErrors;
     }
 
     internal static IReadOnlyList<PackageReferenceVersion> ReadPackageReferences(XDocument doc) {
