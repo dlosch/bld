@@ -473,6 +473,16 @@ public class PackagePickerTests {
     }
 
     [Fact]
+    public void PageSize_UsesTheWholeTerminalHeightAndAccountsForWrappedHeaderLines() {
+        // Title, instructions, blank line, two overflow hints and the cursor line: six lines of chrome
+        // when nothing wraps, one more when the instruction line wraps on a narrow terminal.
+        Assert.Equal(44, PackagePickerRenderer.PageSize(PickerMode.Update, "Select", height: 50, width: 200));
+        Assert.Equal(43, PackagePickerRenderer.PageSize(PickerMode.Update, "Select", height: 50, width: 80));
+        Assert.Equal(44, PackagePickerRenderer.PageSize(PickerMode.Revert, "Revert", height: 50, width: 80));
+        Assert.Equal(5, PackagePickerRenderer.PageSize(PickerMode.Update, "Select", height: 8, width: 200));
+    }
+
+    [Fact]
     public void Render_ShowsThePolicyAndItsPatternWhenItIsNotTheRowsOwnId() {
         var model = new PickerModel(new[] {
             new PickerGroup("", new[] { Row("Npgsql", "8.0.5", true, 0, Target("8.0.7", "Patch")) with { PolicyMatch = "Npg*", PolicyLevel = MaxBump.Minor } })

@@ -335,8 +335,22 @@ internal static class PackagePickerRenderer {
     internal const string RevertInstructions =
         "[grey]up/down: move   space: toggle   a/n: all/none   enter: revert   esc: cancel[/]";
 
+    internal static string InstructionsFor(PickerMode mode) => mode == PickerMode.Revert ? RevertInstructions : Instructions;
+
+    /// <summary>
+    /// How many package lines fit: the terminal height minus the title and instruction lines (each
+    /// wrapped at the terminal width), the blank line, the two overflow hints and the cursor line.
+    /// Never fewer than five, so a tiny terminal still shows a usable window.
+    /// </summary>
+    internal static int PageSize(PickerMode mode, string title, int height, int width) {
+        var columns = Math.Max(width, 20);
+        int Rows(string markup) => Math.Max(1, (Markup.Remove(markup).Length + columns - 1) / columns);
+        var chrome = Rows(title) + Rows(InstructionsFor(mode)) + 1 + 2 + 1;
+        return Math.Max(height - chrome, 5);
+    }
+
     internal static IRenderable Render(PickerState state, string title, int pageSize) {
-        var lines = new List<IRenderable> { new Markup(title), new Markup(state.Mode == PickerMode.Revert ? RevertInstructions : Instructions), Text.Empty };
+        var lines = new List<IRenderable> { new Markup(title), new Markup(InstructionsFor(state.Mode)), Text.Empty };
         var idWidth = state.Lines.Where(l => l.Row is not null).Select(l => l.Row!.Id.Length).DefaultIfEmpty(0).Max();
         var versionWidth = state.Lines.Where(l => l.Row is not null).Select(l => l.Row!.Now.Length).DefaultIfEmpty(0).Max();
         // Over every candidate, not just the chosen ones, so moving a row between targets never

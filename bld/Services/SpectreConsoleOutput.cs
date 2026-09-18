@@ -110,8 +110,9 @@ internal class SpectreConsoleOutput : IConsoleOutput {
         if (!CanPrompt) throw new InvalidOperationException("Interactive prompt requires a terminal");
 
         var state = new PickerState(model);
-        // Height minus the title, the instruction line, the blank line and the two overflow hints.
-        var pageSize = Math.Clamp(AnsiConsole.Profile.Height - 6, 5, 30);
+        // The whole terminal height, less the lines the header and the overflow hints take. The
+        // earlier cap of 30 rows left half of a tall terminal empty.
+        var pageSize = PackagePickerRenderer.PageSize(state.Mode, title, AnsiConsole.Profile.Height, AnsiConsole.Profile.Width);
 
         AnsiConsole.Live(PackagePickerRenderer.Render(state, title, pageSize))
             .AutoClear(false)
