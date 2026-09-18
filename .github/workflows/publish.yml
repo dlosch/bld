@@ -22,16 +22,30 @@ jobs:
       with:
         dotnet-version: '10.0.x' # Match this to your project
 
-    - name: Restore dependencies
-      run: dotnet restore
+    # The version lives only in bld/bld.csproj (see .claude/skills/release). A release tag that
+    # does not match it would push a package under a different number than the tag claims, so a
+    # mismatch stops the run before anything is built.
+    - name: Check that the release tag matches the project version
+      env:
+        TAG: ${{ github.event.release.tag_name }}
+      run: |
+        version=$(sed -n 's/.*<Version>\(.*\)<\/Version>.*/\1/p' bld/bld.csproj)
+        if [ "$version" != "$TAG" ]; then
+          echo "Release tag '$TAG' does not match <Version>$version</Version> in bld/bld.csproj."
+          exit 1
+        fi
 
-    - name: Build project
-      run: dotnet build bld/bld.csproj --configuration Release --no-restore
+    - name: Restore dependencies
+      run: dotnet restore bld.slnx
+
+    - name: Build
+      run: dotnet build bld.slnx --configuration Release --no-restore
+
+    - name: Test
+      run: dotnet test bld.slnx --configuration Release --no-build
 
     - name: Pack project
       run: dotnet pack bld/bld.csproj --configuration Release --no-build --output ./nupkg
-      # If you want to use the GitHub Release tag as the version, you can pass it like this:
-      # run: dotnet pack --configuration Release -p:Version=${{ github.event.release.tag_name }} --output ./nupkg
 
     - name: Upload nupkg artifact
       uses: actions/upload-artifact@v4
