@@ -358,4 +358,90 @@ public class PackagePickerTests {
         Assert.True(rows["InCap"].Preselected);
         Assert.False(rows["AboveCap"].Preselected);
     }
+
+    [Fact]
+    public void Policy_OnARowSetsANoMajorRuleForThatIdAndCapsTheTarget() {
+        // Npgsql sits on its major; the policy moves it down to the patch and records the rule.
+        var state = Drive(SampleModel(), PickerKey.End, PickerKey.TargetUp);
+        Assert.Equal(1, state.Lines[state.Cursor].TargetIndex);
+
+        state.Handle(PickerKey.Policy);
+
+        var line = state.Lines[state.Cursor];
+        Assert.Equal("Npgsql", line.PolicyMatch);
+        Assert.Equal(MaxBump.Minor, line.PolicyLevel);
+        Assert.Equal(0, line.TargetIndex);
+        var change = Assert.Single(state.Result().PolicyChanges);
+        Assert.Equal(("Npgsql", (MaxBump?)MaxBump.Minor), change);
+    }
+
+    [Fact]
+    public void Policy_PressedAgainClearsTheRuleAndLeavesTheTargetAlone() {
+        var state = Drive(SampleModel(), PickerKey.End, PickerKey.Policy, PickerKey.TargetUp, PickerKey.Policy);
+
+        var line = state.Lines[state.Cursor];
+        Assert.Null(line.PolicyLevel);
+        Assert.Equal(1, line.TargetIndex);
+        // Set then cleared in one session: the outcome asks to remove a rule that was never saved,
+        // which the store treats as a no-op.
+        var change = Assert.Single(state.Result().PolicyChanges);
+        Assert.Equal(("Npgsql", (MaxBump?)null), change);
+    }
+
+    [Fact]
+    public void Policy_OnAPrefixGroupHeaderRecordsThePatternOnce() {
+        var state = Drive(SampleModel(), PickerKey.Home, PickerKey.Policy);
+
+        Assert.All(new[] { state.Lines[1], state.Lines[2] }, l => {
+            Assert.Equal("Microsoft.Extensions.*", l.PolicyMatch);
+            Assert.Equal(MaxBump.Minor, l.PolicyLevel);
+        });
+        var change = Assert.Single(state.Result().PolicyChanges);
+        Assert.Equal(("Microsoft.Extensions.*", (MaxBump?)MaxBump.Minor), change);
+    }
+
+    [Fact]
+    public void Policy_ClearingAPatternRuleFromOneRowClearsEveryRowItCovered() {
+        // Both rows carry the same pattern rule from the file; clearing it on one row removes the
+        // rule, so the other row cannot keep claiming it.
+        var model = new PickerModel(new[] {
+            new PickerGroup("Microsoft.Extensions.*", new[] {
+                Row("Microsoft.Extensions.Hosting", "9.0.8", true, 0, Target("9.0.9", "Patch")) with { PolicyMatch = "Microsoft.*", PolicyLevel = MaxBump.Minor },
+                Row("Microsoft.Extensions.Logging", "9.0.8", true, 0, Target("9.0.9", "Patch")) with { PolicyMatch = "Microsoft.*", PolicyLevel = MaxBump.Minor },
+            })
+        });
+
+        var state = Drive(model, PickerKey.Policy);
+
+        Assert.Null(state.Lines[1].PolicyLevel);
+        Assert.Null(state.Lines[2].PolicyLevel);
+        Assert.Equal(("Microsoft.*", (MaxBump?)null), Assert.Single(state.Result().PolicyChanges));
+    }
+
+    [Fact]
+    public void Policy_ARowWithOnlyAMajorLeavesTheSelectionUntilTheRuleIsCleared() {
+        var model = new PickerModel(new[] {
+            new PickerGroup("", new[] { Row("Only.Major", "1.0.0", true, 0, Target("2.0.0", "Major")) })
+        });
+
+        var state = Drive(model, PickerKey.Policy);
+        Assert.False(state.Lines[0].Selected);
+        Assert.Empty(state.Result().Selected);
+
+        state.Handle(PickerKey.Policy);
+        // Clearing the rule does not silently re-select a major the user never confirmed.
+        Assert.False(state.Lines[0].Selected);
+    }
+
+    [Fact]
+    public void Render_ShowsThePolicyAndItsPatternWhenItIsNotTheRowsOwnId() {
+        var model = new PickerModel(new[] {
+            new PickerGroup("", new[] { Row("Npgsql", "8.0.5", true, 0, Target("8.0.7", "Patch")) with { PolicyMatch = "Npg*", PolicyLevel = MaxBump.Minor } })
+        });
+        var state = new PickerState(model);
+
+        var line = PackagePickerRenderer.RenderLine(state, 0, 6, 5);
+
+        Assert.Contains("policy:minor (Npg*)", line);
+    }
 }

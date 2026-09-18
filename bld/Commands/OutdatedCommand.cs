@@ -126,6 +126,11 @@ internal sealed class OutdatedCommand : BaseCommand {
         DefaultValueFactory = _ => false
     };
 
+    private readonly Option<bool> _ignorePolicyOption = new Option<bool>("--ignore-policy") {
+        Description = "Do not apply the package policy rules saved under BLD_HOME (policy.json) for this run. --max-bump-for still applies.",
+        DefaultValueFactory = _ => false
+    };
+
     private readonly Option<bool> _evalCacheOption = new Option<bool>("--eval-cache") {
         Description = "Skip the MSBuild evaluation of a project configuration when every file that fed its last evaluation is unchanged (kept under BLD_HOME or the local application data folder). Opt-in: MSBuild properties set through environment variables are not detected.",
         DefaultValueFactory = _ => false
@@ -152,6 +157,7 @@ internal sealed class OutdatedCommand : BaseCommand {
         Add(_verifyRestoreOption);
         Add(_sourceOption);
         Add(_ignoreSourceMappingOption);
+        Add(_ignorePolicyOption);
         Add(_evalCacheOption);
         Add(_logLevelOption);
         Add(_vsToolsPath);
@@ -215,8 +221,19 @@ internal sealed class OutdatedCommand : BaseCommand {
         var sources = parseResult.GetValue(_sourceOption) ?? Array.Empty<string>();
         var ignoreSourceMapping = parseResult.GetValue(_ignoreSourceMappingOption);
         var evalCache = parseResult.GetValue(_evalCacheOption);
+        var ignorePolicy = parseResult.GetValue(_ignorePolicyOption);
+
+        // Loaded even with --ignore-policy, so rules set in the picker still have a file to go to.
+        PolicyService policies;
+        try {
+            policies = PolicyService.Load(PolicyService.DefaultPath);
+        }
+        catch (InvalidDataException ex) {
+            Output.WriteError(ex.Message);
+            return 1;
+        }
 
         var service = new OutdatedService(Output, options);
-        return await service.CheckOutdatedPackagesAsync(rootValue, applyUpdates, skipTfmCheck, includePrerelease, listOrphans, commentOrphans, interactive, maxBump, bumpOverrides, includePatterns, excludePatterns, allowConflicts, verifyRestore, sources, ignoreSourceMapping, grouping, preselect, evalCache, cancellationToken);
+        return await service.CheckOutdatedPackagesAsync(rootValue, applyUpdates, skipTfmCheck, includePrerelease, listOrphans, commentOrphans, interactive, maxBump, bumpOverrides, includePatterns, excludePatterns, allowConflicts, verifyRestore, sources, ignoreSourceMapping, grouping, preselect, evalCache, policies, ignorePolicy, cancellationToken);
     }
 }

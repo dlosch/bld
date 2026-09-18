@@ -23,13 +23,18 @@ internal enum PickerKey {
     Toggle,
     SelectAll,
     SelectNone,
+    /// <summary>Set or clear a "no major" policy on the row (or the family's pattern on a group line).</summary>
+    Policy,
     Confirm,
     Cancel,
 }
 
-/// <summary>What the user settled on: the packages they kept, with the target chosen for each.</summary>
-internal sealed record PickerOutcome(bool Cancelled, IReadOnlyList<(string Id, NuGetVersion Target)> Selected) {
-    internal static PickerOutcome CancelledOutcome { get; } = new(true, Array.Empty<(string, NuGetVersion)>());
+/// <summary>
+/// What the user settled on: the packages they kept, with the target chosen for each, and the
+/// policy rules to persist (a null level removes the rule with that match).
+/// </summary>
+internal sealed record PickerOutcome(bool Cancelled, IReadOnlyList<(string Id, NuGetVersion Target)> Selected, IReadOnlyList<(string Match, MaxBump? Level)> PolicyChanges) {
+    internal static PickerOutcome CancelledOutcome { get; } = new(true, Array.Empty<(string, NuGetVersion)>(), Array.Empty<(string, MaxBump?)>());
 }
 
 /// <summary>
@@ -50,11 +55,19 @@ internal sealed class PickerState {
         internal BumpKind? GroupBump { get; set; }
         /// <summary>The family cap dropped this row from the selection; a cap that admits it again puts it back.</summary>
         internal bool CappedOut { get; set; }
+        /// <summary>The policy rule that caps this row: its match pattern and level. Null without one.</summary>
+        internal string? PolicyMatch { get; set; }
+        internal MaxBump? PolicyLevel { get; set; }
 
         internal bool IsGroup => GroupName is not null;
     }
 
+    /// <summary>The cap a policy set from the picker imposes: no major, that is the whole point of it.</summary>
+    internal const MaxBump PickerPolicyLevel = MaxBump.Minor;
+
     private readonly List<Line> _lines = new();
+    // Match -> level to save, null to remove; insertion order kept so the outcome is deterministic.
+    private readonly Dictionary<string, MaxBump?> _policyChanges = new(StringComparer.OrdinalIgnoreCase);
 
     internal PickerState(PickerModel model) {
         foreach (var group in model.Groups) {
@@ -65,7 +78,7 @@ internal sealed class PickerState {
             }
             var groupIndex = header is null ? -1 : _lines.Count - 1;
             foreach (var row in group.Rows) {
-                _lines.Add(new Line { Row = row, TargetIndex = row.DefaultTarget, Selected = row.Preselected, GroupIndex = groupIndex });
+                _lines.Add(new Line { Row = row, TargetIndex = row.DefaultTarget, Selected = row.Preselected, GroupIndex = groupIndex, PolicyMatch = row.PolicyMatch, PolicyLevel = row.PolicyLevel });
             }
             if (header is not null) header.GroupBump = HighestBump(groupIndex);
         }
@@ -92,6 +105,7 @@ internal sealed class PickerState {
             case PickerKey.Toggle: Toggle(); break;
             case PickerKey.SelectAll: SetAll(true); break;
             case PickerKey.SelectNone: SetAll(false); break;
+            case PickerKey.Policy: TogglePolicy(); break;
             case PickerKey.Confirm: Done = true; break;
             case PickerKey.Cancel: Done = Cancelled = true; break;
         }
@@ -139,6 +153,61 @@ internal sealed class PickerState {
                 line.Selected = true;
                 line.CappedOut = false;
             }
+        }
+    }
+
+    /// <summary>
+    /// Sets a "no major" policy on the row under the cursor, or clears the one it has. On a prefix
+    /// group line the rule is the family's pattern, so it covers members that are not listed today;
+    /// on any other header every row gets its own rule. Setting a policy caps the row the same way
+    /// a family cap does; clearing it leaves the target where it is.
+    /// </summary>
+    private void TogglePolicy() {
+        if (_lines.Count == 0) return;
+        var current = _lines[Cursor];
+        var rows = LinesUnderCursor().Where(l => l.Row is not null).ToList();
+        if (rows.Count == 0) return;
+
+        // A header clears only when every member is covered; anything else sets.
+        var set = !rows.All(l => l.PolicyLevel is not null);
+        if (!set) {
+            foreach (var match in rows.Select(l => l.PolicyMatch!).Distinct(StringComparer.OrdinalIgnoreCase).ToList()) {
+                _policyChanges[match] = null;
+                // A pattern rule may cover rows outside the cursor's family; they lose it too.
+                foreach (var line in _lines.Where(l => match.Equals(l.PolicyMatch, StringComparison.OrdinalIgnoreCase))) {
+                    line.PolicyMatch = null;
+                    line.PolicyLevel = null;
+                }
+            }
+            return;
+        }
+
+        var pattern = current.IsGroup && current.GroupName!.EndsWith(".*", StringComparison.Ordinal) ? current.GroupName : null;
+        if (pattern is not null) _policyChanges[pattern] = PickerPolicyLevel;
+        foreach (var line in rows) {
+            var match = pattern ?? line.Row!.Id;
+            if (pattern is null) _policyChanges[match] = PickerPolicyLevel;
+            line.PolicyMatch = match;
+            line.PolicyLevel = PickerPolicyLevel;
+            CapRow(line, BumpKind.Minor);
+        }
+        foreach (var header in rows.Select(l => l.GroupIndex).Where(i => i >= 0).Distinct()) _lines[header].GroupBump = HighestBump(header);
+    }
+
+    /// <summary>Moves a row to the highest target within the class, or parks it outside the selection when it has none.</summary>
+    private static void CapRow(Line line, BumpKind bump) {
+        var targets = line.Row!.Targets;
+        if (targets[0].Bump > bump) {
+            if (line.Selected) {
+                line.Selected = false;
+                line.CappedOut = true;
+            }
+            return;
+        }
+        line.TargetIndex = Math.Min(line.TargetIndex, CapAt(targets, bump));
+        if (line.CappedOut) {
+            line.Selected = true;
+            line.CappedOut = false;
         }
     }
 
@@ -228,7 +297,7 @@ internal sealed class PickerState {
             .Where(l => l.Selected && l.Row is not null)
             .Select(l => (l.Row!.Id, l.Row.Targets[l.TargetIndex].Version))
             .ToList();
-        return new PickerOutcome(false, selected);
+        return new PickerOutcome(false, selected, _policyChanges.Select(c => (c.Key, c.Value)).ToList());
     }
 
     /// <summary>The chosen target per package, selected or not - the repeat command needs both.</summary>
@@ -248,7 +317,7 @@ internal sealed class PickerState {
 /// </summary>
 internal static class PackagePickerRenderer {
     internal const string Instructions =
-        "[grey]up/down: move   space: toggle   left/right: change target   a/n: all/none   enter: confirm   esc: cancel[/]";
+        "[grey]up/down: move   space: toggle   left/right: change target   a/n: all/none   p: no-major policy   enter: confirm   esc: cancel[/]";
 
     internal static IRenderable Render(PickerState state, string title, int pageSize) {
         var lines = new List<IRenderable> { new Markup(title), new Markup(Instructions), Text.Empty };
@@ -306,7 +375,11 @@ internal static class PackagePickerRenderer {
         var position = row.Targets.Count > 1 ? $" [grey]{Markup.Escape($"({line.TargetIndex + 1}/{row.Targets.Count})")}[/]" : "";
 
         var targetVersion = Markup.Escape(target.Version.ToString().PadRight(targetWidth));
-        return $"{cursor}{indent}{rowBox} {id}  {current} -> {left} {targetVersion} {right}  {BumpMarkup(target.Bump)}{position}";
+        // The rule's match is shown when it is a pattern, so the user sees that clearing it affects a family.
+        var policy = line.PolicyLevel is { } level
+            ? $"  [magenta]{Markup.Escape($"policy:{level.ToString().ToLowerInvariant()}{(line.PolicyMatch is { } m && !m.Equals(row.Id, StringComparison.OrdinalIgnoreCase) ? $" ({m})" : "")}")}[/]"
+            : "";
+        return $"{cursor}{indent}{rowBox} {id}  {current} -> {left} {targetVersion} {right}  {BumpMarkup(target.Bump)}{position}{policy}";
     }
 
     internal static string BumpMarkup(BumpKind bump) => bump switch {
@@ -327,6 +400,7 @@ internal static class PackagePickerRenderer {
         ConsoleKey.Spacebar => PickerKey.Toggle,
         ConsoleKey.A => PickerKey.SelectAll,
         ConsoleKey.N => PickerKey.SelectNone,
+        ConsoleKey.P => PickerKey.Policy,
         ConsoleKey.Enter => PickerKey.Confirm,
         ConsoleKey.Escape or ConsoleKey.Q => PickerKey.Cancel,
         ConsoleKey.C when key.Modifiers.HasFlag(ConsoleModifiers.Control) => PickerKey.Cancel,

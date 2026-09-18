@@ -144,6 +144,32 @@ public class OutdatedServiceTests {
         Assert.Equal(MaxBump.Major, OutdatedService.EffectiveBump("Serilog.Sinks.File", MaxBump.Minor, overrides));
     }
 
+    [Fact]
+    public void ResolveBump_OverrideBeatsPolicyBeatsGlobal() {
+        var overrides = OutdatedService.ParseBumpOverrides(new[] { "MassTransit.RabbitMQ=major" });
+        var policies = new List<PolicyRule> { new("MassTransit*", MaxBump.Minor, "v9 changes license", null) };
+
+        // A global --max-bump major does not lift the policy; it is the more specific statement.
+        var byPolicy = OutdatedService.ResolveBump("MassTransit", MaxBump.Major, overrides, policies);
+        Assert.Equal((MaxBump.Minor, OutdatedService.BumpSource.Policy), (byPolicy.Level, byPolicy.Source));
+        Assert.Equal("MassTransit*", byPolicy.Rule?.Match);
+
+        var byOverride = OutdatedService.ResolveBump("MassTransit.RabbitMQ", MaxBump.Major, overrides, policies);
+        Assert.Equal((MaxBump.Major, OutdatedService.BumpSource.Override), (byOverride.Level, byOverride.Source));
+
+        var byGlobal = OutdatedService.ResolveBump("Polly", MaxBump.Patch, overrides, policies);
+        Assert.Equal((MaxBump.Patch, OutdatedService.BumpSource.Global), (byGlobal.Level, byGlobal.Source));
+    }
+
+    [Fact]
+    public void HeldSummary_CountsPerSource() {
+        var summary = OutdatedService.HeldSummary(
+            new[] { OutdatedService.BumpSource.Global, OutdatedService.BumpSource.Policy, OutdatedService.BumpSource.Global, OutdatedService.BumpSource.Override },
+            MaxBump.Minor);
+
+        Assert.Equal("4 package(s) have newer versions held back: 2 by --max-bump minor, 1 by --max-bump-for, 1 by policy.", summary);
+    }
+
     private static Dictionary<string, (NuGetVersion CurrentMin, NuGetVersion Latest)> Outdated(params (string Id, string Current, string Latest)[] rows) =>
         rows.ToDictionary(
             r => r.Id,
@@ -282,7 +308,7 @@ public class OutdatedServiceTests {
             listOrphans: false, commentOrphans: false, interactive: true, MaxBump.Major,
             Array.Empty<(string, MaxBump)>(), Array.Empty<string>(), Array.Empty<string>(),
             allowConflicts: false, verifyRestore: false, Array.Empty<string>(), ignoreSourceMapping: false,
-            GroupingOptions.Default, Preselect.All, evalCache: false, CancellationToken.None);
+            GroupingOptions.Default, Preselect.All, evalCache: false, policies: null, ignorePolicy: false, CancellationToken.None);
 
         Assert.Equal(1, exitCode);
         var message = Assert.Single(console.Messages);

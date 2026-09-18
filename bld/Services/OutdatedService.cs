@@ -110,17 +110,23 @@ internal class OutdatedService {
     /// non-wildcard characters, so "Microsoft.Extensions.*" beats "Microsoft.*"; ties go to the
     /// pattern given last.
     /// </summary>
-    internal static MaxBump EffectiveBump(string id, MaxBump global, IReadOnlyList<(string Pattern, MaxBump Level)> overrides) {
-        var effective = global;
-        var bestSpecificity = -1;
-        foreach (var (pattern, level) in overrides) {
-            if (!Matches(id, pattern)) continue;
-            var specificity = pattern.Count(c => c != '*');
-            if (specificity < bestSpecificity) continue;
-            bestSpecificity = specificity;
-            effective = level;
-        }
-        return effective;
+    internal static MaxBump EffectiveBump(string id, MaxBump global, IReadOnlyList<(string Pattern, MaxBump Level)> overrides) =>
+        ResolveBump(id, global, overrides, Array.Empty<PolicyRule>()).Level;
+
+    internal enum BumpSource { Global, Override, Policy }
+
+    /// <summary>
+    /// The cap that applies to one package and where it comes from: a <c>--max-bump-for</c> pattern
+    /// beats a policy rule, which beats <c>--max-bump</c>. A policy is the more specific statement,
+    /// so a global <c>--max-bump major</c> does not lift it; only an override or
+    /// <c>--ignore-policy</c> does.
+    /// </summary>
+    internal static (MaxBump Level, BumpSource Source, PolicyRule? Rule) ResolveBump(string id, MaxBump global, IReadOnlyList<(string Pattern, MaxBump Level)> overrides, IReadOnlyList<PolicyRule> policies) {
+        var overriding = PolicyService.Find(id, overrides.Select(o => new PolicyRule(o.Pattern, o.Level, null, null)).ToList());
+        if (overriding is not null) return (overriding.MaxBump, BumpSource.Override, null);
+        var rule = PolicyService.Find(id, policies);
+        if (rule is not null) return (rule.MaxBump, BumpSource.Policy, rule);
+        return (global, BumpSource.Global, null);
     }
 
     /// <summary>
@@ -334,7 +340,8 @@ internal class OutdatedService {
         GroupingOptions grouping,
         Preselect preselect,
         IReadOnlyDictionary<string, PackageVersionCandidates>? candidates = null,
-        IReadOnlySet<string>? neverPreselect = null) {
+        IReadOnlySet<string>? neverPreselect = null,
+        IReadOnlyList<PolicyRule>? policies = null) {
 
         var rows = new Dictionary<string, PickerRow>(StringComparer.OrdinalIgnoreCase);
         foreach (var (id, versions) in outdated) {
@@ -345,7 +352,8 @@ internal class OutdatedService {
             // A package the cap excluded on purpose starts unchecked no matter what --preselect says:
             // it is only in the list so the user can reach it, not to be taken by default.
             var preselected = IsPreselected(bump, preselect) && !(neverPreselect?.Contains(id) ?? false);
-            rows[id] = new PickerRow(id, versions.CurrentMin, targets, Math.Max(0, defaultTarget), preselected);
+            var rule = policies is null ? null : PolicyService.Find(id, policies);
+            rows[id] = new PickerRow(id, versions.CurrentMin, targets, Math.Max(0, defaultTarget), preselected, rule?.Match, rule?.MaxBump);
         }
 
         var groups = grouping.GroupBy switch {
@@ -481,13 +489,25 @@ internal class OutdatedService {
     /// Counts rather than the name of the <c>--preselect</c> mode: rows above the cap are never
     /// pre-selected, so "all pre-selected" would be a lie on exactly the run where it matters.
     /// </summary>
+    /// <summary>"3 package(s) have newer versions held back: 2 by --max-bump minor, 1 by policy."</summary>
+    internal static string HeldSummary(IReadOnlyList<BumpSource> sources, MaxBump globalBump) {
+        var parts = new List<string>();
+        var byGlobal = sources.Count(s => s == BumpSource.Global);
+        var byOverride = sources.Count(s => s == BumpSource.Override);
+        var byPolicy = sources.Count(s => s == BumpSource.Policy);
+        if (byGlobal > 0) parts.Add($"{byGlobal} by --max-bump {globalBump.ToString().ToLowerInvariant()}");
+        if (byOverride > 0) parts.Add($"{byOverride} by --max-bump-for");
+        if (byPolicy > 0) parts.Add($"{byPolicy} by policy");
+        return $"{sources.Count} package(s) have newer versions held back: {string.Join(", ", parts)}.";
+    }
+
     internal static string PickerTitle(int count, int heldCount, int preselectedCount, string capDescription) {
         var held = heldCount > 0 ? $", {heldCount} above {capDescription}" : string.Empty;
         return $"[bold]Select packages to update[/] [grey]{Markup.Escape($"({count} listed{held}; {preselectedCount} pre-selected)")}[/]";
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    public async Task<int> CheckOutdatedPackagesAsync(string rootPath, bool updatePackages, bool skipTfmCheck, bool includePrerelease, bool listOrphans, bool commentOrphans, bool interactive, MaxBump maxBump, IReadOnlyList<(string Pattern, MaxBump Level)> bumpOverrides, IReadOnlyList<string> includePatterns, IReadOnlyList<string> excludePatterns, bool allowConflicts, bool verifyRestore, IReadOnlyList<string> sources, bool ignoreSourceMapping, GroupingOptions grouping, Preselect preselect, bool evalCache, CancellationToken cancellationToken) {
+    public async Task<int> CheckOutdatedPackagesAsync(string rootPath, bool updatePackages, bool skipTfmCheck, bool includePrerelease, bool listOrphans, bool commentOrphans, bool interactive, MaxBump maxBump, IReadOnlyList<(string Pattern, MaxBump Level)> bumpOverrides, IReadOnlyList<string> includePatterns, IReadOnlyList<string> excludePatterns, bool allowConflicts, bool verifyRestore, IReadOnlyList<string> sources, bool ignoreSourceMapping, GroupingOptions grouping, Preselect preselect, bool evalCache, PolicyService? policies, bool ignorePolicy, CancellationToken cancellationToken) {
         // Before anything is evaluated or fetched: a picker we cannot show makes the whole run
         // pointless, and --interactive implies --apply.
         if (interactive && !_console.CanPrompt) {
@@ -692,6 +712,10 @@ internal class OutdatedService {
         // read as "up to date". Kept apart from outdatedPerPackage so a held-back-only package never
         // reaches the picker, the dependency check or the apply path as if it had an update.
         var heldPerPackage = new ConcurrentDictionary<string, (NuGetVersion CurrentMin, string Held)>(StringComparer.OrdinalIgnoreCase);
+        // Which cap held each of them, so the summary can say "2 by policy" rather than name one cap.
+        var heldBy = new ConcurrentDictionary<string, BumpSource>(StringComparer.OrdinalIgnoreCase);
+        var policyRules = ignorePolicy || policies is null ? new List<PolicyRule>() : policies.Rules;
+        if (ignorePolicy && policies is { Rules.Count: > 0 }) _console.WriteInfo($"--ignore-policy: {policies.Rules.Count} policy rule(s) not applied.");
         // Lowest pin per package across every usage in scope, including packages that are up to date.
         // The dependency check needs it to know where a package it is not updating will end up.
         var currentPins = new ConcurrentDictionary<string, NuGetVersion>(StringComparer.OrdinalIgnoreCase);
@@ -770,8 +794,8 @@ internal class OutdatedService {
             // ship no lib/ folder at all.
             var downloadOnly = packageReference.Value.All(u => u.Item.Kind == PackageItemKind.PackageDownload);
 
-            // --max-bump-for can lower or raise the cap for this package specifically.
-            var packageBump = EffectiveBump(packageReference.Key, maxBump, bumpOverrides);
+            // --max-bump-for or a policy rule can lower or raise the cap for this package specifically.
+            var (packageBump, bumpSource, policyRule) = ResolveBump(packageReference.Key, maxBump, bumpOverrides, policyRules);
 
             // Baseline instead of a version filter: the walk collects the highest compatible version
             // per bump class in one pass, so the cap picks from that set rather than constraining the
@@ -810,6 +834,11 @@ internal class OutdatedService {
             if (highest is not null && NuGetVersion.TryParse(highest.Version, out var highestVer) && highestVer > currentMin
                 && (target is null || !string.Equals(target.Version, highest.Version, StringComparison.OrdinalIgnoreCase))) {
                 heldPerPackage[packageReference.Key] = (currentMin, highest.Version);
+                heldBy[packageReference.Key] = bumpSource;
+                if (policyRule is not null) {
+                    var reason = string.IsNullOrWhiteSpace(policyRule.Reason) ? string.Empty : $" ({policyRule.Reason})";
+                    _console.WriteInfo($"{packageReference.Key} held at {packageBump.ToString().ToLowerInvariant()} by policy '{policyRule.Match}'{reason}.");
+                }
             }
 
             if (target is null) {
@@ -923,9 +952,9 @@ internal class OutdatedService {
             }
         }
 
-        // With --max-bump-for in play there is no single cap left to name, so the messages describe
-        // it generically instead of quoting a level that only applies to some packages.
-        var capDescription = bumpOverrides.Count > 0
+        // With --max-bump-for or policy rules in play there is no single cap left to name, so the
+        // messages describe it generically instead of quoting a level that only applies to some packages.
+        var capDescription = bumpOverrides.Count > 0 || policyRules.Count > 0
             ? "the bump cap"
             : $"--max-bump {maxBump.ToString().ToLowerInvariant()}";
 
@@ -997,7 +1026,7 @@ internal class OutdatedService {
                 heldOnly.Add(id);
             }
 
-            var model = BuildPickerModel(pickerInput, grouping, preselect, candidatesPerPackage, heldOnly);
+            var model = BuildPickerModel(pickerInput, grouping, preselect, candidatesPerPackage, heldOnly, policyRules);
             var pickerGroups = model.Groups;
             var preselectedCount = model.Groups.SelectMany(g => g.Rows).Count(r => r.Preselected);
             var outcome = _console.RunPicker(model, PickerTitle(pickerInput.Count, heldOnly.Count, preselectedCount, capDescription));
@@ -1006,6 +1035,23 @@ internal class OutdatedService {
                 stopwatch.Stop();
                 errorSink.WriteTo();
                 return ExitCode(errorSink, evaluationFailures, metadataFailures);
+            }
+
+            // Policy edits made in the picker are written before anything else happens, so they
+            // survive even if the run stops at a conflict prompt or a failed write.
+            if (outcome.PolicyChanges.Count > 0) {
+                if (policies is null) {
+                    _console.WriteWarning($"{outcome.PolicyChanges.Count} policy change(s) from the picker were not saved: no policy store.");
+                }
+                else {
+                    foreach (var (match, level) in outcome.PolicyChanges) {
+                        if (level is { } cap) policies.Set(match, cap, "set in bld outdated --interactive");
+                        else policies.Remove(match);
+                    }
+                    policies.Save();
+                    _console.WriteLine($"Saved {outcome.PolicyChanges.Count} policy change(s) to {policies.FilePath}.");
+                    if (!ignorePolicy) policyRules = policies.Rules;
+                }
             }
 
             // Whatever the picker settled on replaces what the cap proposed, including targets above
@@ -1078,7 +1124,8 @@ internal class OutdatedService {
                     if (!chosenTargets.TryGetValue(id, out var target)) continue;
                     if (!pickerInput.TryGetValue(id, out var versions)) continue;
                     candidatesPerPackage.TryGetValue(id, out var packageCandidates);
-                    if (RepeatOverride(versions.CurrentMin, target, packageCandidates, EffectiveBump(id, maxBump, bumpOverrides)) is { } bump) overrides[id] = bump;
+                    // Against the policies as they are now saved: a rule set in this picker applies to the repeated run.
+                    if (RepeatOverride(versions.CurrentMin, target, packageCandidates, ResolveBump(id, maxBump, bumpOverrides, policyRules).Level) is { } bump) overrides[id] = bump;
                 }
                 _console.WriteLine("To repeat without prompts:");
                 _console.WriteLine("  " + BuildRepeatCommand(rootPath, pickerGroups, picks, bumpOverrides, overrides, maxBump, includePrerelease, sources));
@@ -1189,7 +1236,7 @@ internal class OutdatedService {
             }
 
             if (!heldPerPackage.IsEmpty) {
-                _console.WriteLine($"{heldPerPackage.Count} package(s) have newer versions held back by {capDescription}.");
+                _console.WriteLine(HeldSummary(heldPerPackage.Keys.Select(id => heldBy.TryGetValue(id, out var s) ? s : BumpSource.Global).ToList(), maxBump));
             }
         }
 
@@ -1906,7 +1953,9 @@ internal sealed record PickerTarget(NuGetVersion Version, BumpKind Bump);
 /// <paramref name="DefaultTarget"/> is the one the bump cap picked; the user can move along the list
 /// without another lookup.
 /// </summary>
-internal sealed record PickerRow(string Id, NuGetVersion Current, IReadOnlyList<PickerTarget> Targets, int DefaultTarget, bool Preselected) {
+/// <param name="PolicyMatch">The match of the policy rule that applies to this package, if any.</param>
+/// <param name="PolicyLevel">The cap that rule imposes.</param>
+internal sealed record PickerRow(string Id, NuGetVersion Current, IReadOnlyList<PickerTarget> Targets, int DefaultTarget, bool Preselected, string? PolicyMatch = null, MaxBump? PolicyLevel = null) {
     internal PickerTarget Default => Targets[DefaultTarget];
     internal NuGetVersion Target => Default.Version;
     internal BumpKind Bump => Default.Bump;
