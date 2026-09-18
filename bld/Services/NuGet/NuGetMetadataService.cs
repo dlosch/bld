@@ -78,34 +78,67 @@ public static class NugetMetadataService {
                 return null;
             }
 
+            // Parsed once: the request re-parses its TFM strings on every enumeration, and the walk
+            // below enumerates them for every version it checks.
+            var requestedFrameworks = request.CompatibleTargetFrameworksTyped.ToList();
+
+            // A page that could not be read ends up empty rather than null, so the walk does not
+            // ask for it a second time.
+            async Task LoadPageAsync(CatalogPage2 pageItem) {
+                var pageUrl = pageItem.Id;
+                logger?.WriteDebug($"Requesting page {pageUrl} for {request.PackageId}");
+
+                using var pageResponse = await GetAsync(pageUrl);
+                if (!pageResponse.IsSuccessStatusCode) {
+                    logger?.WriteInfo($"Failed to get page {pageUrl} for {request.PackageId}. Status: {pageResponse.StatusCode}");
+                    pageItem.Items = [];
+                    return;
+                }
+
+                var pageDetails2 = await pageResponse.Content.ReadFromJsonAsync<CatalogPage2>(CatalogJsonContext.Default.CatalogPage2, cancellationToken);
+                pageItem.Items = pageDetails2?.Items ?? [];
+                if (pageItem.Items.Count == 0) logger?.WriteDebug($"No items found in page {pageUrl} for {request.PackageId}");
+            }
+
+            // Baseline mode: instead of returning the first usable version, fill one slot per bump
+            // class. The walk is newest-first, so the first hit for a class is the highest in it.
+            var baseline = request.Baseline;
+
+            // That walk goes down to the pinned version, which on a package with a long history means
+            // several pages; fetching them one after the other made it as slow as the page count.
+            // Every page that can hold a candidate is known from the index, so they are all requested
+            // at once, and the prerelease retry below finds them loaded.
+            if (baseline is not null) {
+                var pending = new List<CatalogPage2>();
+                for (int i = index.Items.Count - 1; i >= 0; i--) {
+                    if (PageEndsBelow(index.Items[i], baseline)) break;
+                    if (index.Items[i].Items is null) pending.Add(index.Items[i]);
+                }
+                if (pending.Count > 0) await Task.WhenAll(pending.Select(LoadPageAsync));
+            }
+
             var allowPrerelease = request.AllowPrerelease;
             // Whether the feed lists any stable version at all, independent of framework matching.
             var sawListedStable = false;
             // Newest listed version rejected by VersionFilter, reported so the caller can tell the
             // user that an update exists outside the window they asked for.
             string? newestOutsideFilter = null;
+            VersionCandidate? patchCandidate = null, minorCandidate = null, majorCandidate = null, currentCandidate = null;
 retry:
+            patchCandidate = minorCandidate = majorCandidate = currentCandidate = null;
             for (int i = index.Items.Count - 1; i >= 0; i--) {
                 var pageItem = index.Items[i];
 
-                if (pageItem.Items is null) {
-                    var pageUrl = pageItem.Id;
-                    logger?.WriteDebug($"Requesting page {pageUrl} for {request.PackageId}");
-
-                    var pageResponse = await GetAsync(pageUrl);
-                    if (!pageResponse.IsSuccessStatusCode) {
-                        logger?.WriteInfo($"Failed to get page {pageUrl} for {request.PackageId}. Status: {pageResponse.StatusCode}");
-                        continue;
-                    }
-
-                    var pageDetails2 = await pageResponse.Content.ReadFromJsonAsync<CatalogPage2>(CatalogJsonContext.Default.CatalogPage2, cancellationToken);
-                    if (pageDetails2 is null || pageDetails2.Items is null || !pageDetails2.Items.Any()) {
-                        logger?.WriteDebug($"No items found in page {pageUrl} for {request.PackageId}");
-                        continue;
-                    }
-
-                    pageItem.Items = pageDetails2.Items;
+                // Pages are ordered oldest-first and we walk them backwards, so once a page ends
+                // below the pin every remaining one does too. Without this a package pinned at an
+                // old version would pull down every registration page just to find its own version,
+                // which the "stop at the first match" walk never had to do.
+                if (baseline is not null && PageEndsBelow(pageItem, baseline)) {
+                    logger?.WriteDebug($"Skipping registration page ending at {pageItem.Upper} for {request.PackageId}: below the pinned {baseline}");
+                    break;
                 }
+
+                if (pageItem.Items is null) await LoadPageAsync(pageItem);
 
                 var page = pageItem;
 
@@ -137,6 +170,19 @@ retry:
                         }
                     }
 
+                    // Anything below the pin is not a target. The baseline itself stays a candidate,
+                    // so a package that is already current still reports a version rather than
+                    // looking like a failed lookup.
+                    var isBaseline = false;
+                    if (baseline is not null) {
+                        if (nugetVersion is null || nugetVersion < baseline) continue;
+                        // The pinned version is looked at even when every slot above it is filled: its
+                        // dependency manifest is what the reverse conflict check reads when this
+                        // package stays where it is.
+                        isBaseline = nugetVersion == baseline;
+                        if (!isBaseline && IsSlotTaken(nugetVersion, baseline, patchCandidate, minorCandidate, majorCandidate)) continue;
+                    }
+
                     var supportedFrameworks = new Dictionary<NuGetFramework, string>(request.CompatibleTargetFrameworks?.Count ?? 1);
                     var dependencyGroups = new Dictionary<NuGetFramework, DependencyGroup>(request.CompatibleTargetFrameworks?.Count ?? 1);
 
@@ -145,7 +191,7 @@ retry:
                     }
                     else {
                         var bestMatchDependencyGroup = default(DependencyGroup);    
-                        foreach (var reqFramework in request.CompatibleTargetFrameworksTyped) {
+                        foreach (var reqFramework in requestedFrameworks) {
                             if (versionItem.CatalogEntry.DependencyGroups is null || !versionItem.CatalogEntry.DependencyGroups.Any()) {
                                 logger?.WriteDebug($"Package {request.PackageId} version {versionItem.CatalogEntry.Version} has no dependency groups, assuming it supports all frameworks");
                                 supportedFrameworks[reqFramework] = versionItem.CatalogEntry.Version;
@@ -195,24 +241,81 @@ retry:
                         ? supportedFrameworks.Any()
                         : supportedFrameworks.Count >= requestedCount;
 
-                    if (satisfiesAll) {
-                        logger?.WriteDebug($"Found matching version {versionItem.CatalogEntry.Version} for {request.PackageId} with {supportedFrameworks.Count} supported frameworks");
-
-                        return new PackageVersionResult {
-                            PackageId = request.PackageId,
+                    if (isBaseline) {
+                        currentCandidate = new VersionCandidate {
+                            Version = versionItem.CatalogEntry.Version,
                             TargetFrameworkVersions = supportedFrameworks,
-                            IsPrerelease = isPrerelease,
-                            NewestOutsideFilter = newestOutsideFilter,
-
-                            Dependencies = dependencyGroups
+                            Dependencies = dependencyGroups,
+                            IsPrerelease = isPrerelease
                         };
                     }
 
+                    if (satisfiesAll) {
+                        logger?.WriteDebug($"Found matching version {versionItem.CatalogEntry.Version} for {request.PackageId} with {supportedFrameworks.Count} supported frameworks");
+
+                        if (baseline is null) {
+                            return new PackageVersionResult {
+                                PackageId = request.PackageId,
+                                TargetFrameworkVersions = supportedFrameworks,
+                                IsPrerelease = isPrerelease,
+                                NewestOutsideFilter = newestOutsideFilter,
+
+                                Dependencies = dependencyGroups
+                            };
+                        }
+
+                        var candidate = new VersionCandidate {
+                            Version = versionItem.CatalogEntry.Version,
+                            TargetFrameworkVersions = supportedFrameworks,
+                            Dependencies = dependencyGroups,
+                            IsPrerelease = isPrerelease
+                        };
+                        majorCandidate ??= candidate;
+                        if (nugetVersion!.Major == baseline.Major) minorCandidate ??= candidate;
+                        if (nugetVersion.Major == baseline.Major && nugetVersion.Minor == baseline.Minor) patchCandidate ??= candidate;
+
+                        // Nothing left to learn from older versions once every class is filled and the
+                        // pin's own manifest is in hand. A pin the feed does not list walks on to the
+                        // end of the loaded pages, which costs no request: IsSlotTaken skips the rest.
+                        if (patchCandidate is not null && minorCandidate is not null && majorCandidate is not null && currentCandidate is not null) {
+                            goto done;
+                        }
+                        continue;
+                    }
+
                     if (supportedFrameworks.Any()) {
-                        var missing = request.CompatibleTargetFrameworksTyped.Where(f => !supportedFrameworks.ContainsKey(f));
+                        var missing = requestedFrameworks.Where(f => !supportedFrameworks.ContainsKey(f));
                         logger?.WriteDebug($"Skipping {request.PackageId} {versionItem.CatalogEntry.Version}: no support for {string.Join(", ", missing.Select(f => f.GetShortFolderName()))}");
                     }
                 }
+            }
+
+done:
+            if (baseline is not null) {
+                // The prerelease retry still applies: a package with no stable release at all has to
+                // be looked at again before we call it unknown.
+                if (majorCandidate is null && !allowPrerelease && !request.AllowPrerelease && !sawListedStable) {
+                    allowPrerelease = true;
+                    newestOutsideFilter = null;
+                    goto retry;
+                }
+                if (majorCandidate is null) {
+                    logger?.WriteDebug($"No version at or above {baseline} for {request.PackageId} with any of the requested frameworks");
+                    return null;
+                }
+                var highest = majorCandidate;
+                return new PackageVersionResult {
+                    PackageId = request.PackageId,
+                    TargetFrameworkVersions = highest.TargetFrameworkVersions,
+                    IsPrerelease = highest.IsPrerelease,
+                    Dependencies = highest.Dependencies,
+                    Candidates = new PackageVersionCandidates {
+                        Patch = patchCandidate,
+                        Minor = minorCandidate,
+                        Major = majorCandidate,
+                        Current = currentCandidate
+                    }
+                };
             }
 
             // Retry allowing prerelease only for packages that genuinely have no stable release. The
@@ -248,6 +351,22 @@ retry:
         }
     }
 
+    /// <summary>Whether a registration page ends below the pin, so it cannot hold a candidate.</summary>
+    private static bool PageEndsBelow(CatalogPage2 page, NuGetVersion baseline) =>
+        page.Upper is { } upper && NuGetVersion.TryParse(upper, out var pageUpper) && pageUpper < baseline;
+
+    /// <summary>
+    /// Whether every bump class this version could fill is already taken, so the TFM check - the
+    /// expensive part of the walk - can be skipped for it.
+    /// </summary>
+    private static bool IsSlotTaken(NuGetVersion version, NuGetVersion baseline, VersionCandidate? patch, VersionCandidate? minor, VersionCandidate? major) {
+        if (major is null) return false;
+        if (version.Major != baseline.Major) return true; // only ever fills the major slot
+        if (minor is null) return false;
+        if (version.Minor != baseline.Minor) return true; // only ever fills the minor slot
+        return patch is not null;
+    }
+
     /// <summary>
     /// Merges the per-feed answers for one package: the highest version wins, "nothing inside the
     /// --max-bump window" only counts when no feed had a candidate, and the held-back version is the
@@ -260,9 +379,9 @@ retry:
         NuGetVersion? newestOutsideVersion = null;
         var sawWindowMiss = false;
         string? packageId = null;
+        var all = results.Where(r => r is not null).Select(r => r!).ToList();
 
-        foreach (var result in results) {
-            if (result is null) continue;
+        foreach (var result in all) {
             packageId ??= result.PackageId;
 
             if (result.NewestOutsideFilter is { } outside && NuGetVersion.TryParse(outside, out var outsideVersion)
@@ -285,6 +404,19 @@ retry:
         }
 
         if (best is not null) {
+            // Each class is merged on its own: one feed can have the newest major while another has
+            // the newest patch inside the current minor.
+            if (all.Any(r => r.Candidates is not null)) {
+                best = best with {
+                    Candidates = new PackageVersionCandidates {
+                        Patch = HighestCandidate(all, c => c.Patch),
+                        Minor = HighestCandidate(all, c => c.Minor),
+                        Major = HighestCandidate(all, c => c.Major),
+                        // The same version has the same manifest on every feed that lists it.
+                        Current = all.Select(r => r.Candidates?.Current).FirstOrDefault(c => c is not null)
+                    }
+                };
+            }
             return newestOutside is null ? best : best with { NewestOutsideFilter = newestOutside };
         }
         if (sawWindowMiss) {
@@ -296,6 +428,21 @@ retry:
             };
         }
         return null;
+    }
+
+    private static VersionCandidate? HighestCandidate(IEnumerable<PackageVersionResult> results, Func<PackageVersionCandidates, VersionCandidate?> slot) {
+        VersionCandidate? best = null;
+        NuGetVersion? bestVersion = null;
+        foreach (var result in results) {
+            if (result.Candidates is null) continue;
+            if (slot(result.Candidates) is not { } candidate) continue;
+            if (!NuGetVersion.TryParse(candidate.Version, out var version)) continue;
+            if (bestVersion is null || version > bestVersion) {
+                best = candidate;
+                bestVersion = version;
+            }
+        }
+        return best;
     }
 }
 
@@ -319,6 +466,14 @@ public record CatalogPage2 {
 
     [JsonPropertyName("count")]
     public int Count { get; init; }
+
+    /// <summary>Lowest version on this page. Present on the registration index, absent on a page body.</summary>
+    [JsonPropertyName("lower")]
+    public string? Lower { get; init; }
+
+    /// <summary>Highest version on this page.</summary>
+    [JsonPropertyName("upper")]
+    public string? Upper { get; init; }
 
     [JsonPropertyName("items")]
     public IReadOnlyList<CatalogPageDetails2>? Items { get; set; } = default;
@@ -423,6 +578,14 @@ public record PackageVersionRequest {
     /// </summary>
     public Func<NuGetVersion, bool>? VersionFilter { get; init; }
 
+    /// <summary>
+    /// The version the package is pinned at now. When set, the walk does not stop at the newest
+    /// usable version but keeps going until it has the highest compatible version per bump class
+    /// (see <see cref="PackageVersionResult.Candidates"/>), so the caller can offer a choice
+    /// instead of a single target. Null keeps the old "first match wins" behaviour.
+    /// </summary>
+    public NuGetVersion? Baseline { get; init; }
+
     public required IReadOnlyList<string> CompatibleTargetFrameworks { get; init; }
     public IEnumerable<NuGetFramework> CompatibleTargetFrameworksTyped => CompatibleTargetFrameworks
         .Where(x => !string.IsNullOrWhiteSpace(x))
@@ -454,6 +617,49 @@ public record PackageVersionResult {
     /// </summary>
     public bool NoVersionWithinFilter { get; init; }
 
+    /// <summary>
+    /// Highest compatible version per bump class relative to
+    /// <see cref="PackageVersionRequest.Baseline"/>, or null when no baseline was requested. Every
+    /// candidate has passed the same listing, prerelease and target framework checks as
+    /// <see cref="TargetFrameworkVersions"/>, so any of them is safe to apply.
+    /// </summary>
+    public PackageVersionCandidates? Candidates { get; init; }
+
     public DateTime RetrievedAt { get; init; } = DateTime.UtcNow;
     public Dictionary<NuGetFramework, DependencyGroup>? Dependencies { get; internal set; }
+}
+
+/// <summary>
+/// One version the caller may pick, with the metadata that belongs to <em>that</em> version - the
+/// dependency manifest differs per version, and the conflict check has to see the one for the
+/// target actually chosen.
+/// </summary>
+public record VersionCandidate {
+    public required string Version { get; init; }
+    public required Dictionary<NuGetFramework, string> TargetFrameworkVersions { get; init; }
+    public Dictionary<NuGetFramework, DependencyGroup>? Dependencies { get; init; }
+    public bool IsPrerelease { get; init; }
+}
+
+/// <summary>
+/// The three targets a package can be moved to, cumulative: <see cref="Patch"/> is the highest
+/// version sharing the baseline's major and minor, <see cref="Minor"/> the highest sharing its
+/// major, <see cref="Major"/> the highest overall. A class is null when the feed has nothing
+/// usable in it; all three can be the baseline itself, which is how "up to date" looks.
+/// </summary>
+public record PackageVersionCandidates {
+    public VersionCandidate? Patch { get; init; }
+    public VersionCandidate? Minor { get; init; }
+    public VersionCandidate? Major { get; init; }
+
+    /// <summary>
+    /// The pinned version itself, kept for its dependency manifest rather than as a target. Null
+    /// when the feed does not list that version, or lists it as unlisted or as a prerelease the
+    /// request did not allow.
+    /// </summary>
+    public VersionCandidate? Current { get; init; }
+
+    public VersionCandidate? Highest => Major ?? Minor ?? Patch;
+
+    public bool IsEmpty => Patch is null && Minor is null && Major is null;
 }
