@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented in this file.
 
-## [Unreleased]
+## [0.4.0] - 2026-09-18
 
 ### Changes
 - extend `outdated` command: `bld outdated undo`. Every `--apply`, `--interactive` and `tfm --update-packages` run that changes a file records what it wrote (file, package, value before and after, per element) under `BLD_HOME/history`, and `undo` takes the newest run back after showing a table and asking once — or part of it with `-p`/`--exclude`, or from a grouped picker with `-i`. Reverted edits leave the record, so a second `undo` pops the run before; `--list` and `--run <n>` reach older runs. A value that no longer reads as the run left it is skipped and named (with the later run that wrote it, when there is one), never overwritten. `--yes` skips the question, `--verify-restore` restores afterwards.
