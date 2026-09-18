@@ -163,16 +163,22 @@ internal class OutdatedService {
     // that dependency will actually end up at. Returns the final accepted set (a mutated copy of the
     // input).
     //
-    // Scope (tier A): only dependencies that are themselves direct references in scope are checked -
-    // an id is resolvable when it appears in `outdated` or in `currentPins`. Transitive chains
-    // (P needs X needs D) and upper bounds declared by packages that are not being updated are not
-    // followed; `--verify-restore` is the only complete answer.
+    // Scope (tier A): only direct references in scope are checked - an id is resolvable when it
+    // appears in `outdated` or in `currentPins`. Two directions:
+    //  - forward: an accepted package's target declares a range on another direct reference, and
+    //    the version that reference ends up at is outside it;
+    //  - reverse (only with `currentManifests` and `askBlocked`): a direct reference that stays where
+    //    it is declares a range on an accepted package, and the target is outside it.
+    // Transitive chains (P needs X needs D) are not followed; `--verify-restore` is the only
+    // complete answer.
     internal static HashSet<string> ResolveInteractivePicks(
         IEnumerable<string> initialAccepted,
         IReadOnlyDictionary<string, (NuGetVersion CurrentMin, NuGetVersion Latest)> outdated,
         IReadOnlyDictionary<string, PackageVersionResult> metadata,
         Func<string, NuGetVersion, string, string, NuGetVersion, bool, ConflictChoice> askConflict,
-        IReadOnlyDictionary<string, NuGetVersion>? currentPins = null) {
+        IReadOnlyDictionary<string, NuGetVersion>? currentPins = null,
+        IReadOnlyDictionary<string, Dictionary<NuGetFramework, DependencyGroup>>? currentManifests = null,
+        Func<string, NuGetVersion, string, NuGetVersion, string, bool, ConflictChoice>? askBlocked = null) {
 
         var accepted = new HashSet<string>(initialAccepted, StringComparer.OrdinalIgnoreCase);
 
@@ -182,35 +188,45 @@ internal class OutdatedService {
             foreach (var pickerId in accepted.ToList()) {
                 if (!accepted.Contains(pickerId)) continue; // removed mid-loop
                 if (!outdated.ContainsKey(pickerId)) continue; // caller passed an id we don't track
-                if (!metadata.TryGetValue(pickerId, out var meta) || meta?.Dependencies is null) continue;
 
-                // Union dependencies across all TFM groups, keeping the strictest range per id.
-                // Guard against nulls: NuGet catalog JSON can contain "dependencies": null on a
-                // group, which System.Text.Json deserializes to a null property even with a `= []` default.
-                var depRanges = new Dictionary<string, (string Raw, VersionRange Range)>(StringComparer.OrdinalIgnoreCase);
-                foreach (var dg in meta.Dependencies.Values) {
-                    if (dg?.Dependencies is null) continue;
-                    foreach (var dep in dg.Dependencies) {
-                        if (dep is null || string.IsNullOrEmpty(dep.PackageId) || string.IsNullOrEmpty(dep.Range)) continue;
-                        if (!VersionRange.TryParse(dep.Range, out var range)) continue;
-                        if (depRanges.TryGetValue(dep.PackageId, out var existing)) {
-                            // Keep the strictest lower bound. Requiring *both* ranges to have a
-                            // MinVersion meant an open-ended range seen first, e.g. "(, )" on one TFM
-                            // group, discarded a real "[3.0.0, )" from another - so a genuine conflict
-                            // was never reported to the user.
-                            var newMin = range.MinVersion;
-                            var oldMin = existing.Range.MinVersion;
-                            if (newMin is { } && (oldMin is null || newMin > oldMin)) {
-                                depRanges[dep.PackageId] = (dep.Range, range);
-                            }
+                if (currentManifests is not null && askBlocked is not null) {
+                    var target = outdated[pickerId].Latest;
+                    foreach (var (blockerId, manifest) in currentManifests.OrderBy(m => m.Key, StringComparer.OrdinalIgnoreCase)) {
+                        if (blockerId.Equals(pickerId, StringComparison.OrdinalIgnoreCase)) continue;
+                        // A blocker that moves too is judged by its target's manifest in the forward
+                        // pass, not by the manifest of the version it is leaving.
+                        if (accepted.Contains(blockerId)) continue;
+                        if (!DeclaredRanges(manifest).TryGetValue(pickerId, out var ranges)) continue;
+                        var failing = ranges.FirstOrDefault(r => !r.Range.Satisfies(target));
+                        if (failing.Range is null) continue;
+
+                        NuGetVersion blockerVersion;
+                        var blockerOutdated = outdated.TryGetValue(blockerId, out var blockerVersions);
+                        if (blockerOutdated) blockerVersion = blockerVersions.CurrentMin;
+                        else if (currentPins is not null && currentPins.TryGetValue(blockerId, out var pinned)) blockerVersion = pinned;
+                        else continue; // not a direct reference in scope
+
+                        var choice = askBlocked(pickerId, target, blockerId, blockerVersion, failing.Raw, blockerOutdated);
+                        switch (choice) {
+                            case ConflictChoice.IncludeDep when blockerOutdated:
+                                accepted.Add(blockerId);
+                                changed = true;
+                                break;
+                            case ConflictChoice.SkipPicker:
+                                accepted.Remove(pickerId);
+                                changed = true;
+                                break;
+                            default:
+                                break;
                         }
-                        else {
-                            depRanges[dep.PackageId] = (dep.Range, range);
-                        }
+                        if (!accepted.Contains(pickerId)) break;
                     }
+                    if (!accepted.Contains(pickerId)) continue;
                 }
 
-                foreach (var (depId, dep) in depRanges) {
+                if (!metadata.TryGetValue(pickerId, out var meta) || meta?.Dependencies is null) continue;
+
+                foreach (var (depId, ranges) in DeclaredRanges(meta.Dependencies)) {
                     // The version this dependency will actually end up at: its update target when it
                     // is being updated too, otherwise the version it stays pinned at. A dependency
                     // that is already accepted is not automatically safe - --max-bump can cap its
@@ -235,9 +251,12 @@ internal class OutdatedService {
                         continue; // not a direct reference in scope - out of tier A's reach
                     }
 
-                    if (dep.Range.Satisfies(effective)) continue; // safe either way
+                    // Every framework has to be satisfied by the one version the dependency ends up
+                    // at, so each group's range counts; the first one that fails is the one reported.
+                    var failing = ranges.FirstOrDefault(r => !r.Range.Satisfies(effective));
+                    if (failing.Range is null) continue; // safe either way
 
-                    var choice = askConflict(pickerId, outdated[pickerId].Latest, depId, dep.Raw, effective, depAlreadyIncluded);
+                    var choice = askConflict(pickerId, outdated[pickerId].Latest, depId, failing.Raw, effective, depAlreadyIncluded);
                     switch (choice) {
                         // Including only helps when the dependency has an update available that is
                         // not already selected; otherwise treat the answer as accept-risk.
@@ -258,6 +277,26 @@ internal class OutdatedService {
         } while (changed);
 
         return accepted;
+    }
+
+    // The ranges a manifest declares per dependency id, one entry per distinct range text across
+    // the TFM groups. Merging them into one range lost upper bounds: "(, )" on one group and
+    // "[3.0.0, 4.0.0)" on another is two constraints, not one. Guards against nulls because NuGet
+    // catalog JSON can contain "dependencies": null on a group, which System.Text.Json deserializes
+    // to a null property even with a `= []` default.
+    private static Dictionary<string, List<(string Raw, VersionRange Range)>> DeclaredRanges(Dictionary<NuGetFramework, DependencyGroup> manifest) {
+        var result = new Dictionary<string, List<(string Raw, VersionRange Range)>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var dg in manifest.Values) {
+            if (dg?.Dependencies is null) continue;
+            foreach (var dep in dg.Dependencies) {
+                if (dep is null || string.IsNullOrEmpty(dep.PackageId) || string.IsNullOrEmpty(dep.Range)) continue;
+                if (!VersionRange.TryParse(dep.Range, out var range)) continue;
+                if (!result.TryGetValue(dep.PackageId, out var ranges)) result[dep.PackageId] = ranges = new();
+                if (ranges.Any(r => r.Raw == dep.Range)) continue;
+                ranges.Add((dep.Range, range));
+            }
+        }
+        return result;
     }
 
     private static bool IsPreselected(BumpKind bump, Preselect preselect) => preselect switch {
@@ -662,6 +701,10 @@ internal class OutdatedService {
         // Every target the feeds offer per package (highest patch / minor / major), so the picker can
         // move a package between them without another lookup.
         var candidatesPerPackage = new ConcurrentDictionary<string, PackageVersionCandidates>(StringComparer.OrdinalIgnoreCase);
+        // The dependency manifest of the version each package is pinned at now, for every package
+        // the feeds know, so the conflict check can see what a package that stays put requires of
+        // the ones that move.
+        var currentManifests = new ConcurrentDictionary<string, Dictionary<NuGetFramework, DependencyGroup>>(StringComparer.OrdinalIgnoreCase);
 
         var options = new NugetMetadataOptions { MaxParallelRequests = parallelOptions.MaxDegreeOfParallelism /* configure */ };
         using var client = NugetMetadataService.CreateHttpClient(options);
@@ -756,6 +799,7 @@ internal class OutdatedService {
             }
 
             candidatesPerPackage[packageReference.Key] = candidates;
+            if (candidates.Current?.Dependencies is { } currentManifest) currentManifests[packageReference.Key] = currentManifest;
 
             var target = CandidateForBump(candidates, packageBump);
             var highest = candidates.Highest;
@@ -915,7 +959,16 @@ internal class OutdatedService {
                         $"{pickerId} {pickerLatest} requires {depId} {depRange}, but {depId} {verb} {depCurrent} ({HoldReason(depId, depAlreadyIncluded)}). {action}");
                     return allowConflicts ? ConflictChoice.AcceptRisk : ConflictChoice.SkipPicker;
                 },
-                currentPins);
+                currentPins,
+                currentManifests,
+                (pickerId, pickerTarget, blockerId, blockerVersion, range, _) => {
+                    var action = allowConflicts
+                        ? "Updating anyway (--allow-conflicts)."
+                        : $"Holding {pickerId} back.";
+                    _console.WriteWarning(
+                        $"{pickerId} {pickerTarget} breaks {blockerId}, which stays at {blockerVersion} ({HoldReason(blockerId, false)}) and requires {pickerId} {range}. {action}");
+                    return allowConflicts ? ConflictChoice.AcceptRisk : ConflictChoice.SkipPicker;
+                });
 
             foreach (var id in outdatedPerPackage.Keys.ToList()) {
                 if (!picks.Contains(id)) {
@@ -995,7 +1048,17 @@ internal class OutdatedService {
                     if (_console.Confirm($"  Skip {pickerId} as well?", defaultValue: false)) return ConflictChoice.SkipPicker;
                     return ConflictChoice.AcceptRisk;
                 },
-                currentPins);
+                currentPins,
+                currentManifests,
+                (pickerId, pickerTarget, blockerId, blockerVersion, range, canInclude) => {
+                    _console.WriteWarning(
+                        $"{pickerId} {pickerTarget} breaks {blockerId}, which stays at {blockerVersion} and requires {pickerId} {range}.");
+                    // Including the blocker's own update may lift the bound; whether it does is
+                    // checked against that update's manifest in the next pass.
+                    if (canInclude && _console.Confirm($"  Include {blockerId} update too?", defaultValue: true)) return ConflictChoice.IncludeDep;
+                    if (_console.Confirm($"  Skip {pickerId} instead?", defaultValue: false)) return ConflictChoice.SkipPicker;
+                    return ConflictChoice.AcceptRisk;
+                });
 
             var dropped = 0;
             foreach (var id in outdatedPerPackage.Keys.ToList()) {

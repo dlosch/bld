@@ -574,6 +574,149 @@ public class OutdatedServiceTests {
         Assert.DoesNotContain("Dep", result);
     }
 
+    private static Dictionary<NuGetFramework, DependencyGroup> ManifestWithDep(string depId, string depRange) => new() {
+        [NuGetFramework.AnyFramework] = new DependencyGroup {
+            Dependencies = new[] { new Dependency { PackageId = depId, Range = depRange } }
+        }
+    };
+
+    [Fact]
+    public void ResolveInteractivePicks_UpperBoundInOneFrameworkGroupIsNotLostBehindAnOpenRange() {
+        // net8.0 caps Dep below 4.0.0 while net9.0 leaves it open. Both frameworks restore against
+        // the same Dep version, so the cap is a real constraint and has to be reported.
+        var outdated = new Dictionary<string, (NuGetVersion, NuGetVersion)>(StringComparer.OrdinalIgnoreCase) {
+            ["Picker"] = (NuGetVersion.Parse("1.0.0"), NuGetVersion.Parse("2.0.0"))
+        };
+        var meta = new Dictionary<string, PackageVersionResult>(StringComparer.OrdinalIgnoreCase) {
+            ["Picker"] = new PackageVersionResult {
+                PackageId = "Picker",
+                TargetFrameworkVersions = new Dictionary<NuGetFramework, string>(),
+                Dependencies = new Dictionary<NuGetFramework, DependencyGroup> {
+                    [NuGetFramework.Parse("net9.0")] = new DependencyGroup { Dependencies = new[] { new Dependency { PackageId = "Dep", Range = "[3.0.0, )" } } },
+                    [NuGetFramework.Parse("net8.0")] = new DependencyGroup { Dependencies = new[] { new Dependency { PackageId = "Dep", Range = "[3.0.0, 4.0.0)" } } }
+                }
+            }
+        };
+        var pins = new Dictionary<string, NuGetVersion>(StringComparer.OrdinalIgnoreCase) {
+            ["Dep"] = NuGetVersion.Parse("4.0.0")
+        };
+
+        var reported = new List<string>();
+        var result = OutdatedService.ResolveInteractivePicks(
+            new[] { "Picker" }, outdated, meta,
+            (_, _, _, range, _, _) => { reported.Add(range); return OutdatedService.ConflictChoice.SkipPicker; },
+            pins);
+
+        Assert.Equal(new[] { "[3.0.0, 4.0.0)" }, reported);
+        Assert.Empty(result);
+    }
+
+    [Fact]
+    public void ResolveInteractivePicks_ReverseConflict_BlockerStayingAtItsPinHoldsThePickerBack() {
+        // Blocker is up to date and its pinned version caps Picker below 2.0.0.
+        var outdated = new Dictionary<string, (NuGetVersion, NuGetVersion)>(StringComparer.OrdinalIgnoreCase) {
+            ["Picker"] = (NuGetVersion.Parse("1.0.0"), NuGetVersion.Parse("2.0.0"))
+        };
+        var meta = new Dictionary<string, PackageVersionResult>(StringComparer.OrdinalIgnoreCase);
+        var pins = new Dictionary<string, NuGetVersion>(StringComparer.OrdinalIgnoreCase) {
+            ["Blocker"] = NuGetVersion.Parse("3.1.0")
+        };
+        var manifests = new Dictionary<string, Dictionary<NuGetFramework, DependencyGroup>>(StringComparer.OrdinalIgnoreCase) {
+            ["Blocker"] = ManifestWithDep("Picker", "[1.0.0, 2.0.0)"),
+            ["Picker"] = ManifestWithDep("Something", "[1.0.0, )")
+        };
+
+        var asked = new List<(string Picker, string Target, string Blocker, string BlockerVersion, string Range, bool CanInclude)>();
+        var result = OutdatedService.ResolveInteractivePicks(
+            new[] { "Picker" }, outdated, meta,
+            (_, _, _, _, _, _) => throw new InvalidOperationException("no forward conflict expected"),
+            pins, manifests,
+            (picker, target, blocker, blockerVersion, range, canInclude) => {
+                asked.Add((picker, target.ToString(), blocker, blockerVersion.ToString(), range, canInclude));
+                return OutdatedService.ConflictChoice.SkipPicker;
+            });
+
+        var conflict = Assert.Single(asked);
+        Assert.Equal(("Picker", "2.0.0", "Blocker", "3.1.0", "[1.0.0, 2.0.0)", false), conflict);
+        Assert.Empty(result);
+    }
+
+    [Fact]
+    public void ResolveInteractivePicks_ReverseConflict_AcceptRiskKeepsThePicker() {
+        var outdated = new Dictionary<string, (NuGetVersion, NuGetVersion)>(StringComparer.OrdinalIgnoreCase) {
+            ["Picker"] = (NuGetVersion.Parse("1.0.0"), NuGetVersion.Parse("2.0.0"))
+        };
+        var pins = new Dictionary<string, NuGetVersion>(StringComparer.OrdinalIgnoreCase) {
+            ["Blocker"] = NuGetVersion.Parse("3.1.0")
+        };
+        var manifests = new Dictionary<string, Dictionary<NuGetFramework, DependencyGroup>>(StringComparer.OrdinalIgnoreCase) {
+            ["Blocker"] = ManifestWithDep("Picker", "[1.0.0, 2.0.0)")
+        };
+
+        var result = OutdatedService.ResolveInteractivePicks(
+            new[] { "Picker" }, outdated, new Dictionary<string, PackageVersionResult>(),
+            (_, _, _, _, _, _) => OutdatedService.ConflictChoice.SkipPicker,
+            pins, manifests,
+            (_, _, _, _, _, _) => OutdatedService.ConflictChoice.AcceptRisk);
+
+        Assert.Single(result, "Picker");
+    }
+
+    [Fact]
+    public void ResolveInteractivePicks_ReverseConflict_IncludingTheBlockersUpdateLiftsTheBound() {
+        // Blocker has an update of its own whose manifest accepts Picker 2.0.0. Including it turns
+        // the reverse conflict into a forward check against that manifest, which passes.
+        var outdated = new Dictionary<string, (NuGetVersion, NuGetVersion)>(StringComparer.OrdinalIgnoreCase) {
+            ["Picker"] = (NuGetVersion.Parse("1.0.0"), NuGetVersion.Parse("2.0.0")),
+            ["Blocker"] = (NuGetVersion.Parse("3.1.0"), NuGetVersion.Parse("4.0.0"))
+        };
+        var meta = new Dictionary<string, PackageVersionResult>(StringComparer.OrdinalIgnoreCase) {
+            ["Blocker"] = MetaWithDep("Picker", "[2.0.0, )")
+        };
+        var manifests = new Dictionary<string, Dictionary<NuGetFramework, DependencyGroup>>(StringComparer.OrdinalIgnoreCase) {
+            ["Blocker"] = ManifestWithDep("Picker", "[1.0.0, 2.0.0)")
+        };
+
+        var forwardConflicts = 0;
+        var canIncludeSeen = false;
+        var result = OutdatedService.ResolveInteractivePicks(
+            new[] { "Picker" }, outdated, meta,
+            (_, _, _, _, _, _) => { forwardConflicts++; return OutdatedService.ConflictChoice.AcceptRisk; },
+            null, manifests,
+            (_, _, _, _, _, canInclude) => { canIncludeSeen = canInclude; return OutdatedService.ConflictChoice.IncludeDep; });
+
+        Assert.True(canIncludeSeen);
+        Assert.Equal(0, forwardConflicts);
+        Assert.Contains("Picker", result);
+        Assert.Contains("Blocker", result);
+    }
+
+    [Fact]
+    public void ResolveInteractivePicks_ReverseConflict_AnAcceptedBlockerIsJudgedByItsTargetManifest() {
+        // Both move. Blocker's current manifest would reject Picker 2.0.0, but the version it goes
+        // to accepts it, so there is nothing to report in either direction.
+        var outdated = new Dictionary<string, (NuGetVersion, NuGetVersion)>(StringComparer.OrdinalIgnoreCase) {
+            ["Picker"] = (NuGetVersion.Parse("1.0.0"), NuGetVersion.Parse("2.0.0")),
+            ["Blocker"] = (NuGetVersion.Parse("3.1.0"), NuGetVersion.Parse("4.0.0"))
+        };
+        var meta = new Dictionary<string, PackageVersionResult>(StringComparer.OrdinalIgnoreCase) {
+            ["Blocker"] = MetaWithDep("Picker", "[2.0.0, )")
+        };
+        var manifests = new Dictionary<string, Dictionary<NuGetFramework, DependencyGroup>>(StringComparer.OrdinalIgnoreCase) {
+            ["Blocker"] = ManifestWithDep("Picker", "[1.0.0, 2.0.0)")
+        };
+
+        var asked = 0;
+        var result = OutdatedService.ResolveInteractivePicks(
+            new[] { "Picker", "Blocker" }, outdated, meta,
+            (_, _, _, _, _, _) => { asked++; return OutdatedService.ConflictChoice.SkipPicker; },
+            null, manifests,
+            (_, _, _, _, _, _) => { asked++; return OutdatedService.ConflictChoice.SkipPicker; });
+
+        Assert.Equal(0, asked);
+        Assert.Equal(2, result.Count);
+    }
+
     [Theory]
     [InlineData("error NU1605: Detected package downgrade: A from 2.0.0 to 1.0.0", 1)]
     [InlineData("warning NU1701: fallback framework", 0)]
