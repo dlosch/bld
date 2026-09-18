@@ -189,6 +189,13 @@ public class ProjParserTests(ITestOutputHelper Console) {
 
             Assert.Single(refs);
             Assert.Equal(libPath, refs[0], StringComparer.OrdinalIgnoreCase);
+
+            // The same answer comes out of the package evaluation, and evaluating the same project
+            // again on the same parser must not trip over the pooled ProjectCollection.
+            var packages = parser.GetPackageReferences(new ProjCfg(new Proj(appPath, null), null));
+
+            Assert.NotNull(packages);
+            Assert.Equal(refs, packages!.ProjectReferences);
         }
         finally {
             if (Directory.Exists(tempDir)) {

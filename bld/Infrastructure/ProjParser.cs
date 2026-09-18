@@ -2,8 +2,11 @@
 
 using bld.Models;
 using bld.Services;
+using Microsoft.Build.Definition;
 using Microsoft.Build.Evaluation;
+using Microsoft.Build.Evaluation.Context;
 using NuGet.Versioning;
+using System.Collections.Concurrent;
 
 namespace bld.Infrastructure;
 
@@ -19,7 +22,10 @@ internal record class ProjectPackageReferenceInfo(
         bool? UseCpm,
         string? CpmFile,
         Dictionary<string, Pkg> PackageReferences,
-        Dictionary<string, PackageVersionEntry>? PackageVersions) {
+        Dictionary<string, PackageVersionEntry>? PackageVersions,
+        IReadOnlyList<string> ProjectReferences,
+        // The project file and every import outside the SDK: what the evaluation cache hashes.
+        IReadOnlyList<string> ContributingFiles) {
     // FirstOrDefault, not First: a project with no TargetFramework/TargetFrameworks/TargetFrameworkVersion
     // (a .vcxproj carrying PackageReferences, say) threw here from inside Parallel.ForEachAsync, which
     // cancelled every project not yet scanned while the run carried on with the partial result.
@@ -27,18 +33,87 @@ internal record class ProjectPackageReferenceInfo(
 }
 internal record class ProjectPackage(string PackageId, string? Version);
 
-internal sealed class ProjParser(IConsoleOutput Output, ErrorSink ErrorSink, CleaningOptions Options) {
+internal sealed class ProjParser(IConsoleOutput Output, ErrorSink ErrorSink, CleaningOptions Options) : IDisposable {
 
+    // A ProjectCollection caches every props/targets file it has imported. With a fresh collection
+    // per evaluation the whole SDK import chain was read and parsed again for every project. One
+    // collection serves every evaluation of this parser, concurrently: that is how MSBuild's own
+    // static graph evaluates projects in parallel, and the collection's project list, toolsets and
+    // import cache are locked internally.
+    private readonly ConcurrentBag<ProjectCollection> _collections = new();
+
+    // Shared across every evaluation of this parser: SDK resolution and file system lookups are
+    // cached, so the SDK is located once per run instead of once per project. Nothing changes on
+    // disk while a parser is alive, which is what makes the sharing safe.
+    private readonly EvaluationContext _evaluationContext = EvaluationContext.Create(EvaluationContext.SharingPolicy.Shared);
+
+    /// <summary>When set, <see cref="GetPackageReferences"/> answers from the cache where it can.</summary>
+    internal EvaluationCache? Cache { get; set; }
+
+    private static string? _toolsIdentity;
+    private static string? _toolsDirectory;
+
+    /// <summary>The MSBuild that evaluates, as path and version. Only valid once MSBuild is registered.</summary>
+    internal static string ToolsIdentity => _toolsIdentity ??= $"{typeof(Project).Assembly.Location}|{typeof(Project).Assembly.GetName().Version}";
+
+    private static string ToolsDirectory => _toolsDirectory ??= Path.GetDirectoryName(typeof(Project).Assembly.Location) ?? string.Empty;
+
+    // Files under the SDK or a VS installation are covered by the tools identity in the cache key;
+    // hashing hundreds of them per project would cost what the cache is meant to save.
+    private bool IsToolsFile(string path) =>
+        path.StartsWith(ToolsDirectory, StringComparison.OrdinalIgnoreCase)
+        || (Options.VSRootPath is { Length: > 0 } vsRoot && path.StartsWith(vsRoot, StringComparison.OrdinalIgnoreCase));
+
+    private List<string> ContributingFiles(Project project, string projectPath) {
+        var files = new List<string> { projectPath };
+        foreach (var import in project.Imports) {
+            var path = import.ImportedProject?.FullPath;
+            if (string.IsNullOrEmpty(path) || IsToolsFile(path)) continue;
+            if (!files.Contains(path, StringComparer.OrdinalIgnoreCase)) files.Add(path);
+        }
+        return files;
+    }
+
+    private T Evaluate<T>(string projectPath, IDictionary<string, string> properties, Func<Project, T> read) {
+        if (!_collections.TryTake(out var collection)) collection = new ProjectCollection();
+        try {
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            var project = Project.FromFile(projectPath, new ProjectOptions {
+                GlobalProperties = properties,
+                ProjectCollection = collection,
+                EvaluationContext = _evaluationContext
+            });
+            Output.WriteDebug($"Evaluated {projectPath} in {watch.ElapsedMilliseconds} ms");
+            try {
+                return read(project);
+            }
+            finally {
+                // Loaded projects pin their evaluation state; the imports stay cached after this.
+                collection.UnloadProject(project);
+            }
+        }
+        finally {
+            _collections.Add(collection);
+        }
+    }
+
+    public void Dispose() {
+        while (_collections.TryTake(out var collection)) {
+            collection.UnloadAllProjects();
+            collection.Dispose();
+        }
+    }
 
     private Dictionary<string, string> _globalProperties = default!;
 
-    private Dictionary<string, string> GlobalProperties => _globalProperties ??=
-        Options.VSToolsPath is null ?
-        new Dictionary<string, string>()
-        : Init(Options);
+    private Dictionary<string, string> GlobalProperties => _globalProperties ??= Init(Options);
 
     private static Dictionary<string, string> Init(CleaningOptions Options) {
-        var dict = new Dictionary<string, string>(2);
+        var dict = new Dictionary<string, string>(3);
+        // The SDK's default globs (**/*.cs and friends) walk the whole project tree on every
+        // evaluation, and nothing read here - properties, package and project items - depends on
+        // them.
+        dict["EnableDefaultItems"] = "false";
         if (Options.VSToolsPath is { }) dict["VSToolsPath"] = Options.VSToolsPath;
         if (Options.VSRootPath is { } && Directory.Exists(Path.Combine(Options.VSRootPath, "MSBuild"))) dict["MSBuildExtensionsPath"] = Path.Combine(Options.VSRootPath, "MSBuild");
 
@@ -60,20 +135,11 @@ internal sealed class ProjParser(IConsoleOutput Output, ErrorSink ErrorSink, Cle
         string projectPath = proj.Path;
         string? configuration = proj.Configuration;
 
-        using (var projectCollection = new ProjectCollection()) {
-            var project = default(Project);
+        var properties = BuildProperties(configuration, proj.Platform);
+        if (Cache is { } cache && cache.TryGet(proj, properties) is { } cached) return cached;
 
-            var properties = new Dictionary<string, string>(GlobalProperties);
-            if (!string.IsNullOrEmpty(configuration)) {
-                properties["Configuration"] = configuration;
-            }
-            // Platform matters for .vcxproj, whose output path is <Platform>\<Configuration>\. Without
-            // it every platform evaluated identically and only the default one was ever cleaned.
-            if (!string.IsNullOrEmpty(proj.Platform)) {
-                properties["Platform"] = proj.Platform;
-            }
-            try {
-                project = new Project(projectPath, properties, null, projectCollection);
+        try {
+            var info = Evaluate(projectPath, properties, project => {
                 var usesCpm = SafeBool(project.GetPropertyValue("ManagePackageVersionsCentrally"));
 
                 var packageVersionItems = usesCpm ?? false
@@ -155,41 +221,53 @@ internal sealed class ProjParser(IConsoleOutput Output, ErrorSink ErrorSink, Cle
                     packageReferences[id] = new Pkg(id, highest.ToString(), Kind: PackageItemKind.PackageDownload);
                 }
 
-                var retVal = new ProjectPackageReferenceInfo(proj,
+                // ProjectReferences come out of the same evaluation: reading them separately cost
+                // a second full evaluation of every project.
+                return new ProjectPackageReferenceInfo(proj,
                     project.TfmOrTfmsSafe(),
                     usesCpm,
                     cpmFile,
                     packageReferences,
-                    versions
+                    versions,
+                    ReadProjectReferences(project, projectPath),
+                    ContributingFiles(project, projectPath)
                 );
-                return retVal;
-            }
-            catch (Exception xcptn) {
-                ErrorSink.AddError($"Failed to load project.", exception: xcptn, config: proj);
-                Output.WriteError($"{projectPath} could not be parsed: {xcptn.FormatMessage()}");
-                return default;
-            }
-
+            });
+            Cache?.Store(info, properties);
+            return info;
+        }
+        catch (Exception xcptn) {
+            ErrorSink.AddError($"Failed to load project.", exception: xcptn, config: proj);
+            Output.WriteError($"{projectPath} could not be parsed: {xcptn.FormatMessage()}");
+            return default;
         }
     }
 
+    private Dictionary<string, string> BuildProperties(string? configuration, string? platform) {
+        var properties = new Dictionary<string, string>(GlobalProperties);
+        if (!string.IsNullOrEmpty(configuration)) properties["Configuration"] = configuration;
+        // Platform matters for .vcxproj, whose output path is <Platform>\<Configuration>\. Without
+        // it every platform evaluated identically and only the default one was ever cleaned.
+        if (!string.IsNullOrEmpty(platform)) properties["Platform"] = platform;
+        return properties;
+    }
+
+    // Path.Combine returns rel unchanged when rooted; GetFullPath normalizes either way
+    // so paths containing '..' dedupe correctly via OrdinalIgnoreCase.
+    private static string[] ReadProjectReferences(Project project, string projectPath) {
+        var projDir = Path.GetDirectoryName(projectPath) ?? string.Empty;
+        return project.GetItems("ProjectReference")
+            .Select(pr => pr.EvaluatedInclude)
+            .Where(rel => !string.IsNullOrWhiteSpace(rel))
+            .Select(rel => Path.GetFullPath(Path.Combine(projDir, rel)))
+            .Where(File.Exists)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
     internal IReadOnlyList<string> GetProjectReferences(string projectPath, string? configuration = null, string? platform = null) {
-        using var projectCollection = new ProjectCollection();
         try {
-            var properties = new Dictionary<string, string>(GlobalProperties);
-            if (!string.IsNullOrEmpty(configuration)) properties["Configuration"] = configuration;
-            if (!string.IsNullOrEmpty(platform)) properties["Platform"] = platform;
-            var project = new Project(projectPath, properties, null, projectCollection);
-            var projDir = Path.GetDirectoryName(projectPath) ?? string.Empty;
-            // Path.Combine returns rel unchanged when rooted; GetFullPath normalizes either way
-            // so paths containing '..' dedupe correctly via OrdinalIgnoreCase.
-            return project.GetItems("ProjectReference")
-                .Select(pr => pr.EvaluatedInclude)
-                .Where(rel => !string.IsNullOrWhiteSpace(rel))
-                .Select(rel => Path.GetFullPath(Path.Combine(projDir, rel)))
-                .Where(File.Exists)
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToArray();
+            return Evaluate(projectPath, BuildProperties(configuration, platform), project => ReadProjectReferences(project, projectPath));
         }
         catch (Exception xcptn) {
             ErrorSink.AddError($"Failed to evaluate ProjectReferences for {projectPath}.", exception: xcptn);
@@ -228,29 +306,8 @@ internal sealed class ProjParser(IConsoleOutput Output, ErrorSink ErrorSink, Cle
         string projectPath = proj.Path;
         string? configuration = proj.Configuration;
 
-        using (var projectCollection = new ProjectCollection()) {
-            var project = default(Project);
-
-            var properties = new Dictionary<string, string>(GlobalProperties);
-            if (!string.IsNullOrEmpty(configuration)) {
-                properties["Configuration"] = configuration;
-            }
-            // Platform matters for .vcxproj, whose output path is <Platform>\<Configuration>\. Without
-            // it every platform evaluated identically and only the default one was ever cleaned.
-            if (!string.IsNullOrEmpty(proj.Platform)) {
-                properties["Platform"] = proj.Platform;
-            }
-            try {
-                project = new Project(projectPath, properties, null, projectCollection);
-            }
-            catch (Exception xcptn) {
-                ErrorSink.AddError($"Failed to load project.", exception: xcptn, config: proj);
-                Output.WriteError($"{projectPath} could not be parsed: {xcptn.FormatMessage()}");
-                return default;
-            }
-
-
-            var info = new ProjectInfo {
+        try {
+            return Evaluate(projectPath, BuildProperties(configuration, proj.Platform), project => new ProjectInfo {
                 ProjectPath = projectPath,
                 ProjectName = Safe(project.GetPropertyValue("ProjectName")),
                 AssemblyName = Safe(project.GetPropertyValue("AssemblyName")),
@@ -270,9 +327,12 @@ internal sealed class ProjParser(IConsoleOutput Output, ErrorSink ErrorSink, Cle
                 ArtifactsProjectName = Safe(project.GetPropertyValue("ArtifactsProjectName")),
                 PackageId = Safe(project.GetPropertyValue("PackageId")),
                 Properties = propertyNames.ToDictionary(p => p, p => project.GetPropertyValue(p)),
-            };
-
-            return info;
+            });
+        }
+        catch (Exception xcptn) {
+            ErrorSink.AddError($"Failed to load project.", exception: xcptn, config: proj);
+            Output.WriteError($"{projectPath} could not be parsed: {xcptn.FormatMessage()}");
+            return default;
         }
     }
 }
