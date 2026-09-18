@@ -394,12 +394,17 @@ public class NuGetMetadataServiceTests {
 
     [Fact]
     public async Task Baseline_VersionsWithoutSupportForTheRequestedFrameworkAreNoCandidates() {
+        // The feed knows the package, nothing at or above the pin fits net472: that is an answer
+        // (empty candidates), not a failed lookup, so the caller reports it instead of exiting 1.
         using var client = new HttpClient(new StaticResponseHandler(CapIndexJson, TrainPageJson));
 
         var result = await NugetMetadataService.GetLatestVersionWithFrameworkCheckAsync(
             client, new NugetMetadataOptions(), logger: null, TrainRequest("1.2.3", tfm: "net472"));
 
-        Assert.Null(result);
+        Assert.NotNull(result);
+        Assert.Empty(result.TargetFrameworkVersions);
+        Assert.True(result.Candidates!.IsEmpty);
+        Assert.NotNull(NugetMetadataService.PickNewest([null, result])?.Candidates);
     }
 
     [Fact]

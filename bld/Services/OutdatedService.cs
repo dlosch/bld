@@ -6,6 +6,7 @@ using NuGet.Versioning;
 using Spectre.Console;
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Xml;
 using System.Xml.Linq;
@@ -18,11 +19,25 @@ internal class OutdatedService {
     // Assigned for the duration of a run so the write helpers can record failures that must affect
     // the exit code rather than only being printed.
     private ErrorSink? _errorSink;
+    // Non-null only while files are being written; the helpers append what they changed, and the
+    // run stores it for `bld outdated undo`.
+    private List<JournalEdit>? _journal;
 
     public OutdatedService(IConsoleOutput console, CleaningOptions options) {
         _console = console;
         _options = options;
     }
+
+    /// <summary>Where the undo journal is written. Tests point it at a temp directory.</summary>
+    internal UpdateJournal Journal { get; set; } = new(UpdateJournal.DefaultRoot);
+
+    /// <summary>The command name recorded in the journal; null means the outdated command itself.</summary>
+    internal string? JournalCommand { get; set; }
+
+    internal static string BldVersion =>
+        typeof(OutdatedService).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
+        ?? typeof(OutdatedService).Assembly.GetName().Version?.ToString()
+        ?? "unknown";
 
     internal static IReadOnlyList<string> SelectCompatibleTargetFrameworks(bool skipTfmCheck, PackageInfoContainer packageReferences) =>
         skipTfmCheck ? Array.Empty<string>() : packageReferences.Tfms.ToList();
@@ -442,7 +457,16 @@ internal class OutdatedService {
             if (selected.Count == group.Rows.Count && group.Name.EndsWith(".*", StringComparison.Ordinal)) {
                 parts.Add("-p");
                 parts.Add(QuoteArgument(group.Name));
-                foreach (var row in selected) covered.Add(row.Id);
+                // The pattern needs a dot after the prefix, so the family's bare package (Serilog in
+                // Serilog.*) has to be named on its own.
+                var prefix = group.Name[..^2];
+                foreach (var row in selected) {
+                    if (row.Id.Equals(prefix, StringComparison.OrdinalIgnoreCase)) {
+                        parts.Add("-p");
+                        parts.Add(QuoteArgument(row.Id));
+                    }
+                    covered.Add(row.Id);
+                }
                 continue;
             }
             foreach (var row in selected) {
@@ -480,7 +504,7 @@ internal class OutdatedService {
     // before bld ever sees the pattern.
     private static readonly char[] ShellUnsafeCharacters = { ' ', '\t', '"', '\'', '&', '|', '<', '>', '^', '(', ')', ';', '*', '?' };
 
-    private static string QuoteArgument(string value) =>
+    internal static string QuoteArgument(string value) =>
         value.Length == 0 || value.IndexOfAny(ShellUnsafeCharacters) >= 0
             ? "\"" + value.Replace("\"", "\\\"") + "\""
             : value;
@@ -730,7 +754,13 @@ internal class OutdatedService {
         // the ones that move.
         var currentManifests = new ConcurrentDictionary<string, Dictionary<NuGetFramework, DependencyGroup>>(StringComparer.OrdinalIgnoreCase);
 
-        var options = new NugetMetadataOptions { MaxParallelRequests = parallelOptions.MaxDegreeOfParallelism /* configure */ };
+        // The lookups are I/O bound, and --concurrency is sized for MSBuild evaluation: on a laptop
+        // it defaults to 4, which fetched a few hundred packages in as many sequential rounds. The
+        // same number caps the requests in flight, whatever the number of feeds per package.
+        // --concurrency 1 means sequential, and a rate-limited feed is one reason to ask for it.
+        var concurrency = parallelOptions.MaxDegreeOfParallelism;
+        var metadataParallelism = new ParallelOptions { MaxDegreeOfParallelism = concurrency == 1 ? 1 : Math.Max(concurrency, 16) };
+        var options = new NugetMetadataOptions { MaxParallelRequests = metadataParallelism.MaxDegreeOfParallelism };
         using var client = NugetMetadataService.CreateHttpClient(options);
 
         // Feeds come from the nuget.config hierarchy seen from the input, not from the working directory,
@@ -765,9 +795,6 @@ internal class OutdatedService {
             return (NugetMetadataService.PickNewest(results), false);
         }
 
-        // The lookups are I/O bound, and --concurrency is sized for MSBuild evaluation: on a laptop
-        // it defaults to 4, which fetched a few hundred packages in as many sequential rounds.
-        var metadataParallelism = new ParallelOptions { MaxDegreeOfParallelism = Math.Max(parallelOptions.MaxDegreeOfParallelism, 16) };
         var metadataWatch = Stopwatch.StartNew();
         await Parallel.ForEachAsync(allPackageReferences, metadataParallelism, async (packageReference, ct) => {
 
@@ -1414,6 +1441,7 @@ internal class OutdatedService {
 
         if (updatePackages) {
             _console.WriteInfo("\nUpdating packages to latest versions...");
+            BeginJournal();
 
             // Build the set of all CPM files needing changes (updates and/or orphan comments).
             var cpmPaths = new HashSet<string>(propsUpdates.Keys, StringComparer.OrdinalIgnoreCase);
@@ -1455,9 +1483,11 @@ internal class OutdatedService {
                 }
             }
 
+            RecordJournal(rootPath, interactive ? "outdated --interactive" : "outdated --apply");
+
             if (verifyRestore) {
                 _console.WriteInfo("\nVerifying the update with dotnet restore...");
-                var restoreErrors = await RunRestoreAsync(rootPath, cancellationToken);
+                var restoreErrors = await RunRestoreAsync(_console, rootPath, cancellationToken);
                 if (restoreErrors.Count == 0) {
                     _console.WriteLine("Restore succeeded after update.");
                 }
@@ -1511,7 +1541,7 @@ internal class OutdatedService {
     /// returning empty on a caught exception made the caller print "Restore succeeded" after a
     /// failure (e.g. dotnet missing from PATH).
     /// </remarks>
-    private async Task<IReadOnlyList<string>> RunRestoreAsync(string input, CancellationToken cancellationToken) {
+    internal static async Task<IReadOnlyList<string>> RunRestoreAsync(IConsoleOutput console, string input, CancellationToken cancellationToken) {
         var startInfo = new ProcessStartInfo("dotnet") {
             RedirectStandardOutput = true,
             RedirectStandardError = true,
@@ -1531,7 +1561,7 @@ internal class OutdatedService {
             void Collect(object _, DataReceivedEventArgs e) {
                 if (e.Data is null) return;
                 lock (lines) lines.Add(e.Data);
-                _console.WriteDebug(e.Data);
+                console.WriteDebug(e.Data);
             }
 
             if (!process.Start()) {
@@ -1562,6 +1592,34 @@ internal class OutdatedService {
     /// Non-zero when anything prevented a complete answer, so a CI step cannot read a failed run as
     /// "no updates available".
     /// </summary>
+    /// <summary>Starts collecting edits for the journal; the apply block calls this before it writes.</summary>
+    internal void BeginJournal() => _journal = new List<JournalEdit>();
+
+    /// <summary>Adds what a helper changed to the run's journal, once the file is actually on disk.</summary>
+    private void Journaled(List<JournalEdit> edits) {
+        if (_journal is null || edits.Count == 0) return;
+        foreach (var edit in edits) {
+            if (!_journal.Contains(edit)) _journal.Add(edit);
+        }
+    }
+
+    /// <summary>
+    /// Stores the run's edits for <c>bld outdated undo</c>. A failure here is a warning: the files
+    /// are already written, and losing the undo record must not turn a successful update into an error.
+    /// </summary>
+    internal void RecordJournal(string input, string defaultCommand) {
+        var edits = _journal;
+        _journal = null;
+        if (edits is null || edits.Count == 0) return;
+        try {
+            var path = Journal.Write(new JournalEntry(Path.GetFullPath(input), DateTimeOffset.UtcNow, BldVersion, JournalCommand ?? defaultCommand, edits));
+            _console.WriteInfo($"Recorded {edits.Count} change(s) for undo: {path}");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) {
+            _console.WriteWarning($"Could not record the changes for undo: {ex.FormatMessage()}");
+        }
+    }
+
     private static int ExitCode(ErrorSink errorSink, int evaluationFailures, int metadataFailures) =>
         errorSink.HasErrors || evaluationFailures > 0 || metadataFailures > 0 ? 1 : 0;
 
@@ -1571,6 +1629,7 @@ internal class OutdatedService {
         IReadOnlyCollection<string> commentOut,
         CancellationToken cancellationToken) {
         var applied = 0;
+        var pending = new List<JournalEdit>();
         try {
             var commentSet = commentOut is HashSet<string> hs && hs.Comparer == StringComparer.OrdinalIgnoreCase
                 ? hs
@@ -1593,6 +1652,7 @@ internal class OutdatedService {
                         // "--" is illegal inside XML comments; pad it so the resulting comment parses.
                         var body = " " + serialized.Replace("--", "- -") + " ";
                         element.ReplaceWith(new XComment(body));
+                        pending.Add(new JournalEdit(propsPath, include, EditKind.OrphanComment, serialized, null));
                         changed = true;
                         applied++;
                         continue;
@@ -1611,12 +1671,14 @@ internal class OutdatedService {
 
                         if (versionAttr is { }) versionAttr.Value = newVersion.target;
                         else versionElement!.Value = newVersion.target;
+                        pending.Add(new JournalEdit(propsPath, include, EditKind.PackageVersion, currentValue, newVersion.target));
                         changed = true;
                         applied++;
                     }
                 }
                 return changed;
             }, cancellationToken);
+            Journaled(pending);
         }
         catch (Exception ex) {
             _errorSink?.AddError($"Failed to update {propsPath}.", exception: ex);
@@ -1643,7 +1705,8 @@ internal class OutdatedService {
         }
 
         try {
-            return await XmlProjectFile.EditAsync(projectPath, doc => {
+            var pending = new List<JournalEdit>();
+            var written = await XmlProjectFile.EditAsync(projectPath, doc => {
                 var changed = false;
                 var packageRefElements = doc.ElementsNamed("PackageReference")
                     .Where(e => string.Equals(e.Attribute("Include")?.Value, packageId, StringComparison.OrdinalIgnoreCase))
@@ -1692,10 +1755,13 @@ internal class OutdatedService {
                     else if (versionAttr is { }) versionAttr.Value = newVersion.target;
                     else versionElement!.Value = newVersion.target;
 
+                    pending.Add(new JournalEdit(projectPath, element.Attribute("Include")!.Value, useOverride ? EditKind.VersionOverride : EditKind.PackageReference, currentValue, newVersion.target));
                     changed = true;
                 }
                 return changed;
             }, cancellationToken);
+            if (written) Journaled(pending);
+            return written;
         }
         catch (Exception ex) {
             _errorSink?.AddError($"Failed to update {projectPath}.", exception: ex);
@@ -1715,7 +1781,8 @@ internal class OutdatedService {
         }
 
         try {
-            return await XmlProjectFile.EditAsync(projectPath, doc => {
+            var pending = new List<JournalEdit>();
+            var written = await XmlProjectFile.EditAsync(projectPath, doc => {
                 var changed = false;
                 var elements = doc.ElementsNamed("PackageDownload")
                     .Where(e => string.Equals(e.Attribute("Include")?.Value, packageId, StringComparison.OrdinalIgnoreCase))
@@ -1739,16 +1806,20 @@ internal class OutdatedService {
                         continue;
                     }
 
+                    var previous = parts[index];
                     parts[index] = $"[{target}]";
                     var updated = string.Join(";", parts);
                     if (updated == value) continue;
 
                     if (versionAttr is { }) versionAttr.Value = updated;
                     else versionElement!.Value = updated;
+                    pending.Add(new JournalEdit(projectPath, element.Attribute("Include")!.Value, EditKind.PackageDownload, previous, parts[index]));
                     changed = true;
                 }
                 return changed;
             }, cancellationToken);
+            if (written) Journaled(pending);
+            return written;
         }
         catch (Exception ex) {
             _errorSink?.AddError($"Failed to update {projectPath}.", exception: ex);
@@ -1955,15 +2026,26 @@ internal sealed record PickerTarget(NuGetVersion Version, BumpKind Bump);
 /// </summary>
 /// <param name="PolicyMatch">The match of the policy rule that applies to this package, if any.</param>
 /// <param name="PolicyLevel">The cap that rule imposes.</param>
-internal sealed record PickerRow(string Id, NuGetVersion Current, IReadOnlyList<PickerTarget> Targets, int DefaultTarget, bool Preselected, string? PolicyMatch = null, MaxBump? PolicyLevel = null) {
+/// <param name="Note">Grey text after the row, e.g. why an undo row cannot be taken.</param>
+/// <param name="Locked">The row is shown but cannot be selected.</param>
+/// <param name="NowLabel">Drawn in place of <paramref name="Current"/> when set, for a state that is not a version.</param>
+internal sealed record PickerRow(string Id, NuGetVersion Current, IReadOnlyList<PickerTarget> Targets, int DefaultTarget, bool Preselected, string? PolicyMatch = null, MaxBump? PolicyLevel = null, string? Note = null, bool Locked = false, string? NowLabel = null) {
     internal PickerTarget Default => Targets[DefaultTarget];
     internal NuGetVersion Target => Default.Version;
     internal BumpKind Bump => Default.Bump;
+    internal string Now => NowLabel ?? Current.ToString();
 }
 
 internal sealed record PickerGroup(string Name, IReadOnlyList<PickerRow> Rows);
 
-internal sealed record PickerModel(IReadOnlyList<PickerGroup> Groups);
+/// <summary>What the picker is choosing: updates to apply, or journal edits to revert.</summary>
+internal enum PickerMode {
+    Update,
+    /// <summary>One fixed target per row, no bump classes, no policies; keys that change a target do nothing.</summary>
+    Revert,
+}
+
+internal sealed record PickerModel(IReadOnlyList<PickerGroup> Groups, PickerMode Mode = PickerMode.Update);
 
 /// <summary>
 /// How far a package may be moved by <c>--apply</c>, relative to the version it is pinned at now.

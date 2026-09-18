@@ -401,6 +401,45 @@ public class PackagePickerTests {
     }
 
     [Fact]
+    public void Policy_OnAPrefixGroupHeaderGivesTheBarePackageItsOwnRule() {
+        // "Serilog.*" needs a dot after the prefix, so it would never cover Serilog itself.
+        var model = new PickerModel(new[] {
+            new PickerGroup("Serilog.*", new[] {
+                Row("Serilog", "4.0.1", true, 0, Target("4.1.0", "Minor")),
+                Row("Serilog.Sinks.File", "5.0.0", true, 0, Target("5.0.2", "Patch")),
+            })
+        });
+
+        var state = Drive(model, PickerKey.Home, PickerKey.Policy);
+
+        Assert.Equal("Serilog", state.Lines[1].PolicyMatch);
+        Assert.Equal("Serilog.*", state.Lines[2].PolicyMatch);
+        Assert.Equal(new[] {
+            ("Serilog.*", (MaxBump?)MaxBump.Minor),
+            ("Serilog", (MaxBump?)MaxBump.Minor),
+        }, state.Result().PolicyChanges);
+    }
+
+    [Fact]
+    public void Policy_OnAPrefixGroupHeaderRemovesThePerPackageRulesItReplaces() {
+        // Hosting already has its own rule; the family pattern covers it now, so the old rule goes.
+        var model = new PickerModel(new[] {
+            new PickerGroup("Microsoft.Extensions.*", new[] {
+                Row("Microsoft.Extensions.Hosting", "9.0.8", true, 0, Target("9.0.9", "Patch")) with { PolicyMatch = "Microsoft.Extensions.Hosting", PolicyLevel = MaxBump.Minor },
+                Row("Microsoft.Extensions.Logging", "9.0.8", true, 0, Target("9.0.9", "Patch")),
+            })
+        });
+
+        var state = Drive(model, PickerKey.Home, PickerKey.Policy);
+
+        Assert.Equal("Microsoft.Extensions.*", state.Lines[1].PolicyMatch);
+        Assert.Equal(new[] {
+            ("Microsoft.Extensions.*", (MaxBump?)MaxBump.Minor),
+            ("Microsoft.Extensions.Hosting", (MaxBump?)null),
+        }, state.Result().PolicyChanges);
+    }
+
+    [Fact]
     public void Policy_ClearingAPatternRuleFromOneRowClearsEveryRowItCovered() {
         // Both rows carry the same pattern rule from the file; clearing it on one row removes the
         // rule, so the other row cannot keep claiming it.
@@ -443,5 +482,69 @@ public class PackagePickerTests {
         var line = PackagePickerRenderer.RenderLine(state, 0, 6, 5);
 
         Assert.Contains("policy:minor (Npg*)", line);
+    }
+
+    /// <summary>An undo picker: one target per row, one row locked because the file changed since.</summary>
+    private static PickerModel RevertModel() => new(new[] {
+        new PickerGroup("MassTransit.*", new[] {
+            Row("MassTransit", "9.0.0", true, 0, Target("8.4.1", "Major")),
+            Row("MassTransit.RabbitMQ", "9.0.0", true, 0, Target("8.4.1", "Major")),
+        }),
+        new PickerGroup("(other)", new[] {
+            Row("Serilog", "4.3.0", false, 0, Target("4.1.0", "Minor")) with { Locked = true, Note = "changed since" },
+            Row("Polly", "8.4.1", true, 0, Target("8.4.1", "Patch")) with { NowLabel = "(commented out)", Note = "orphan" },
+        })
+    }, PickerMode.Revert);
+
+    [Fact]
+    public void Revert_IgnoresTargetAndPolicyKeys() {
+        var state = Drive(RevertModel(), PickerKey.TargetUp, PickerKey.TargetDown, PickerKey.Policy);
+
+        Assert.All(state.Lines.Where(l => l.Row is not null), l => Assert.Equal(0, l.TargetIndex));
+        Assert.Empty(state.Result().PolicyChanges);
+        Assert.Null(state.Lines[0].GroupBump);
+    }
+
+    [Fact]
+    public void Revert_ALockedRowStaysUnselectedAndDoesNotCountAgainstItsGroup() {
+        var model = RevertModel();
+        var state = new PickerState(model);
+        var serilog = state.Lines.Single(l => l.Row?.Id == "Serilog");
+        var otherHeader = state.Lines.ToList().FindIndex(l => l.GroupName == "(other)");
+
+        // (other) has Polly checked and Serilog locked: that is "all", not "some".
+        Assert.True(state.GroupSelection(otherHeader));
+
+        state.Handle(PickerKey.SelectAll);
+        Assert.False(serilog.Selected);
+
+        while (state.Cursor < state.Lines.ToList().IndexOf(serilog)) state.Handle(PickerKey.Down);
+        state.Handle(PickerKey.Toggle);
+        Assert.False(serilog.Selected);
+        Assert.DoesNotContain(state.Result().Selected, s => s.Id == "Serilog");
+    }
+
+    [Fact]
+    public void Revert_RendersWithoutArrowsOrPolicyKeysAndMarksLockedRows() {
+        var state = new PickerState(RevertModel());
+        var lines = state.Lines.ToList();
+        var serilog = lines.FindIndex(l => l.Row?.Id == "Serilog");
+        var polly = lines.FindIndex(l => l.Row?.Id == "Polly");
+        var idWidth = 20;
+        var massTransit = PackagePickerRenderer.RenderLine(state, 1, idWidth, 15, 5);
+        var locked = PackagePickerRenderer.RenderLine(state, serilog, idWidth, 15, 5);
+        var orphan = PackagePickerRenderer.RenderLine(state, polly, idWidth, 15, 5);
+
+        Assert.Contains("9.0.0", massTransit);
+        Assert.Contains("-> 8.4.1", massTransit);
+        Assert.Contains("MAJOR", massTransit);
+        Assert.DoesNotContain("<", massTransit);
+        Assert.Contains("[[-]]", locked);
+        Assert.Contains("changed since", locked);
+        Assert.Contains("(commented out) -> 8.4.1", orphan);
+        Assert.DoesNotContain("patch", orphan);
+        Assert.DoesNotContain("left/right", PackagePickerRenderer.RevertInstructions);
+        Assert.DoesNotContain("p:", PackagePickerRenderer.RevertInstructions);
+        Assert.Contains("enter: revert", PackagePickerRenderer.RevertInstructions);
     }
 }

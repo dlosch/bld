@@ -22,7 +22,7 @@ internal sealed class TfmCommand : BaseCommand {
     };
 
     private readonly Option<bool> _updatePackagesOption = new Option<bool>("--update-packages") {
-        Description = "With --apply, run `outdated --apply` on the same input after the migration, so packages are updated to versions that support the new target framework, within --max-bump and the saved package policies.",
+        Description = "With --apply, run `outdated --apply` on the same input after the migration, so packages are updated to versions that support the new target framework, within --max-bump and the saved package policies. As in outdated, only the Release configuration is evaluated and references under a Condition are left alone.",
         DefaultValueFactory = _ => false
     };
 
@@ -211,7 +211,7 @@ internal sealed class TfmCommand : BaseCommand {
             MSBuildInitializer.Initialize(Output, tempOptions);
 
             var errorSink = new ErrorSink(Output);
-            var projParser = new ProjParser(Output, errorSink, tempOptions);
+            using var projParser = new ProjParser(Output, errorSink, tempOptions);
 
             var targetFrameworks = new List<string>();
             var cache = new ProjCfgCache(Output);

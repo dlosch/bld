@@ -257,6 +257,30 @@ public class OutdatedServiceTests {
     }
 
     [Fact]
+    public void BuildRepeatCommand_NamesTheBarePackageOfAFullyChosenFamily() {
+        // "Serilog.*" never matches Serilog itself (the pattern needs the dot), so the family's
+        // bare package is named next to the pattern.
+        var outdated = Outdated(
+            ("Serilog", "4.0.1", "4.1.0"),
+            ("Serilog.Sinks.File", "5.0.0", "5.0.1"));
+        var model = OutdatedService.BuildPickerModel(outdated, GroupingOptions.Default, Preselect.All);
+
+        var command = OutdatedService.BuildRepeatCommand(
+            "MyRepo.slnx",
+            model.Groups,
+            new HashSet<string>(new[] { "Serilog", "Serilog.Sinks.File" }, StringComparer.OrdinalIgnoreCase),
+            Array.Empty<(string, MaxBump)>(),
+            new Dictionary<string, BumpKind>(),
+            MaxBump.Major,
+            prerelease: false,
+            sources: Array.Empty<string>());
+
+        Assert.Equal("bld outdated MyRepo.slnx --apply -p \"Serilog.*\" -p Serilog", command);
+        Assert.True(OutdatedService.Matches("Serilog", "Serilog"));
+        Assert.False(OutdatedService.Matches("Serilog", "Serilog.*"));
+    }
+
+    [Fact]
     public void BuildRepeatCommand_NamesTargetsAboveTheCapExplicitly() {
         var outdated = Outdated(("Polly", "8.4.1", "8.5.0"));
         var model = OutdatedService.BuildPickerModel(outdated, GroupingOptions.Default, Preselect.All);
@@ -294,7 +318,7 @@ public class OutdatedServiceTests {
             sources: Array.Empty<string>());
 
         Assert.Equal(
-            "bld outdated MyRepo.slnx --apply -p \"Serilog.*\" --max-bump-for \"Serilog.*=patch\" --max-bump-for Serilog.Sinks.File=major",
+            "bld outdated MyRepo.slnx --apply -p \"Serilog.*\" -p Serilog --max-bump-for \"Serilog.*=patch\" --max-bump-for Serilog.Sinks.File=major",
             command);
     }
 
@@ -755,16 +779,10 @@ public class OutdatedServiceTests {
     public async Task RunRestoreAsync_ReportsAFailureToStartInsteadOfLookingLikeSuccess() {
         // An empty result means "restore succeeded", so a run that never produced a restore result
         // must return a reason. Provoked here with an input path that does not exist.
-        var service = new OutdatedService(new TestConsole(), new CleaningOptions());
-        var method = typeof(OutdatedService).GetMethod("RunRestoreAsync", BindingFlags.Instance | BindingFlags.NonPublic);
-        Assert.NotNull(method);
-
-        var task = (Task<IReadOnlyList<string>>)method!.Invoke(service, [
+        var errors = await OutdatedService.RunRestoreAsync(
+            new TestConsole(),
             Path.Combine(Path.GetTempPath(), $"bld-missing-{Guid.NewGuid():N}", "Nope.csproj"),
-            CancellationToken.None
-        ])!;
-
-        var errors = await task;
+            CancellationToken.None);
 
         Assert.NotEmpty(errors);
     }

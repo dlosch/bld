@@ -109,11 +109,7 @@ internal sealed class ProjParser(IConsoleOutput Output, ErrorSink ErrorSink, Cle
     private Dictionary<string, string> GlobalProperties => _globalProperties ??= Init(Options);
 
     private static Dictionary<string, string> Init(CleaningOptions Options) {
-        var dict = new Dictionary<string, string>(3);
-        // The SDK's default globs (**/*.cs and friends) walk the whole project tree on every
-        // evaluation, and nothing read here - properties, package and project items - depends on
-        // them.
-        dict["EnableDefaultItems"] = "false";
+        var dict = new Dictionary<string, string>(2);
         if (Options.VSToolsPath is { }) dict["VSToolsPath"] = Options.VSToolsPath;
         if (Options.VSRootPath is { } && Directory.Exists(Path.Combine(Options.VSRootPath, "MSBuild"))) dict["MSBuildExtensionsPath"] = Path.Combine(Options.VSRootPath, "MSBuild");
 

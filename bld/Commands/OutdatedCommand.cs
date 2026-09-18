@@ -166,6 +166,8 @@ internal sealed class OutdatedCommand : BaseCommand {
         Add(_concurrencyOption);
 
         Add(_rootArgument);
+
+        Add(new OutdatedUndoCommand(console));
     }
 
     protected override async Task<int> ExecuteAsync(ParseResult parseResult, CancellationToken cancellationToken) {

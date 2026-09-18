@@ -11,7 +11,8 @@ namespace bld.Services;
 /// </summary>
 internal sealed record PolicyRule(
     string Match,
-    [property: JsonConverter(typeof(JsonStringEnumConverter<MaxBump>))] MaxBump MaxBump,
+    // Required: an omitted level would deserialize to Major, which is "no cap" - a policy that fails open.
+    [property: JsonRequired, JsonConverter(typeof(JsonStringEnumConverter<MaxBump>))] MaxBump MaxBump,
     string? Reason,
     DateOnly? Since);
 
@@ -83,7 +84,15 @@ internal sealed class PolicyService {
     public void Save() {
         Directory.CreateDirectory(Path.GetDirectoryName(FilePath)!);
         var temp = FilePath + ".bldtmp";
-        File.WriteAllText(temp, JsonSerializer.Serialize(new PolicyFile(Rules), PolicyJsonContext.Default.PolicyFile));
-        File.Move(temp, FilePath, overwrite: true);
+        try {
+            File.WriteAllText(temp, JsonSerializer.Serialize(new PolicyFile(Rules), PolicyJsonContext.Default.PolicyFile));
+            File.Move(temp, FilePath, overwrite: true);
+        }
+        catch {
+            if (File.Exists(temp)) {
+                try { File.Delete(temp); } catch { /* best effort */ }
+            }
+            throw;
+        }
     }
 }

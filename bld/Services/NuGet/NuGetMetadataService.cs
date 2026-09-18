@@ -17,7 +17,8 @@ public static class NugetMetadataService {
             AutomaticDecompression = System.Net.DecompressionMethods.All
         };
 
-        var client = new HttpClient(clientHandler);
+        // MaxConnectionsPerServer does not bound HTTP/2 streams, so the cap sits in front of the handler.
+        var client = new HttpClient(new ThrottlingHandler(options.MaxParallelRequests) { InnerHandler = clientHandler });
         client.Timeout = options.HttpTimeout;
         if (!client.DefaultRequestHeaders.Contains("User-Agent")) {
             client.DefaultRequestHeaders.Add("User-Agent", "NugetMetadata/1.0.0");
@@ -25,6 +26,21 @@ public static class NugetMetadataService {
         client.DefaultRequestVersion = new Version(2, 0);
         client.DefaultVersionPolicy = HttpVersionPolicy.RequestVersionOrLower;
         return client;
+    }
+
+    /// <summary>Lets at most <see cref="NugetMetadataOptions.MaxParallelRequests"/> requests be in flight at once.</summary>
+    private sealed class ThrottlingHandler(int maxParallelRequests) : DelegatingHandler {
+        private readonly SemaphoreSlim _gate = new(Math.Max(1, maxParallelRequests));
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) {
+            await _gate.WaitAsync(cancellationToken);
+            try {
+                return await base.SendAsync(request, cancellationToken);
+            }
+            finally {
+                _gate.Release();
+            }
+        }
     }
 
     private static FrameworkReducer _frameworkReducer = new FrameworkReducer();
@@ -300,8 +316,16 @@ done:
                     goto retry;
                 }
                 if (majorCandidate is null) {
+                    // The feed knows the package but nothing at or above the pin fits the frameworks
+                    // (typically the pin itself no longer does, after a target framework migration).
+                    // That is an answer, not a failed lookup, so it is not null.
                     logger?.WriteDebug($"No version at or above {baseline} for {request.PackageId} with any of the requested frameworks");
-                    return null;
+                    return new PackageVersionResult {
+                        PackageId = request.PackageId,
+                        TargetFrameworkVersions = new Dictionary<NuGetFramework, string>(),
+                        NewestOutsideFilter = newestOutsideFilter,
+                        Candidates = new PackageVersionCandidates { Current = currentCandidate }
+                    };
                 }
                 var highest = majorCandidate;
                 return new PackageVersionResult {
@@ -425,6 +449,14 @@ done:
                 TargetFrameworkVersions = new Dictionary<NuGetFramework, string>(),
                 NewestOutsideFilter = newestOutside,
                 NoVersionWithinFilter = true,
+            };
+        }
+        // Every feed that knows the package found nothing compatible: pass that on as empty
+        // candidates, so the caller reports it instead of counting a failed lookup.
+        if (all.FirstOrDefault(r => r.Candidates is { IsEmpty: true }) is { } known) {
+            return known with {
+                NewestOutsideFilter = newestOutside,
+                Candidates = new PackageVersionCandidates { Current = all.Select(r => r.Candidates?.Current).FirstOrDefault(c => c is not null) }
             };
         }
         return null;

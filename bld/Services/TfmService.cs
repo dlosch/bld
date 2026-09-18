@@ -42,6 +42,8 @@ internal class TfmService {
 
         var projectsToMigrate = new ConcurrentBag<ProjectMigrationInfo>();
         var eolTfms = await GetEolTfmsAsync(cancellationToken);
+        // One parser for the run: its project collections cache the SDK import chain across projects.
+        using var projParser = new ProjParser(_console, errorSink, _options);
 
         // Display EOL TFMs information
         var eolFromTfms = fromTfms.Where(tfm => IsEolTfm(tfm, eolTfms)).ToList();
@@ -52,7 +54,7 @@ internal class TfmService {
         // Check if the root path is a direct project file
         if (File.Exists(rootPath) && SlnScanner.IsProjectFile(rootPath)) {
             _console.WriteVerbose($"Processing direct project file: {rootPath}");
-            var migrationInfo = await AnalyzeProjectForMigrationAsync(rootPath, fromTfms, toTfm, eolTfms, errorSink, cancellationToken);
+            var migrationInfo = await AnalyzeProjectForMigrationAsync(projParser, rootPath, fromTfms, toTfm, eolTfms, cancellationToken);
 
             if (migrationInfo != null) {
                 projectsToMigrate.Add(migrationInfo);
@@ -91,7 +93,7 @@ internal class TfmService {
                     var current = Interlocked.Increment(ref count);
                     ctx.Status($"Analyzing projects: {current}/{total} ([bold]{Markup.Escape(Path.GetFileName(projCfg.Path))}[/])");
 
-                    var migrationInfo = await AnalyzeProjectForMigrationAsync(projCfg.Path, fromTfms, toTfm, eolTfms, errorSink, cancellationToken);
+                    var migrationInfo = await AnalyzeProjectForMigrationAsync(projParser, projCfg.Path, fromTfms, toTfm, eolTfms, cancellationToken);
 
                     if (migrationInfo != null) {
                         projectsToMigrate.Add(migrationInfo);
@@ -137,6 +139,7 @@ internal class TfmService {
 
             if (notMigrated > 0) {
                 _console.WriteWarning($"Migration finished: {migrated} project(s) updated to {toTfm}, {notMigrated} left unchanged.");
+                if (updatePackages) _console.WriteWarning("--update-packages skipped: the packages would be checked against a partly migrated solution. Fix the projects above and run `bld outdated --apply` on the same input.");
                 return 1;
             }
             _console.WriteLine($"Migration complete! Migrated {migrated} projects to {toTfm}");
@@ -148,7 +151,7 @@ internal class TfmService {
             // management - instead of the latest-stable bump it used to do on its own.
             if (updatePackages) {
                 _console.WriteRule("[bold yellow]Package updates for the migrated frameworks[/]");
-                var outdated = new OutdatedService(_console, _options);
+                var outdated = new OutdatedService(_console, _options) { JournalCommand = "tfm --update-packages" };
                 var packageExit = await outdated.CheckOutdatedPackagesAsync(
                     rootPath, updatePackages: true, skipTfmCheck: false, includePrerelease: false,
                     listOrphans: false, commentOrphans: false, interactive: false, maxBump,
@@ -255,10 +258,9 @@ internal class TfmService {
         return 0;
     }
 
-    private async Task<ProjectMigrationInfo?> AnalyzeProjectForMigrationAsync(string projectPath, List<string> fromTfms, string toTfm, ISet<string> eolTfms, ErrorSink errorSink, CancellationToken cancellationToken) {
+    private async Task<ProjectMigrationInfo?> AnalyzeProjectForMigrationAsync(ProjParser projParser, string projectPath, List<string> fromTfms, string toTfm, ISet<string> eolTfms, CancellationToken cancellationToken) {
         try {
             // Use ProjParser to load project properties (this handles variable evaluation)
-            var projParser = new ProjParser(_console, errorSink, _options);
             var proj = new Proj(projectPath, null);
             var projCfg = new ProjCfg(proj, null, null); // No specific configuration
 

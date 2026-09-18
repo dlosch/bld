@@ -36,38 +36,43 @@ internal sealed class EvaluationCache {
     public int Misses => _misses;
 
     public ProjectPackageReferenceInfo? TryGet(ProjCfg proj, IReadOnlyDictionary<string, string> globalProperties) {
-        var path = EntryPath(proj, globalProperties);
-        EvaluationCacheEntry? entry;
+        // Never throws: a truncated entry or a file that cannot be hashed right now is a miss, not
+        // an evaluation failure - the plain evaluation that follows would have succeeded.
         try {
+            var path = EntryPath(proj, globalProperties);
             if (!File.Exists(path)) return Miss($"no entry for {proj.Path} [{proj.Configuration}]");
-            entry = JsonSerializer.Deserialize(File.ReadAllBytes(path), EvaluationCacheJsonContext.Default.EvaluationCacheEntry);
+            var entry = JsonSerializer.Deserialize(File.ReadAllBytes(path), EvaluationCacheJsonContext.Default.EvaluationCacheEntry);
+            if (entry?.Files is null || entry.PackageReferences is null || entry.ProjectReferences is null || entry.TargetFrameworks is null) {
+                return Miss($"empty entry for {proj.Path}");
+            }
+
+            foreach (var file in entry.Files) {
+                if (!string.Equals(HashFile(file.Path), file.Sha256, StringComparison.Ordinal)) {
+                    return Miss($"{file.Path} changed since {proj.Path} was last evaluated");
+                }
+            }
+
+            var info = new ProjectPackageReferenceInfo(
+                proj,
+                entry.TargetFrameworks,
+                entry.UseCpm,
+                entry.CpmFile,
+                entry.PackageReferences.ToDictionary(p => p.Id, p => new Pkg(p.Id, p.Version, p.VersionOverride, p.CpmVersion, p.Kind), StringComparer.OrdinalIgnoreCase),
+                entry.PackageVersions?.ToDictionary(v => v.Id, v => new PackageVersionEntry(v.Version, v.SourceFile), StringComparer.OrdinalIgnoreCase),
+                entry.ProjectReferences,
+                entry.Files.Select(f => f.Path).ToList());
+            Interlocked.Increment(ref _hits);
+            _console?.WriteDebug($"Evaluation from cache: {proj.Path} [{proj.Configuration}]");
+            return info;
         }
         catch (Exception ex) {
             return Miss($"unreadable entry for {proj.Path}: {ex.FormatMessage()}");
         }
-        if (entry is null) return Miss($"empty entry for {proj.Path}");
-
-        foreach (var file in entry.Files) {
-            if (!string.Equals(HashFile(file.Path), file.Sha256, StringComparison.Ordinal)) {
-                return Miss($"{file.Path} changed since {proj.Path} was last evaluated");
-            }
-        }
-
-        Interlocked.Increment(ref _hits);
-        _console?.WriteDebug($"Evaluation from cache: {proj.Path} [{proj.Configuration}]");
-        return new ProjectPackageReferenceInfo(
-            proj,
-            entry.TargetFrameworks,
-            entry.UseCpm,
-            entry.CpmFile,
-            entry.PackageReferences.ToDictionary(p => p.Id, p => new Pkg(p.Id, p.Version, p.VersionOverride, p.CpmVersion, p.Kind), StringComparer.OrdinalIgnoreCase),
-            entry.PackageVersions?.ToDictionary(v => v.Id, v => new PackageVersionEntry(v.Version, v.SourceFile), StringComparer.OrdinalIgnoreCase),
-            entry.ProjectReferences,
-            entry.Files.Select(f => f.Path).ToList());
     }
 
     /// <summary>Never throws: a cache that cannot be written only costs the next run an evaluation.</summary>
     public void Store(ProjectPackageReferenceInfo info, IReadOnlyDictionary<string, string> globalProperties) {
+        string? temp = null;
         try {
             var entry = new EvaluationCacheEntry(
                 info.Proj.Path,
@@ -85,12 +90,15 @@ internal sealed class EvaluationCache {
 
             Directory.CreateDirectory(_directory);
             var path = EntryPath(info.Proj, globalProperties);
-            var temp = path + ".bldtmp";
+            temp = path + ".bldtmp";
             File.WriteAllBytes(temp, JsonSerializer.SerializeToUtf8Bytes(entry, EvaluationCacheJsonContext.Default.EvaluationCacheEntry));
             File.Move(temp, path, overwrite: true);
         }
         catch (Exception ex) {
             _console?.WriteDebug($"Could not cache the evaluation of {info.Proj.Path}: {ex.FormatMessage()}");
+            if (temp is { } && File.Exists(temp)) {
+                try { File.Delete(temp); } catch { /* best effort */ }
+            }
         }
     }
 

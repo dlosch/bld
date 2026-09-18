@@ -32,7 +32,7 @@ internal class CleaningApplication(IConsoleOutput _console, Func<IConsoleOutput,
         var errorSink = new ErrorSink(_console);
         var scanner = new SlnScanner(options, errorSink);
         var slnParser = new SlnParser(_console, errorSink);
-        var projParser = new ProjParser(_console, errorSink, options);
+        using var projParser = new ProjParser(_console, errorSink, options);
         var fileSystem = new FileSystem(_console, errorSink);
         var cache = new ProjCfgCache(_console);
 

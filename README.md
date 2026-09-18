@@ -189,8 +189,8 @@ Helpful when your favorite agent creates your shiny new project targeting a old 
 - (dotnet-outdated is another .NET tool which updates NuGet package versions)
 
 ### containerize
-- What it does: finds Dockerfiles and SDK-style projects using container build properties.
-- How it works: scans the repo (or specific root) and reports Dockerfile paths, project names, or both depending on `--list`, `--projects`, or `--all`.
+- What it does: finds Dockerfiles and SDK-style projects using container build properties, and migrates Dockerfiles to those properties.
+- How it works: scans the repo (or specific root) and reports Dockerfile paths, project names, or both depending on `--list`, `--projects`, or `--all`. `--migrate` reads each Dockerfile's runtime stage and writes the equivalent `Container*` properties and items into the project it builds (dry run unless `--apply`).
 
 ### build-props
 - What it does: shows where MSBuild properties come from across your projects and lists imported `Directory.Build.props` files.
@@ -217,7 +217,7 @@ bld nuget --root C:\src\MyRepo --transitive --wbf packages.rules
 - `--from` — Comma-separated source TFMs (auto-detected when possible).
 - `--to` — Target TFM (auto-detected from installed SDKs when omitted).
 - `--apply` — Persist changes instead of a dry-run.
-- `--update-packages` — With `--apply`, run `outdated --apply` on the same input once the frameworks are written. That gives the migration everything `outdated` does: versions are checked for compatibility with the new target framework, capped by `--max-bump` and the saved package policies, checked for dependency conflicts, and written to `Directory.Packages.props` under central package management. Sources come from the `nuget.config` hierarchy. Without `--apply` the packages are not checked, because they would be tested against the frameworks the projects still have.
+- `--update-packages` — With `--apply`, run `outdated --apply` on the same input once the frameworks are written. That gives the migration everything `outdated` does: versions are checked for compatibility with the new target framework, capped by `--max-bump` and the saved package policies, checked for dependency conflicts, and written to `Directory.Packages.props` under central package management. Sources come from the `nuget.config` hierarchy. As in `outdated`, only the Release configuration is evaluated and references under a `Condition` are left alone. Without `--apply` the packages are not checked, because they would be tested against the frameworks the projects still have.
 - `--max-bump <major|minor|patch>` — With `--update-packages`: the largest version step to propose, as in `outdated --max-bump`. Default: `major`.
 - `--update-global-json` — With `--apply`, set `sdk.version` in the governing `global.json` to the highest installed SDK of the target's major (prereleases only when `allowPrerelease` is set). Without `--apply`, report what would change. Only the version line is rewritten; indentation, line endings and BOM are kept.
 
@@ -281,6 +281,22 @@ bld cpm --root MySolution.sln --apply --overwrite
 
 `Match` uses the `--package` wildcard syntax; the most specific rule wins, ties go to the later one. Precedence is `--max-bump-for` over policy over `--max-bump`, so a global `--max-bump major` does not lift a policy; `--max-bump-for "MassTransit*=major"` or `--ignore-policy` does. In `--interactive`, **p** on a package row saves a "no major" rule for that package id and moves the row down to its highest minor or patch (a package with nothing below its major leaves the selection); on a prefix group line the rule is the family's pattern, so it also covers members that are not outdated today. **p** on a row that already has a rule removes that rule, including from every other row the same pattern covered. The file is written as soon as the picker is confirmed. Held versions are reported with their source (`2 by --max-bump minor, 1 by policy`), and `-v Info` names the rule and reason per package. Rules for packages that are not outdated right now can be removed by editing the file.
 
+**Undoing a run.** Every `--apply` (and `--interactive`, and `tfm --update-packages`) that changes a file records what it wrote — file, package, value before and after, one entry per element — under `$BLD_HOME/history/<hash of the input>/`, newest 20 runs per input. `bld outdated undo [<root>]` takes the newest run back: it prints a table of what it would revert, asks once, writes, and drops the reverted edits from the record so a second `undo` pops the run before it. A value that no longer reads as the run left it — changed by hand, or by a later run — is skipped and named, never overwritten; when a later recorded run wrote it, the message says which one to undo first. Only bld's own edits are covered: policies, the target framework change from `tfm`, and anything you changed yourself are out of scope, and there is no redo.
+
+- `--list` — Show the recorded runs for this input, newest first, and exit.
+- `--run <n>` — Revert run `n` from `--list` instead of the newest.
+- `--package <pattern>`, `-p` / `--exclude <pattern>` — Revert only part of a run; same syntax as on `outdated`. What is not reverted stays recorded.
+- `--interactive`, `-i` — Pick from a grouped list like the update picker: one row per package showing `now -> back to`, **space** toggles, **a**/**n** all or none, **enter** reverts, **esc** cancels. Packages that changed since are shown greyed and cannot be picked. Prints the `-p ... --yes` line that repeats the choice.
+- `--yes`, `-y` — Skip the confirmation; required without an interactive terminal.
+- `--verify-restore` — Run `dotnet restore` after reverting and fail on NuGet errors.
+
+```powershell
+bld outdated undo                       # revert the last run on the current directory
+bld outdated undo MyRepo.slnx --list
+bld outdated undo MyRepo.slnx -p "MassTransit*" --yes
+bld outdated undo MyRepo.slnx -i
+```
+
 **Package sources.** `outdated` reads the `nuget.config` hierarchy as NuGet does, starting from the directory of the input (repo config, user config, machine config): enabled sources, `packageSourceMapping`, and `packageSourceCredentials` (clear-text or `%ENV_VAR%` references; credentials are sent as Basic auth, which is what Azure Artifacts and GitHub Packages expect for a PAT). Each source's service index is fetched once to find its registration endpoint. When several sources may serve a package, the highest version wins. A source that is unreachable, a v2 feed, or a local directory is skipped for the run with a warning. A package that source mapping assigns to no source is skipped with a warning and does not affect the exit code. Without any configured source, nuget.org is used.
 
 Examples:
@@ -306,12 +322,35 @@ Before writing, the command checks the packages it is about to update in both di
 - `--list`, `-l` — Show file paths only. Default: `false`.
 - `--projects`, `-p` — Scan for SDK-style container projects. Default: `false`.
 - `--all`, `-a` — Scan Dockerfiles and container projects together.
+- `--migrate`, `-m` — Migrate each Dockerfile to SDK container properties on the project it builds. Prints the `PropertyGroup`/`ItemGroup` it would add per Dockerfile; nothing is written without `--apply`. Needs no MSBuild evaluation.
+- `--apply` — With `--migrate`, write the properties into the project files. The file's indentation, line endings and BOM are kept; the new groups are appended before `</Project>` under a comment naming the Dockerfile.
+- `--delete-dockerfile` — With `--migrate --apply`, delete the migrated Dockerfile and strip the Visual Studio container-tools leftovers from the project: the `Docker*` properties (`DockerDefaultTargetOS`, `DockerfileContext`, ...), the `Microsoft.VisualStudio.Azure.Containers.Tools.Targets` package reference and a `<None Include="Dockerfile" />` item. Without it the Dockerfile stays and those settings are only reported.
+- `--force` — With `--migrate`, migrate a Dockerfile whose runtime image has instructions the SDK cannot express (see below). They are listed and dropped.
 
-Example:
+Examples:
 
 ```powershell
 bld containerize --root C:\src\MyRepo --all --depth 5
+bld containerize --migrate --root C:\src\MyRepo
+bld containerize --migrate --apply --delete-dockerfile src\Api\Api.csproj
 ```
+
+**Migration.** The runtime image is the last stage plus every stage it derives `FROM`, folded in order the way Docker layers them; the build stages are what `dotnet publish /t:PublishContainer` replaces. `ARG` defaults and `ENV` values are substituted (`$X`, `${X}`, `${X:-default}`); a build arg without a default is left as written and reported. The project is the one the Dockerfile publishes, failing that the one it builds, the one whose dll the `ENTRYPOINT` runs, the only `.csproj` it mentions, or the only `.csproj` next to it. A project that already has `Container*` settings is skipped.
+
+| Dockerfile | Project |
+|---|---|
+| `FROM` of the runtime stage | `ContainerBaseImage` — omitted when it is exactly the image the SDK computes for the project (`aspnet` for the Web SDK, `runtime` otherwise, `runtime-deps` when self-contained or AOT, tagged with the target framework's version), so the image follows a later `tfm` migration instead of pinning the old runtime |
+| `EXPOSE 8080`, `EXPOSE 53/udp` | `ContainerPort` (`Type` only for non-tcp) |
+| `ENV`, `LABEL`, `MAINTAINER` | `ContainerEnvironmentVariable`, `ContainerLabel` |
+| `WORKDIR` | `ContainerWorkingDirectory` — omitted for the SDK default `/app` |
+| `USER` | `ContainerUser` |
+| `ENTRYPOINT ["dotnet", "App.dll"]` or `["./App"]` | nothing: that is the SDK's default app command |
+| other `ENTRYPOINT` | `ContainerEntrypoint` items (shell form becomes `/bin/sh -c ...`) plus `ContainerAppCommandInstruction`: `DefaultArgs` when `CMD` is the default app command (the SDK keeps it as `CMD`), `None` otherwise, with a non-default `CMD` as `ContainerDefaultArgs` |
+| `CMD` without `ENTRYPOINT` | `ContainerDefaultArgs` with `ContainerAppCommandInstruction=None`, unless it is the default app command |
+| `COPY --from=<build stage> <publish output> .` | nothing: the SDK publishes into the image itself |
+| `RUN`, `ADD`, `VOLUME`, `HEALTHCHECK`, `SHELL`, `STOPSIGNAL`, `ONBUILD` in the runtime image, `COPY` from the build context, `COPY --from` of anything but a stage's `dotnet publish`/`build` output | **not migrated**: listed per Dockerfile and blocks it unless `--force` |
+
+`EnableSdkContainerSupport=true` is always written (console projects on older SDKs need it). Extra `dotnet publish` arguments in the Dockerfile (`-r linux-musl-x64`, `/p:...`) and build-stage `RUN` lines that install tooling are reported as notes, since the SDK now builds on the host. Two Dockerfiles for one project migrate the first (alphabetically) and skip the second. The exit code is 1 only when a project file could not be written.
 
 ### build-props (BETA)
 

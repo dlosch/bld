@@ -15,6 +15,16 @@ public class PolicyServiceTests {
     }
 
     [Fact]
+    public void Load_RuleWithoutALevelIsAnError_NotAnUncappedRule() {
+        // MaxBump's default is Major, "no cap": a rule that lost its level must not fail open.
+        var path = TempPolicyPath();
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllText(path, "{\"Rules\":[{\"Match\":\"Serilog.*\"}]}");
+
+        Assert.Throws<InvalidDataException>(() => PolicyService.Load(path));
+    }
+
+    [Fact]
     public void SaveThenLoad_RoundTripsRulesIncludingTheLevelAndDate() {
         var path = TempPolicyPath();
         var policies = PolicyService.Load(path);

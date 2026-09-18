@@ -70,6 +70,7 @@ internal sealed class PickerState {
     private readonly Dictionary<string, MaxBump?> _policyChanges = new(StringComparer.OrdinalIgnoreCase);
 
     internal PickerState(PickerModel model) {
+        Mode = model.Mode;
         foreach (var group in model.Groups) {
             Line? header = null;
             if (group.Name.Length > 0) {
@@ -80,7 +81,8 @@ internal sealed class PickerState {
             foreach (var row in group.Rows) {
                 _lines.Add(new Line { Row = row, TargetIndex = row.DefaultTarget, Selected = row.Preselected, GroupIndex = groupIndex, PolicyMatch = row.PolicyMatch, PolicyLevel = row.PolicyLevel });
             }
-            if (header is not null) header.GroupBump = HighestBump(groupIndex);
+            // A revert has no classes to move a family between, so the header shows no cap.
+            if (header is not null && Mode == PickerMode.Update) header.GroupBump = HighestBump(groupIndex);
         }
         // Landing on a group header would make the first keypress act on a whole family.
         Cursor = _lines.FindIndex(l => !l.IsGroup);
@@ -88,11 +90,13 @@ internal sealed class PickerState {
     }
 
     internal IReadOnlyList<Line> Lines => _lines;
+    internal PickerMode Mode { get; }
     internal int Cursor { get; private set; }
     internal bool Done { get; private set; }
     internal bool Cancelled { get; private set; }
 
     internal void Handle(PickerKey key) {
+        if (Mode == PickerMode.Revert && key is PickerKey.TargetUp or PickerKey.TargetDown or PickerKey.Policy) return;
         switch (key) {
             case PickerKey.Up: Move(-1); break;
             case PickerKey.Down: Move(1); break;
@@ -185,8 +189,17 @@ internal sealed class PickerState {
         var pattern = current.IsGroup && current.GroupName!.EndsWith(".*", StringComparison.Ordinal) ? current.GroupName : null;
         if (pattern is not null) _policyChanges[pattern] = PickerPolicyLevel;
         foreach (var line in rows) {
-            var match = pattern ?? line.Row!.Id;
-            if (pattern is null) _policyChanges[match] = PickerPolicyLevel;
+            // The family pattern needs a dot after the prefix, so its bare package (Serilog in
+            // Serilog.*) gets a rule of its own.
+            var ownRule = pattern is null || line.Row!.Id.Equals(pattern[..^2], StringComparison.OrdinalIgnoreCase);
+            var match = ownRule ? line.Row!.Id : pattern!;
+            if (ownRule) _policyChanges[match] = PickerPolicyLevel;
+            // A per-package rule the family pattern now covers would only linger in the file.
+            if (line.PolicyMatch is { } previous
+                && !previous.Equals(match, StringComparison.OrdinalIgnoreCase)
+                && previous.Equals(line.Row!.Id, StringComparison.OrdinalIgnoreCase)) {
+                _policyChanges[previous] = null;
+            }
             line.PolicyMatch = match;
             line.PolicyLevel = PickerPolicyLevel;
             CapRow(line, BumpKind.Minor);
@@ -248,7 +261,7 @@ internal sealed class PickerState {
     }
 
     private void Toggle() {
-        var affected = LinesUnderCursor().Where(l => l.Row is not null).ToList();
+        var affected = LinesUnderCursor().Where(l => l.Row is { Locked: false }).ToList();
         if (affected.Count == 0) return;
         // A header toggles its family off only when the family is fully on; anything else turns it on.
         var target = !affected.All(l => l.Selected);
@@ -257,7 +270,7 @@ internal sealed class PickerState {
 
     private void SetAll(bool selected) {
         foreach (var line in _lines) {
-            if (line.Row is not null) Select(line, selected);
+            if (line.Row is { Locked: false }) Select(line, selected);
         }
     }
 
@@ -279,11 +292,12 @@ internal sealed class PickerState {
         }
     }
 
-    /// <summary>Tri-state for a header: all, none, or some of its rows selected.</summary>
+    /// <summary>Tri-state for a header: all, none, or some of its rows selected. Locked rows do not count.</summary>
     internal bool? GroupSelection(int headerIndex) {
         var any = false;
         var all = true;
         for (var i = headerIndex + 1; i < _lines.Count && _lines[i].GroupIndex == headerIndex; i++) {
+            if (_lines[i].Row is { Locked: true }) continue;
             if (_lines[i].Selected) any = true;
             else all = false;
         }
@@ -318,11 +332,13 @@ internal sealed class PickerState {
 internal static class PackagePickerRenderer {
     internal const string Instructions =
         "[grey]up/down: move   space: toggle   left/right: change target   a/n: all/none   p: no-major policy   enter: confirm   esc: cancel[/]";
+    internal const string RevertInstructions =
+        "[grey]up/down: move   space: toggle   a/n: all/none   enter: revert   esc: cancel[/]";
 
     internal static IRenderable Render(PickerState state, string title, int pageSize) {
-        var lines = new List<IRenderable> { new Markup(title), new Markup(Instructions), Text.Empty };
+        var lines = new List<IRenderable> { new Markup(title), new Markup(state.Mode == PickerMode.Revert ? RevertInstructions : Instructions), Text.Empty };
         var idWidth = state.Lines.Where(l => l.Row is not null).Select(l => l.Row!.Id.Length).DefaultIfEmpty(0).Max();
-        var versionWidth = state.Lines.Where(l => l.Row is not null).Select(l => l.Row!.Current.ToString().Length).DefaultIfEmpty(0).Max();
+        var versionWidth = state.Lines.Where(l => l.Row is not null).Select(l => l.Row!.Now.Length).DefaultIfEmpty(0).Max();
         // Over every candidate, not just the chosen ones, so moving a row between targets never
         // shifts the columns to its right.
         var targetWidth = state.Lines.Where(l => l.Row is not null).SelectMany(l => l.Row!.Targets).Select(t => t.Version.ToString().Length).DefaultIfEmpty(0).Max();
@@ -367,7 +383,16 @@ internal static class PackagePickerRenderer {
         var indent = line.GroupIndex >= 0 ? "  " : "";
         var rowBox = line.Selected ? "[green][[X]][/]" : "[[ ]]";
         var id = Markup.Escape(row.Id.PadRight(idWidth));
-        var current = Markup.Escape(row.Current.ToString().PadRight(versionWidth));
+        var current = Markup.Escape(row.Now.PadRight(versionWidth));
+        var note = row.Note is { Length: > 0 } n ? $"  [grey]{Markup.Escape(n)}[/]" : "";
+
+        if (state.Mode == PickerMode.Revert) {
+            var back = Markup.Escape(target.Version.ToString().PadRight(targetWidth));
+            // A restored orphan is not a version step, so it gets no bump class.
+            var step = row.NowLabel is null ? $"  {BumpMarkup(target.Bump)}" : "";
+            if (row.Locked) return $"{cursor}{indent}[grey][[-]] {id}  {current} -> {back}[/]{note}";
+            return $"{cursor}{indent}{rowBox} {id}  {current} -> {back}{step}{note}";
+        }
         // The arrows are only drawn where they do something, so a package with a single target does
         // not advertise a choice it does not have.
         var left = line.TargetIndex > 0 ? "[blue]<[/]" : " ";
@@ -379,7 +404,7 @@ internal static class PackagePickerRenderer {
         var policy = line.PolicyLevel is { } level
             ? $"  [magenta]{Markup.Escape($"policy:{level.ToString().ToLowerInvariant()}{(line.PolicyMatch is { } m && !m.Equals(row.Id, StringComparison.OrdinalIgnoreCase) ? $" ({m})" : "")}")}[/]"
             : "";
-        return $"{cursor}{indent}{rowBox} {id}  {current} -> {left} {targetVersion} {right}  {BumpMarkup(target.Bump)}{position}{policy}";
+        return $"{cursor}{indent}{rowBox} {id}  {current} -> {left} {targetVersion} {right}  {BumpMarkup(target.Bump)}{position}{policy}{note}";
     }
 
     internal static string BumpMarkup(BumpKind bump) => bump switch {

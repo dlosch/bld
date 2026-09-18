@@ -1,5 +1,6 @@
 using bld.Infrastructure;
 using bld.Commands;
+using System.CommandLine;
 using System.Reflection;
 
 namespace bld.Tests;
@@ -101,6 +102,22 @@ public class CommandSafetyTests {
         Assert.NotNull(applyOption);
     }
 
+    [Fact]
+    public void OutdatedCommand_UndoIsASubcommandThatNeedsYesOrATerminalAndTakesNoApply() {
+        var command = new OutdatedCommand(new TestConsole());
+        var undo = Assert.IsType<OutdatedUndoCommand>(Assert.Single(command.Subcommands));
+
+        // "undo" after outdated is the subcommand, not the root argument.
+        var parsed = new System.CommandLine.RootCommand { command }.Parse("outdated undo --run 2 -p \"MassTransit*\" --yes");
+        Assert.Empty(parsed.Errors);
+        Assert.Same(undo, parsed.CommandResult.Command);
+        Assert.DoesNotContain(undo.Options, o => o.Name == "--apply");
+        Assert.Contains(undo.Options, o => o.Name == "--yes");
+
+        var bad = new System.CommandLine.RootCommand { command }.Parse("outdated undo --run 0");
+        Assert.NotEmpty(bad.Errors);
+    }
+
     #endregion
 
     #region Clean Command Safety
@@ -188,19 +205,21 @@ public class CommandSafetyTests {
 
     #endregion
 
-    #region Containerize Command Safety (Read-Only)
+    #region Containerize Command Safety
 
     [Fact]
-    public void ContainerizeCommand_IsReadOnly() {
-        // Containerize command should be read-only (just scanning)
+    public void ContainerizeCommand_MigrateIsDryRunByDefault() {
+        // --migrate writes project files, so it needs the same --apply gate as the other commands.
         var console = new TestConsole();
         var command = new ContainerizeCommand(console);
 
         var applyOptionField = typeof(ContainerizeCommand).GetField("_applyOption",
             BindingFlags.NonPublic | BindingFlags.Instance);
 
-        // ContainerizeCommand should NOT have an apply option since it's read-only
-        Assert.Null(applyOptionField);
+        Assert.NotNull(applyOptionField);
+        var applyOption = Assert.IsType<Option<bool>>(applyOptionField.GetValue(command));
+        Assert.NotNull(applyOption.DefaultValueFactory);
+        Assert.False(applyOption.DefaultValueFactory(null!));
     }
 
     #endregion

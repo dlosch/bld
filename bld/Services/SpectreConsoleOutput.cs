@@ -121,7 +121,11 @@ internal class SpectreConsoleOutput : IConsoleOutput {
                 ctx.Refresh();
                 while (!state.Done) {
                     var key = AnsiConsole.Console.Input.ReadKey(intercept: true);
-                    if (key is null) break; // input ended under us
+                    if (key is null) {
+                        // Input ended under us: nothing was confirmed, so nothing may be applied.
+                        state.Handle(PickerKey.Cancel);
+                        break;
+                    }
                     state.Handle(PackagePickerRenderer.MapKey(key.Value));
                     ctx.UpdateTarget(PackagePickerRenderer.Render(state, title, pageSize));
                     ctx.Refresh();
