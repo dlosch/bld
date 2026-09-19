@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented in this file.
 
+## [Unreleased]
+
+### Changes
+- extend `clean` command: `--interactive`/`-i` shows everything the run would delete as a list grouped by project, with the same keys as the `outdated` picker. `b`/`o`/`p`/`g`/`t` toggle bin, obj, publish, package and test results for every project on the top line or for one project on its line, space toggles a directory, headers show each category as checked, unchecked or partly checked with the selected and total size. `--obj`, `--publish` and `--test-results` only decide what starts out checked. With `--delete` the picker replaces the per-directory confirmation unless `--confirm` is given. Every row shows the fully qualified path that would be deleted, cut in the middle when the terminal is too narrow; the same directory marked with and without a trailing separator is one row, not two; and what the picker hands back is checked against what the run marked, so a path the run never marked aborts it instead of being deleted.
+- extend `clean` and `stats`: `--test-results` also cleans `TestResults/` next to each project (`VSTestResultsDirectory` when set) and next to its solution.
+- [BUG] `clean`/`stats` `--publish`: a `PackageOutputPath` outside the build output (a local NuGet feed, `artifacts/package/<config>/`) was marked as a whole, with every other project's packages in it. Package output is now cleaned per file: only `<PackageId>.<version>[.symbols].nupkg`/`.snupkg` directly in that directory, only for projects that pack, and the directory itself is never touched. The name only nominates a file; the id in the package's own `.nuspec` decides, so `Foo` cannot delete `Foo.1`'s `Foo.1.2.0.nupkg`, and a file that does not read as a package is left alone. The scripts get one `del`/`rm` line per file, `--delete` asks per file at the `Directory` confirm level, and the picker lists each file with its own size.
+
 ## [0.4.1] - 2026-09-18
 
 ### Changes

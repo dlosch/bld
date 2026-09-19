@@ -121,7 +121,9 @@ Purpose: enumerate build output, report what would be deleted, and either emit a
 - `--non-current`, `--noncurrent`, `-nc` — Restrict deletion to target-framework-specific directories *not* listed in the project’s current TFMs. Default: `false`.
 - `--obj`, `-obj` — Include `obj` / `BaseIntermediateOutputPath` directories. Default: `false` (bin-only).
 - `--keep-assets` — When cleaning `obj`, preserve NuGet restore artifacts (`project.assets.json`, etc.) and only delete build-output subdirectories. Default: `false`.
-- `--publish` — Also clean publish output (`PublishDir`) and pack output (`PackageOutputPath`). Covers explicitly configured publish directories and, in the artifacts layout, `artifacts/publish/<project>/` and `artifacts/package/`. Default: `false`, because publish output is often kept on purpose for a deployment.
+- `--publish` — Also clean publish output (`PublishDir`) and pack output (`PackageOutputPath`). Covers explicitly configured publish directories and, in the artifacts layout, `artifacts/publish/<project>/` and `artifacts/package/`. Default: `false`, because publish output is often kept on purpose for a deployment. A package output directory is never deleted as a whole: it is usually shared (a local feed, `artifacts/package/<config>/`), so only the project's own `<PackageId>.<version>.nupkg`/`.snupkg` files directly in it are deleted, and only for projects that pack (`IsPackable` not `false`). The file name only makes a file a candidate; the id in the package's own `.nuspec` decides, because a NuGet id may end in a numeric segment and `Foo.1.2.0.nupkg` is `Foo.1` version `2.0` as readily as `Foo` version `1.2.0`. A file that cannot be read as a package is left alone.
+- `--test-results` — Also clean `TestResults/` (what `dotnet test` writes: `.trx`, coverage) next to each project (`VSTestResultsDirectory` when the project sets it) and next to its solution. Default: `false`.
+- `--interactive`, `-i` — Pick the directories from a list grouped by project before anything is written or deleted. Every category is marked; `--obj`, `--publish` and `--test-results` only decide what starts out checked (bin always does). Keys: `b`/`o`/`p`/`g`/`t` toggle bin, obj, publish, package and test results for every project on the top line, or for one project on its line or one of its rows; `space` toggles a directory (a whole project or everything on a header line); `a`/`n` all or none; `enter` confirms; `esc` cancels. Each header shows its categories as `[X]`, `[ ]` or `[-]` for a partly checked one, with the selected and total size. Every directory row shows the fully qualified path that would be deleted — never a relative one — cut in the middle (`C:\...\MyApp\bin\Debug\net10.0`) when the terminal is too narrow for it. With `--delete` the picker is the confirmation, so nothing is asked per directory unless `--confirm` is given explicitly. Needs an interactive terminal.
 - `--output-file`, `-o` — Where to write the deletion script (`clean.cmd` or `clean.sh` by default depending on OS).
 - `--delete` — Execute deletions instead of just generating scripts. Default: `false` (dry-run).
 - `--force` — Skip confirmation prompts (requires explicit `--root` to avoid accidental repo-wide deletes). In non-interactive contexts (CI / piped stdin) a missing confirmation is treated as "no" (skip), so `--force` is required to actually delete unattended.
@@ -141,6 +143,7 @@ Purpose: enumerate build output, report what would be deleted, and either emit a
 
 ```powershell
 bld clean --root C:\src\MyRepo --depth 4 --obj
+bld clean --root C:\src\MyRepo -i --delete     # pick per project, then delete what is checked
 ```
 
 ### stats
@@ -152,6 +155,7 @@ Purpose: compute what *would* be cleaned and show totals without generating scri
 - `--obj`, `-obj` — Include `obj` directories in the statistics. Default: `false`.
 - `--keep-assets` — With `--obj`, preserve NuGet restore artifacts and only count build-output subdirectories. Default: `false`.
 - `--publish` — Include publish output (`PublishDir`) and pack output (`PackageOutputPath`) in the statistics. Default: `false`.
+- `--test-results` — Include `TestResults/` directories next to projects and solutions. Default: `false`.
 - Shares all global options (`--root`, `--depth`, `--log`, `--concurrency`, `--markdown`, `--vstoolspath`, `--novstoolspath`).
 
 **Behavior**
