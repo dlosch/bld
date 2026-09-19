@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented in this file.
 
-## [Unreleased]
+## [0.4.2] - 2026-09-19
 
 ### Changes
 - extend `clean` command: `--interactive`/`-i` shows everything the run would delete as a list grouped by project, with the same keys as the `outdated` picker. `b`/`o`/`p`/`g`/`t` toggle bin, obj, publish, package and test results for every project on the top line or for one project on its line, space toggles a directory, headers show each category as checked, unchecked or partly checked with the selected and total size. `--obj`, `--publish` and `--test-results` only decide what starts out checked. With `--delete` the picker replaces the per-directory confirmation unless `--confirm` is given. Every row shows the fully qualified path that would be deleted, cut in the middle when the terminal is too narrow; the same directory marked with and without a trailing separator is one row, not two; and what the picker hands back is checked against what the run marked, so a path the run never marked aborts it instead of being deleted.
