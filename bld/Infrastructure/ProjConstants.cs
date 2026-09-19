@@ -27,6 +27,7 @@ static class ProjConstants {
 
         "PackageOutputPath",
         "PublishDir",
+        "VSTestResultsDirectory",
         "PackageId",
         "AssemblyName",
 

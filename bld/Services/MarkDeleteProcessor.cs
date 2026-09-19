@@ -18,7 +18,27 @@ internal sealed class MarkDeleteProcessor : IProjectProcessor {
 
     // Track directories for deletion - using ConcurrentBag for thread-safe value collection
     private readonly ConcurrentDictionary<string, ConcurrentBag<Dir>> _deleteDirs = new ConcurrentDictionary<string, ConcurrentBag<Dir>>(PathComparer);
+    // What each marked directory is (bin, obj, publish, ...): the first mark decides, so a package
+    // output that is also the build output stays "bin".
+    private readonly ConcurrentDictionary<string, DirType> _deleteTypes = new ConcurrentDictionary<string, DirType>(PathComparer);
     private readonly ConcurrentDictionary<string, Dir> _dirs = new ConcurrentDictionary<string, Dir>(PathComparer);
+    // Single files marked for deletion: only a project's own packages in a package output directory.
+    private readonly ConcurrentDictionary<string, ConcurrentBag<Dir>> _deleteFiles = new ConcurrentDictionary<string, ConcurrentBag<Dir>>(PathComparer);
+    // Per project file: the package id it packs under and whether it packs at all, for the file match.
+    private readonly ConcurrentDictionary<string, (string? PackageId, bool Packable)> _packages = new ConcurrentDictionary<string, (string?, bool)>(PathComparer);
+
+    // In interactive mode every category is marked and the flags only pick what starts out checked.
+    private bool MarkObj => _options.CleanObjDirectory || _options.Interactive;
+    private bool MarkPublish => _options.CleanPublishDirectory || _options.Interactive;
+    private bool MarkTestResults => _options.CleanTestResults || _options.Interactive;
+
+    private void Mark(string path, DirType type, Dir dir) {
+        _deleteDirs.GetOrAdd(path, _ => new ConcurrentBag<Dir>()).Add(dir);
+        _deleteTypes.TryAdd(path, type);
+    }
+
+    private void MarkFile(string path, Dir dir) =>
+        _deleteFiles.GetOrAdd(path, _ => new ConcurrentBag<Dir>()).Add(dir);
 
     public MarkDeleteProcessor(IConsoleOutput console, IFileSystem fileSystem, CleaningOptions options, ErrorSink errorSink) {
         _console = console;
@@ -45,10 +65,15 @@ internal sealed class MarkDeleteProcessor : IProjectProcessor {
             if (!Directory.Exists(path)) continue;
             var dirInfo = new DirectoryInfo(path);
             if (dirInfo.Exists) {
-                results.Add(new DirResult(dirInfo, kvp.Value.ToList()));
+                results.Add(new DirResult(dirInfo, kvp.Value.ToList(), CleanCategories.Of(_deleteTypes.GetValueOrDefault(path, DirType.OutDir))));
             }
         }
-        return new MarkDeleteResult(results);
+        var files = new List<FileResult>();
+        foreach (var kvp in _deleteFiles.OrderBy(k => k.Key)) {
+            var fileInfo = new FileInfo(kvp.Key);
+            if (fileInfo.Exists) files.Add(new FileResult(fileInfo, kvp.Value.ToList(), CleanCategory.Package));
+        }
+        return new MarkDeleteResult(results) { Files = files };
     }
 
     private async ValueTask AddDir(ProjectInfo info, ProjCfg cfg) {
@@ -72,7 +97,7 @@ internal sealed class MarkDeleteProcessor : IProjectProcessor {
             _console.WriteDebug($"Artifacts output directory {artifactsBin} for {info.ProjectName}. Exists? {Directory.Exists(artifactsBin)}");
             await AddDirInternal(artifactsBin, DirType.ArtifactsBin, absProjPath, projName, info.Configuration, tfms, cfg.ProjDir);
 
-            if (_options.CleanPublishDirectory) {
+            if (MarkPublish) {
                 var artifactsPublish = DirExt.EnsureRooted(Path.Combine(info.ArtifactsPath, info.ArtifactsPublishOutputName ?? "publish", artifactsProjName), cfg.ProjDir);
                 await AddDirInternal(artifactsPublish, DirType.ArtifactsPublish, absProjPath, projName, info.Configuration, tfms, cfg.ProjDir);
             }
@@ -100,17 +125,31 @@ internal sealed class MarkDeleteProcessor : IProjectProcessor {
             await AddDirInternal(intermediateDir, DirType.BaseIntermediateOutputPath, absProjPath, projName, info.Configuration, tfms, cfg.ProjDir);
         }
 
-        if (_options.CleanPublishDirectory) {
+        if (MarkPublish) {
             // In the artifacts layout PublishDir evaluates to the outer-build pivot (artifacts/publish/<project>/<config>/);
             // the per-project directory added above covers every pivot, so only use the evaluated value elsewhere.
             if (!info.UseArtifactsOutput && !string.IsNullOrEmpty(info.PublishDir)) {
                 await AddDirInternal(DirExt.EnsureRooted(info.PublishDir, cfg.ProjDir), DirType.PublishDir, absProjPath, projName, info.Configuration, tfms, cfg.ProjDir);
             }
             // PackageOutputPath defaults to OutputPath, i.e. the marked build output; the second pass in
-            // ProcessDirs drops it when it is already covered. In the artifacts layout it is the shared
-            // artifacts/package/<config>/ directory.
+            // ProcessDirs drops it when it is already covered. Anywhere else (a local feed, the shared
+            // artifacts/package/<config>/) only this project's own package files are candidates.
             if (!string.IsNullOrEmpty(info.PackageOutputPath)) {
+                _packages[absProjPath] = (info.PackageId ?? info.AssemblyName ?? Path.GetFileNameWithoutExtension(absProjPath), info.IsPackable ?? true);
                 await AddDirInternal(DirExt.EnsureRooted(info.PackageOutputPath, cfg.ProjDir), DirType.PackageOutputPath, absProjPath, projName, info.Configuration, tfms, cfg.ProjDir);
+            }
+        }
+
+        if (MarkTestResults) {
+            // `dotnet test` writes TestResults/ next to the project (VSTestResultsDirectory when set) or,
+            // with --results-directory, wherever the caller said; the solution directory is the usual
+            // other place. Anything else is not known here.
+            var testResults = info.TestResultsDirectory is { } configured
+                ? DirExt.EnsureRooted(configured, cfg.ProjDir)
+                : Path.Combine(cfg.ProjDir, "TestResults");
+            await AddDirInternal(testResults, DirType.TestResults, absProjPath, projName, info.Configuration, tfms, cfg.ProjDir);
+            if (cfg.Proj.Parent is { } sln && Path.GetDirectoryName(sln.Path) is { Length: > 0 } slnDir) {
+                await AddDirInternal(Path.Combine(slnDir, "TestResults"), DirType.TestResults, absProjPath, projName, info.Configuration, tfms, cfg.ProjDir);
             }
         }
     }
@@ -273,7 +312,7 @@ internal sealed class MarkDeleteProcessor : IProjectProcessor {
 
                         if (deleteCandidates is { }) {
                             foreach (var d in deleteCandidates) {
-                                _deleteDirs.GetOrAdd(d.FullName, _ => new ConcurrentBag<Dir>()).Add(dir);
+                                Mark(d.FullName, dirType, dir);
                                 _console.WriteDebug($"{d.FullName} marked for deletion.");
                             }
                         }
@@ -288,7 +327,7 @@ internal sealed class MarkDeleteProcessor : IProjectProcessor {
                     }
 
                     Stats BaseIntermediateOutputDirDelete(string absPath, DirType dirType, Dir dir) {
-                        if (!_options.CleanObjDirectory) return default;
+                        if (!MarkObj) return default;
                         if (!Directory.Exists(absPath)) return default;
 
                         // This path had no structural validation at all: a project pointing
@@ -303,11 +342,11 @@ internal sealed class MarkDeleteProcessor : IProjectProcessor {
                             // Only mark subdirectories (build output like Debug/net8.0),
                             // preserving root-level files (project.assets.json, *.nuget.* etc.)
                             foreach (var subDir in new DirectoryInfo(absPath).EnumerateDirectories()) {
-                                _deleteDirs.GetOrAdd(subDir.FullName, _ => new ConcurrentBag<Dir>()).Add(dir);
+                                Mark(subDir.FullName, dirType, dir);
                             }
                         }
                         else {
-                            _deleteDirs.GetOrAdd(absPath, _ => new ConcurrentBag<Dir>()).Add(dir);
+                            Mark(absPath, dirType, dir);
                         }
                         return default;
                     }
@@ -318,8 +357,20 @@ internal sealed class MarkDeleteProcessor : IProjectProcessor {
                                 _console.WriteWarning($"Skipping {absPath}: it contains project or solution files.");
                                 return default;
                             }
-                            _deleteDirs.GetOrAdd(absPath, _ => new ConcurrentBag<Dir>()).Add(dir);
+                            Mark(absPath, dirType, dir);
                         }
+                        return default;
+                    }
+
+                    Stats TestResultsDirDelete(string absPath, DirType dirType, Dir dir) {
+                        if (!Directory.Exists(absPath)) return default;
+                        if (ContainsProjectOrSolution(absPath)) {
+                            _console.WriteWarning($"Skipping {absPath}: it contains project or solution files.");
+                            return default;
+                        }
+                        var fullName = new DirectoryInfo(absPath).FullName;
+                        Mark(fullName, dirType, dir);
+                        _console.WriteDebug($"{fullName} marked for deletion.");
                         return default;
                     }
 
@@ -347,7 +398,7 @@ internal sealed class MarkDeleteProcessor : IProjectProcessor {
                             // A pivot without a TFM segment is the single-target output, which is always current.
                             if (onlyNonCurrent && (tfm is null || claimedTfms.Contains(tfm))) continue;
 
-                            _deleteDirs.GetOrAdd(pivotDir.FullName, _ => new ConcurrentBag<Dir>()).Add(dir);
+                            Mark(pivotDir.FullName, dirType, dir);
                             _console.WriteDebug($"{pivotDir.FullName} marked for deletion.");
                         }
 
@@ -365,13 +416,18 @@ internal sealed class MarkDeleteProcessor : IProjectProcessor {
                             return default;
                         }
 
+                        if (dirType == DirType.PackageOutputPath) {
+                            PackageOutputFiles(absPath, dir);
+                            return default;
+                        }
+
                         if (ContainsProjectOrSolution(absPath)) {
                             _console.WriteWarning($"Skipping {absPath}: it contains project or solution files.");
                             return default;
                         }
 
                         var fullName = new DirectoryInfo(absPath).FullName;
-                        _deleteDirs.GetOrAdd(fullName, _ => new ConcurrentBag<Dir>()).Add(dir);
+                        Mark(fullName, dirType, dir);
                         _console.WriteDebug($"{fullName} marked for deletion.");
                         return default;
                     }
@@ -379,6 +435,7 @@ internal sealed class MarkDeleteProcessor : IProjectProcessor {
                     var deleteTask = (dir.ProjType, item.type) switch {
                         (_, DirType.ArtifactsBin) or (_, DirType.ArtifactsPublish) => ArtifactsDirDelete(item.path, item.type, dir),
                         (_, DirType.PublishDir) or (_, DirType.PackageOutputPath) => PublishOrPackageDirDelete(item.path, item.type, dir),
+                        (_, DirType.TestResults) => TestResultsDirDelete(item.path, item.type, dir),
                         (ProjectType.Vcxproj, _) => VcxDir(item.path, item.type, dir),
                         (_, DirType.OutDir) => OutDirDelete(item.path, item.type, dir),
                         (_, DirType.BaseOutputPath) => BaseOutDirDelete(item.path, item.type, dir),
@@ -389,6 +446,78 @@ internal sealed class MarkDeleteProcessor : IProjectProcessor {
             }
         }
         return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Marks the package files of the directory's owning projects, never the directory: a package
+    /// output directory is shared by design (a local feed, artifacts/package/<config>/) and holds
+    /// packages that are not this run's to delete. A file counts only when it sits directly in the
+    /// directory and is named `<PackageId>.<version>[.symbols].nupkg` or `.snupkg` of a project that
+    /// packs, so `Foo` never claims `Foo.Bar.1.0.0.nupkg`, and only when the package itself says it
+    /// belongs to that project.
+    /// </summary>
+    private void PackageOutputFiles(string absPath, Dir dir) {
+        var ids = dir.AbsProjPath.Keys
+            .Select(p => _packages.TryGetValue(p, out var package) ? package : (PackageId: null, Packable: false))
+            .Where(p => p.Packable && !string.IsNullOrWhiteSpace(p.PackageId))
+            .Select(p => p.PackageId!)
+            .Distinct(DefaultComparer)
+            .ToList();
+        if (ids.Count == 0) {
+            _console.WriteVerbose($"{absPath}: no packable project with a package id owns it; nothing marked.");
+            return;
+        }
+
+        IEnumerable<FileInfo> files;
+        try {
+            files = new DirectoryInfo(absPath).EnumerateFiles("*", new EnumerationOptions { RecurseSubdirectories = false, IgnoreInaccessible = true, ReturnSpecialDirectories = false, MatchType = MatchType.Simple }).ToList();
+        }
+        catch (Exception ex) {
+            _console.WriteWarning($"Could not list {absPath} ({ex.FormatMessage()}); nothing marked there.");
+            return;
+        }
+
+        foreach (var file in files) {
+            // The name is the cheap filter; the package itself has the last word.
+            if (!ids.Any(id => IsPackageFileOf(file.Name, id))) continue;
+
+            var actual = PackageIdOf(file);
+            if (actual is null) continue;
+            if (!ids.Contains(actual, DefaultComparer)) {
+                _console.WriteVerbose($"{file.FullName} is package '{actual}', which no project in this run packs; not marked.");
+                continue;
+            }
+
+            MarkFile(file.FullName, dir);
+            _console.WriteDebug($"{file.FullName} marked for deletion.");
+        }
+    }
+
+    /// <summary>
+    /// The id the package really carries, read from the .nuspec inside it. The file name cannot
+    /// settle this on its own: a NuGet id may end in a numeric segment, so `Foo.1.2.0.nupkg` is
+    /// `Foo.1` version `2.0` just as plausibly as `Foo` version `1.2.0`, and going by the name alone
+    /// let a project delete another project's package. Null when the file does not read as a
+    /// package, which leaves it alone - deleting something unreadable is the worse guess.
+    /// </summary>
+    private string? PackageIdOf(FileInfo file) {
+        try {
+            using var reader = new global::NuGet.Packaging.PackageArchiveReader(file.FullName);
+            var id = reader.NuspecReader.GetId();
+            if (!string.IsNullOrWhiteSpace(id)) return id;
+            _console.WriteWarning($"{file.FullName} has no package id in its manifest; not marked.");
+            return null;
+        }
+        catch (Exception ex) {
+            _console.WriteWarning($"Could not read {file.FullName} as a NuGet package ({ex.FormatMessage()}); not marked.");
+            return null;
+        }
+    }
+
+    /// <summary>`<id>.<version>[.symbols].nupkg` or `.snupkg`, where the version starts with a digit right after the id's dot.</summary>
+    internal static bool IsPackageFileOf(string fileName, string packageId) {
+        var pattern = "^" + System.Text.RegularExpressions.Regex.Escape(packageId) + @"\.\d+(\.\d+)*([-+][0-9A-Za-z.+-]+)?(\.symbols)?\.(nupkg|snupkg)$";
+        return System.Text.RegularExpressions.Regex.IsMatch(fileName, pattern, System.Text.RegularExpressions.RegexOptions.IgnoreCase);
     }
 
     /// <summary>Every project file discovered in this run, not just the one owning a given directory.</summary>
@@ -505,8 +634,11 @@ internal sealed class MarkDeleteProcessor : IProjectProcessor {
     /// <summary>
     /// Get the directories marked for deletion
     /// </summary>
-    public IReadOnlyDictionary<string, IReadOnlyList<Dir>> GetMarkedDirectories() => 
+    public IReadOnlyDictionary<string, IReadOnlyList<Dir>> GetMarkedDirectories() =>
         _deleteDirs.ToDictionary(kvp => kvp.Key, kvp => (IReadOnlyList<Dir>)kvp.Value.ToList(), DefaultComparer);
+
+    /// <summary>The single files marked for deletion (package output).</summary>
+    public IReadOnlyList<string> GetMarkedFiles() => _deleteFiles.Keys.OrderBy(k => k, PathComparer).ToList();
 }
 
 

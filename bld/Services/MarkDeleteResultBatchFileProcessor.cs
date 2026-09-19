@@ -29,7 +29,7 @@ internal class MarkDeleteResultBatchFileProcessor : IMarkDeleteResultProcessor {
             return (files.Sum(a => a.Length), files.Length);
         }
 
-        if (!result.Directories.Any()) {
+        if (result.IsEmpty) {
             _console.WriteLine("No directories marked for deletion.");
             return Task.CompletedTask;
         }
@@ -58,6 +58,23 @@ internal class MarkDeleteResultBatchFileProcessor : IMarkDeleteResultProcessor {
                 (bytes / 1024d).ToString("N0"),
                 (bytes / 1024d / 1024d).ToString("N2"),
                 Markup.Escape(path.FullName)
+                );
+        }
+
+        // Package files are deleted one by one; their directory is shared and stays.
+        foreach (var entry in result.Files.OrderBy(f => f.File.FullName)) {
+            var file = entry.File;
+            file.Refresh();
+            if (!file.Exists) continue;
+            totalBytes += file.Length;
+            totalFiles += 1;
+
+            writer.AppendFile(file.FullName);
+            table.AddRow(
+                "1",
+                (file.Length / 1024d).ToString("N0"),
+                (file.Length / 1024d / 1024d).ToString("N2"),
+                Markup.Escape(file.FullName)
                 );
         }
 

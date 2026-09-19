@@ -11,6 +11,13 @@ internal record CleaningOptions {
     public bool KeepRestoreArtifacts { get; init; } = false;
     /// <summary>Also mark PublishDir and PackageOutputPath (and artifacts/publish, artifacts/package).</summary>
     public bool CleanPublishDirectory { get; init; } = false;
+    /// <summary>Also mark TestResults/ next to each project and its solution.</summary>
+    public bool CleanTestResults { get; init; } = false;
+    /// <summary>
+    /// Mark every category and let the user pick from a list. The Clean* flags then only decide what
+    /// starts out checked.
+    /// </summary>
+    public bool Interactive { get; init; } = false;
     public bool Force { get; init; } = false;
     public LogLevel LogLevel { get; init; } = LogLevel.Warning;
     public int Depth { get; init; } = 4;

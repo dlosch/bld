@@ -27,7 +27,7 @@ internal class MarkDeleteResultStatsProcessor : IMarkDeleteResultProcessor {
             return (files.Sum(a => a.Length), files.Length);
         }
 
-        if (!result.Directories.Any()) {
+        if (result.IsEmpty) {
             _console.WriteLine("No directories marked for deletion.");
             return Task.CompletedTask;
         }
@@ -67,6 +67,25 @@ internal class MarkDeleteResultStatsProcessor : IMarkDeleteResultProcessor {
                 path.FullName,
                 string.Join(", ", kvp.References?.SelectMany(d => d.Tfms).Distinct() ?? Array.Empty<string>())
             });
+        }
+
+        // Package files: one row each, since their directory is shared and never counted as a whole.
+        foreach (var entry in result.Files.OrderBy(f => f.File.FullName)) {
+            var file = entry.File;
+            file.Refresh();
+            if (!file.Exists) continue;
+            totalBytes += file.Length;
+            totalFiles += 1;
+
+            var cells = new[] {
+                "1",
+                (file.Length / 1024d).ToString("N0"),
+                (file.Length / 1024d / 1024d).ToString("N2"),
+                file.FullName,
+                string.Join(", ", entry.References.SelectMany(d => d.Tfms).Distinct())
+            };
+            table.AddRow(cells.Select(Markup.Escape).ToArray());
+            markdownRows.Add(cells);
         }
 
         if (totalFiles == 0 && totalBytes == 0) {

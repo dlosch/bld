@@ -182,27 +182,56 @@ public class ArtifactsLayoutTests : IDisposable {
         var (csproj, artifacts) = CreateArtifactsProject("Single");
         CreateDir(artifacts, "bin", "Single", "release");
         var publish = CreateDir(artifacts, "publish", "Single", "release");
+        // artifacts/package/<config>/ is shared by every project of the repo: only this project's own
+        // package file may go, never the directory or another project's package.
         var package = CreateDir(artifacts, "package", "release");
+        var own = Path.Combine(package, "Single.1.0.0.nupkg");
+        var other = Path.Combine(package, "Other.1.0.0.nupkg");
+        WriteNupkg(own, "Single", "1.0.0");
+        WriteNupkg(other, "Other", "1.0.0");
         var foreign = CreateDir(artifacts, "publish", "Single", "notes");
 
         var info = ArtifactsInfo(csproj, artifacts, "Single", tfm: "net10.0", configuration: "Release") with {
             PublishDir = Path.Combine(artifacts, "publish", "Single", "release"),
             PackageOutputPath = package,
+            PackageId = "Single",
         };
 
-        var without = await Mark(new CleaningOptions(), info);
+        var (without, withoutFiles) = await MarkAll(new CleaningOptions(), info);
         Assert.DoesNotContain(without, k => SamePath(k, publish));
         Assert.DoesNotContain(without, k => SamePath(k, package));
+        Assert.Empty(withoutFiles);
 
-        var with = await Mark(new CleaningOptions { CleanPublishDirectory = true }, info);
+        var (with, withFiles) = await MarkAll(new CleaningOptions { CleanPublishDirectory = true }, info);
         Assert.Contains(with, k => SamePath(k, publish));
-        Assert.Contains(with, k => SamePath(k, package));
+        Assert.DoesNotContain(with, k => SamePath(k, package));
         Assert.DoesNotContain(with, k => SamePath(k, foreign));
+        Assert.Equal(new[] { Norm(own) }, withFiles.Select(Norm));
     }
 
     // ----- helpers -------------------------------------------------------------------------------
 
-    private async Task<List<string>> Mark(CleaningOptions options, params ProjectInfo[] infos) {
+    /// <summary>A real, minimal package: the marking reads the id out of the .nuspec inside it.</summary>
+    private static void WriteNupkg(string path, string id, string version) {
+        using var archive = System.IO.Compression.ZipFile.Open(path, System.IO.Compression.ZipArchiveMode.Create);
+        using var writer = new StreamWriter(archive.CreateEntry($"{id}.nuspec").Open());
+        writer.Write($"""
+            <?xml version="1.0" encoding="utf-8"?>
+            <package xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd">
+              <metadata>
+                <id>{id}</id>
+                <version>{version}</version>
+                <authors>tests</authors>
+                <description>tests</description>
+              </metadata>
+            </package>
+            """);
+    }
+
+    private async Task<List<string>> Mark(CleaningOptions options, params ProjectInfo[] infos) =>
+        (await MarkAll(options, infos)).Directories;
+
+    private async Task<(List<string> Directories, List<string> Files)> MarkAll(CleaningOptions options, params ProjectInfo[] infos) {
         _console.Messages.Clear();
         var errorSink = new ErrorSink(_console);
         var fileSystem = new FileSystem(_console, errorSink);
@@ -213,7 +242,7 @@ public class ArtifactsLayoutTests : IDisposable {
         }
         await processor.ProcessDirs();
 
-        return processor.GetMarkedDirectories().Keys.ToList();
+        return (processor.GetMarkedDirectories().Keys.ToList(), processor.GetMarkedFiles().ToList());
     }
 
     private string CreateProject(string name) {

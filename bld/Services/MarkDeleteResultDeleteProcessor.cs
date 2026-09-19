@@ -19,23 +19,22 @@ internal class MarkDeleteResultDeleteProcessor : IMarkDeleteResultProcessor {
     /// behaved like Directory. Sln is treated as "ask once for the run": a marked directory carries its
     /// owning projects but not the solution they came from.
     /// </summary>
-    private bool ShouldDelete(DirResult entry, Dictionary<string, bool> answers) {
+    private bool ShouldDelete(string path, IReadOnlyList<Dir> references, bool isFile, Dictionary<string, bool> answers) {
         if (_options.Force) return true;
 
         var level = _options.ConfirmLevel ?? ConfirmLevel.Directory;
         if (level == ConfirmLevel.None) return true;
 
-        var path = entry.Directory.FullName;
         var scope = level switch {
             ConfirmLevel.Directory => path,
-            ConfirmLevel.Project => entry.References.SelectMany(r => r.AbsProjPath.Keys).OrderBy(p => p).FirstOrDefault() ?? path,
+            ConfirmLevel.Project => references.SelectMany(r => r.AbsProjPath.Keys).OrderBy(p => p).FirstOrDefault() ?? path,
             _ => "*", // Sln: once for the whole run
         };
 
         if (answers.TryGetValue(scope, out var remembered)) return remembered;
 
         var prompt = level switch {
-            ConfirmLevel.Directory => $"Delete directory {path} and all its contents?",
+            ConfirmLevel.Directory => isFile ? $"Delete file {path}?" : $"Delete directory {path} and all its contents?",
             ConfirmLevel.Project => $"Delete build output for {scope}?",
             _ => "Delete all marked build output directories?",
         };
@@ -46,12 +45,34 @@ internal class MarkDeleteResultDeleteProcessor : IMarkDeleteResultProcessor {
     }
 
     public Task ProcessAsync(MarkDeleteResult result) {
-        if (!result.Directories.Any()) {
+        if (result.IsEmpty) {
             _console.WriteLine("No directories marked for deletion.");
             return Task.CompletedTask;
         }
 
         var answers = new Dictionary<string, bool>(DirExt.PathComparer);
+
+        // Package files first: they sit in directories that are never marked, so nothing below
+        // removes them on the way, and a failure here is reported like a directory's.
+        foreach (var entry in result.Files.OrderBy(f => f.File.FullName)) {
+            var file = entry.File;
+            file.Refresh();
+            if (!file.Exists) continue;
+
+            if (ShouldDelete(file.FullName, entry.References, isFile: true, answers)) {
+                try {
+                    file.Delete();
+                    _console.WriteLine($"Deleted {file.FullName}");
+                }
+                catch (Exception ex) {
+                    _errorSink.AddError($"Failed to delete file {file.FullName}.", exception: ex);
+                    _console.WriteError($"Failed to delete file {file.FullName}: {ex.FormatMessage()}");
+                }
+            }
+            else {
+                _console.WriteLine($"Skipped deletion of file {file.FullName}.");
+            }
+        }
 
         foreach (var kvp in result.Directories.OrderBy(k => k.Directory.FullName)) {
             var path = kvp.Directory;
@@ -62,7 +83,7 @@ internal class MarkDeleteResultDeleteProcessor : IMarkDeleteResultProcessor {
             path.Refresh();
             if (!path.Exists) continue;
 
-            if (ShouldDelete(kvp, answers)) {
+            if (ShouldDelete(path.FullName, kvp.References, isFile: false, answers)) {
                 try {
                     path.Delete(true);
                     _console.WriteLine($"Deleted {path.FullName}");

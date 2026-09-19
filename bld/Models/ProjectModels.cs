@@ -16,11 +16,15 @@ internal record ProjectInfo {
     public string? IntermediateOutputPath { get; init; }
     public string? PackageOutputPath { get; init; }
     public string? PackageId { get; init; }
+    /// <summary>Null when the project does not say; the SDK's default is true, test projects set false.</summary>
+    public bool? IsPackable { get; init; }
     public IReadOnlyDictionary<string, string> Properties { get; init; } = new Dictionary<string, string>();
     public bool HasDockerProperties { get; init; }
     public string? OutDir { get; internal set; }
     public string? BaseOutputPath { get; internal set; }
     public string? PublishDir { get; init; }
+    /// <summary>VSTestResultsDirectory when the project sets it; the VSTest default (TestResults/ next to the project) otherwise leaves it null.</summary>
+    public string? TestResultsDirectory { get; init; }
 
     // SDK artifacts layout (UseArtifactsOutput=true): output lives under
     // <ArtifactsPath>/<bin|obj|publish>/<ArtifactsProjectName>/<config>[_<tfm>][_<rid>]/ instead of bin/obj

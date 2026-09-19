@@ -13,6 +13,35 @@ internal enum DirType {
     ArtifactsPublish,
     PublishDir,
     PackageOutputPath,
+    /// <summary>TestResults/ next to a project or its solution, where `dotnet test` writes .trx files and coverage.</summary>
+    TestResults,
+}
+
+/// <summary>What a marked directory holds, as the interactive picker and its flags group it.</summary>
+internal enum CleanCategory {
+    Bin,
+    Obj,
+    Publish,
+    Package,
+    TestResults,
+}
+
+internal static class CleanCategories {
+    internal static CleanCategory Of(DirType type) => type switch {
+        DirType.BaseIntermediateOutputPath => CleanCategory.Obj,
+        DirType.PublishDir or DirType.ArtifactsPublish => CleanCategory.Publish,
+        DirType.PackageOutputPath => CleanCategory.Package,
+        DirType.TestResults => CleanCategory.TestResults,
+        _ => CleanCategory.Bin,
+    };
+
+    internal static string Label(CleanCategory category) => category switch {
+        CleanCategory.Bin => "bin",
+        CleanCategory.Obj => "obj",
+        CleanCategory.Publish => "publish",
+        CleanCategory.Package => "package",
+        _ => "test",
+    };
 }
 
 /// <summary>

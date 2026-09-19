@@ -316,12 +316,14 @@ internal sealed class ProjParser(IConsoleOutput Output, ErrorSink ErrorSink, Cle
                 IntermediateOutputPath = SafeDir(project.GetPropertyValue("BaseIntermediateOutputPath")),
                 PackageOutputPath = SafeDir(project.GetPropertyValue("PackageOutputPath")),
                 PublishDir = SafeDir(project.GetPropertyValue("PublishDir")),
+                TestResultsDirectory = SafeDir(project.GetPropertyValue("VSTestResultsDirectory")),
                 UseArtifactsOutput = SafeBool(project.GetPropertyValue("UseArtifactsOutput")) ?? false,
                 ArtifactsPath = SafeDir(project.GetPropertyValue("ArtifactsPath")),
                 ArtifactsBinOutputName = Safe(project.GetPropertyValue("ArtifactsBinOutputName")),
                 ArtifactsPublishOutputName = Safe(project.GetPropertyValue("ArtifactsPublishOutputName")),
                 ArtifactsProjectName = Safe(project.GetPropertyValue("ArtifactsProjectName")),
                 PackageId = Safe(project.GetPropertyValue("PackageId")),
+                IsPackable = SafeBool(project.GetPropertyValue("IsPackable")),
                 Properties = propertyNames.ToDictionary(p => p, p => project.GetPropertyValue(p)),
             });
         }
