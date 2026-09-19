@@ -27,6 +27,11 @@ internal sealed class StatsCommand : BaseCommand {
         DefaultValueFactory = _ => false
     };
 
+    private readonly Option<bool> _testResultsOption = new Option<bool>("--test-results") {
+        Description = "Also include TestResults directories (dotnet test output) next to each project and its solution.",
+        DefaultValueFactory = _ => false
+    };
+
     public StatsCommand(IConsoleOutput console) : base("stats", "Compute statistics.", console) {
         Add(_rootOption);
         Add(_depthOption);
@@ -35,6 +40,7 @@ internal sealed class StatsCommand : BaseCommand {
         Add(_objOption);
         Add(_keepAssetsOption);
         Add(_publishOption);
+        Add(_testResultsOption);
 
         Add(_logLevelOption);
 
@@ -53,6 +59,7 @@ internal sealed class StatsCommand : BaseCommand {
             CleanObjDirectory = parseResult.GetValue(_objOption),
             KeepRestoreArtifacts = parseResult.GetValue(_keepAssetsOption),
             CleanPublishDirectory = parseResult.GetValue(_publishOption),
+            CleanTestResults = parseResult.GetValue(_testResultsOption),
             LogLevel = parseResult.GetValue(_logLevelOption),
             Depth = parseResult.GetValue(_depthOption),
             VSToolsPath = parseResult.GetValue(_vsToolsPath),

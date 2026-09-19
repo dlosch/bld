@@ -342,10 +342,13 @@ internal static class PackagePickerRenderer {
     /// wrapped at the terminal width), the blank line, the two overflow hints and the cursor line.
     /// Never fewer than five, so a tiny terminal still shows a usable window.
     /// </summary>
-    internal static int PageSize(PickerMode mode, string title, int height, int width) {
+    internal static int PageSize(PickerMode mode, string title, int height, int width) =>
+        PageSize(title, InstructionsFor(mode), height, width);
+
+    internal static int PageSize(string title, string instructions, int height, int width) {
         var columns = Math.Max(width, 20);
         int Rows(string markup) => Math.Max(1, (Markup.Remove(markup).Length + columns - 1) / columns);
-        var chrome = Rows(title) + Rows(InstructionsFor(mode)) + 1 + 2 + 1;
+        var chrome = Rows(title) + Rows(instructions) + 1 + 2 + 1;
         return Math.Max(height - chrome, 5);
     }
 
@@ -360,7 +363,9 @@ internal static class PackagePickerRenderer {
         var (first, last) = Viewport(state.Cursor, state.Lines.Count, pageSize);
         if (first > 0) lines.Add(new Markup("[grey]  ... more above ...[/]"));
         for (var i = first; i <= last; i++) {
-            lines.Add(new Markup(RenderLine(state, i, idWidth, versionWidth, targetWidth)));
+            // Cropped, never wrapped: a wrapped row pushes the frame past the height the page size
+            // was computed for, and the live region then redraws over itself.
+            lines.Add(new Markup(RenderLine(state, i, idWidth, versionWidth, targetWidth)).Overflow(Overflow.Ellipsis));
         }
         if (last < state.Lines.Count - 1) lines.Add(new Markup("[grey]  ... more below ...[/]"));
 

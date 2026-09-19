@@ -1,6 +1,7 @@
 using bld.Infrastructure;
 using bld.Models;
 using Spectre.Console;
+using Spectre.Console.Rendering;
 
 namespace bld.Services;
 
@@ -114,26 +115,47 @@ internal class SpectreConsoleOutput : IConsoleOutput {
         // earlier cap of 30 rows left half of a tall terminal empty.
         var pageSize = PackagePickerRenderer.PageSize(state.Mode, title, AnsiConsole.Profile.Height, AnsiConsole.Profile.Width);
 
-        AnsiConsole.Live(PackagePickerRenderer.Render(state, title, pageSize))
+        RunKeyLoop(
+            () => PackagePickerRenderer.Render(state, title, pageSize),
+            () => state.Done,
+            key => state.Handle(key is null ? PickerKey.Cancel : PackagePickerRenderer.MapKey(key.Value)));
+
+        return state.Result();
+    }
+
+    public CleanPickerOutcome RunCleanPicker(CleanPickerModel model, string title) {
+        if (!CanPrompt) throw new InvalidOperationException("Interactive prompt requires a terminal");
+
+        var state = new CleanPickerState(model);
+        var pageSize = CleanPickerRenderer.PageSize(title, AnsiConsole.Profile.Height, AnsiConsole.Profile.Width);
+
+        RunKeyLoop(
+            () => CleanPickerRenderer.Render(state, title, pageSize, AnsiConsole.Profile.Width),
+            () => state.Done,
+            key => state.Handle(key is null ? CleanPickerKey.Cancel : CleanPickerRenderer.MapKey(key.Value)));
+
+        return state.Result();
+    }
+
+    /// <summary>
+    /// Draws, reads a key, hands it to the state, redraws, until the state is done. A null key means
+    /// the input ended under us; the state gets it as a cancel, since nothing was confirmed.
+    /// </summary>
+    private static void RunKeyLoop(Func<IRenderable> render, Func<bool> done, Action<ConsoleKeyInfo?> handle) {
+        AnsiConsole.Live(render())
             .AutoClear(false)
             .Start(ctx => {
                 // Live draws nothing until the first Refresh, and the loop below only refreshes
                 // after a key: the picker was invisible until the user pressed something.
                 ctx.Refresh();
-                while (!state.Done) {
+                while (!done()) {
                     var key = AnsiConsole.Console.Input.ReadKey(intercept: true);
-                    if (key is null) {
-                        // Input ended under us: nothing was confirmed, so nothing may be applied.
-                        state.Handle(PickerKey.Cancel);
-                        break;
-                    }
-                    state.Handle(PackagePickerRenderer.MapKey(key.Value));
-                    ctx.UpdateTarget(PackagePickerRenderer.Render(state, title, pageSize));
+                    handle(key);
+                    if (key is null) break;
+                    ctx.UpdateTarget(render());
                     ctx.Refresh();
                 }
             });
-
-        return state.Result();
     }
 
     public void StartProgress(string description, Action<ProgressContext> action) {

@@ -45,6 +45,9 @@ internal interface IConsoleOutput {
     /// </summary>
     PickerOutcome RunPicker(PickerModel model, string title);
 
+    /// <summary>Same contract as <see cref="RunPicker"/> for the directories <c>clean --interactive</c> offers.</summary>
+    CleanPickerOutcome RunCleanPicker(CleanPickerModel model, string title);
+
     void StartProgress(string description, Action<ProgressContext> action);
     Task StartProgressAsync(string description, Func<ProgressContext, Task> action);
     Task StartStatusAsync(string description, Func<StatusContext, Task> action);

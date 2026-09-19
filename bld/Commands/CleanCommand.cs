@@ -47,6 +47,16 @@ internal sealed class CleanCommand : BaseCommand {
         DefaultValueFactory = _ => false
     };
 
+    private readonly Option<bool> _testResultsOption = new Option<bool>("--test-results") {
+        Description = "Also clean TestResults directories (dotnet test output: .trx, coverage) next to each project and its solution.",
+        DefaultValueFactory = _ => false
+    };
+
+    private readonly Option<bool> _interactiveOption = new Option<bool>("--interactive", "-i") {
+        Description = "Pick the directories from a list grouped by project: b/o/p/g/t toggle bin, obj, publish, package and test results for every project on the top line or for one project on its line, space toggles a directory, enter confirms. --obj/--publish/--test-results only decide what starts out checked. With --delete the picker is the confirmation. Needs an interactive terminal.",
+        DefaultValueFactory = _ => false
+    };
+
     public CleanCommand(IConsoleOutput console) : base("clean", "Cleans solution / project build output (bin/obj etc.)", console) {
         Add(_rootOption);
         Add(_depthOption);
@@ -55,6 +65,8 @@ internal sealed class CleanCommand : BaseCommand {
         Add(_objOption);
         Add(_keepAssetsOption);
         Add(_publishOption);
+        Add(_testResultsOption);
+        Add(_interactiveOption);
 
         Add(_logLevelOption);
 
@@ -80,6 +92,8 @@ internal sealed class CleanCommand : BaseCommand {
             CleanObjDirectory = parseResult.GetValue(_objOption),
             KeepRestoreArtifacts = parseResult.GetValue(_keepAssetsOption),
             CleanPublishDirectory = parseResult.GetValue(_publishOption),
+            CleanTestResults = parseResult.GetValue(_testResultsOption),
+            Interactive = parseResult.GetValue(_interactiveOption),
             Force = parseResult.GetValue(_forceOption),
             LogLevel = parseResult.GetValue(_logLevelOption),
             Depth = parseResult.GetValue(_depthOption),
@@ -98,6 +112,16 @@ internal sealed class CleanCommand : BaseCommand {
         if (options.Force && !HasExplicitRoot(parseResult)) {
             Output.WriteError("--force requires an explicit root path via --root/-r or positional root argument.");
             return 1;
+        }
+
+        if (options.Interactive && !Output.CanPrompt) {
+            Output.WriteError("--interactive needs an interactive terminal. Use --obj/--publish/--test-results without it instead.");
+            return 1;
+        }
+        // The picker is the confirmation: what the user checked is what goes, without a second
+        // question per directory. An explicit --confirm still wins.
+        if (options.Interactive && parseResult.GetResult(_confirmLevelOption)?.Implicit != false) {
+            options.ConfirmLevel = ConfirmLevel.None;
         }
 
         var rootPath = GetRootPath(parseResult);

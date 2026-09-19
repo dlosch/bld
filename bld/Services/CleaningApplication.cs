@@ -85,6 +85,12 @@ internal class CleaningApplication(IConsoleOutput _console, Func<IConsoleOutput,
             await markDeleteProcessor.ProcessDirs();
 
             var res = markDeleteProcessor.GetResult();
+
+            if (options.Interactive) {
+                res = Pick(res, options);
+                if (res is null) return 0;
+            }
+
             // Run the processor before reporting: deletion failures are recorded in the sink and must
             // be included in both the error table and the exit code.
             await markDeleteStatsProcessor.ProcessAsync(res);
@@ -101,5 +107,41 @@ internal class CleaningApplication(IConsoleOutput _console, Func<IConsoleOutput,
             _console.WriteException(ex);
             return 1;
         }
+    }
+
+    /// <summary>
+    /// Lets the user choose from everything that was marked. Null when there is nothing to do
+    /// afterwards: nothing marked, the picker cancelled, or nothing left checked. The picker only
+    /// ever removes entries, so every path that survives it already passed the marking guards;
+    /// <see cref="CleanSelection.Apply"/> is what holds that "only removes" to its word.
+    /// </summary>
+    private MarkDeleteResult? Pick(MarkDeleteResult result, CleaningOptions options) {
+        var verb = options.Delete ? "delete" : "put in the script";
+        if (!_console.CanPrompt) {
+            throw new InvalidOperationException("--interactive needs an interactive terminal. Use --obj/--publish/--test-results without it instead.");
+        }
+        if (result.IsEmpty) {
+            _console.WriteLine("No directories marked for deletion.");
+            return null;
+        }
+
+        var model = CleanPickerModel.From(result, options);
+        var total = model.Groups.SelectMany(g => g.Rows).Sum(r => r.Bytes);
+        var what = result.Files.Count == 0
+            ? $"{result.Directories.Count} directories"
+            : $"{result.Directories.Count} directories and {result.Files.Count} package files";
+        var title = $"[bold]Select what to {verb}[/] ({what}, {Markup.Escape(CleanPickerRenderer.Size(total))})";
+        var outcome = _console.RunCleanPicker(model, title);
+        if (outcome.Cancelled) {
+            _console.WriteLine(options.Delete ? "Nothing deleted." : "Nothing written.");
+            return null;
+        }
+
+        var kept = CleanSelection.Apply(result, outcome.Selected);
+        if (kept.IsEmpty) {
+            _console.WriteLine("Nothing selected; nothing " + (options.Delete ? "deleted." : "written."));
+            return null;
+        }
+        return kept;
     }
 }

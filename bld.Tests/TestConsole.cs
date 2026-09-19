@@ -38,6 +38,11 @@ internal sealed class TestConsole : IConsoleOutput {
     /// <summary>The picker models this console was asked to show, for assertions on the layout.</summary>
     public List<PickerModel> PickerModels { get; } = new();
 
+    /// <summary>Keys fed to the clean picker, in order; an empty queue confirms the pre-selection.</summary>
+    public Queue<CleanPickerKey> CleanPickerKeys { get; } = new();
+
+    public List<CleanPickerModel> CleanPickerModels { get; } = new();
+
     public void WriteLine(string message) { Log("Line", message); }
     public void WriteInfo(string message) { Log("Info", message); }
     public void WriteWarning(string message) { Log("Warning", message); }
@@ -56,6 +61,14 @@ internal sealed class TestConsole : IConsoleOutput {
         Log("Picker", title);
         var state = new PickerState(model);
         while (!state.Done && PickerKeys.Count > 0) state.Handle(PickerKeys.Dequeue());
+        return state.Result();
+    }
+
+    public CleanPickerOutcome RunCleanPicker(CleanPickerModel model, string title) {
+        CleanPickerModels.Add(model);
+        Log("Picker", title);
+        var state = new CleanPickerState(model);
+        while (!state.Done && CleanPickerKeys.Count > 0) state.Handle(CleanPickerKeys.Dequeue());
         return state.Result();
     }
     public void StartProgress(string description, Action<ProgressContext> action) => action(null!);
