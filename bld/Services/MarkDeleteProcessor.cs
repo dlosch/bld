@@ -104,7 +104,7 @@ internal sealed class MarkDeleteProcessor : IProjectProcessor {
         }
         // Add OutDir
         else if (!string.IsNullOrEmpty(info.OutDir)) {
-            var outDir = DirExt.EnsureRooted(info.OutDir, cfg.ProjDir);
+            var outDir = StripRuntimeIdentifier(DirExt.EnsureRooted(info.OutDir, cfg.ProjDir));
             _console.WriteDebug($"Output directory {outDir} for {info.ProjectName}. Exists? {Directory.Exists(outDir)}");
             await AddDirInternal(outDir, DirType.OutDir, absProjPath, projName, info.Configuration, tfms, cfg.ProjDir);
         }
@@ -302,7 +302,7 @@ internal sealed class MarkDeleteProcessor : IProjectProcessor {
                                 // never cleaned looked exactly like a project with no output.
                                 var owner = dir.AbsProjPath.Keys.FirstOrDefault() ?? absPath;
                                 if (_unrecognizedLayoutWarned.Add(owner)) {
-                                    _console.WriteWarning($"Skipping {absPath}: output layout not recognized (expected bin/<Configuration>/<tfm>, bin/<Configuration> or artifacts/bin/<Project>/<config>_<tfm>).");
+                                    _console.WriteWarning($"Skipping {absPath}: output layout not recognized (expected bin/<Configuration>/<tfm>[/<rid>], bin/<Configuration> or artifacts/bin/<Project>/<config>_<tfm>).");
                                 }
                             }
                         }
@@ -592,6 +592,23 @@ internal sealed class MarkDeleteProcessor : IProjectProcessor {
     // required so an unrelated directory such as "debug_backup" is not mistaken for a pivot.
     private static readonly System.Text.RegularExpressions.Regex _ridPattern =
         new(@"^[a-z][a-z0-9.]*(-[a-z0-9]+)+$", System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    /// <summary>
+    /// With a RuntimeIdentifier the SDK appends it to the output path, so OutDir is bin/&lt;Configuration&gt;/&lt;tfm&gt;/&lt;rid&gt;/.
+    /// Returns the TFM directory for that shape and the path unchanged otherwise. Everything downstream - the
+    /// safety check, TfmsClaimedUnder (which takes the parent of OutDir as the configuration directory) and the
+    /// bin/&lt;Configuration&gt;/&lt;tfm&gt; matching - expects the TFM directory, so this is done once at intake.
+    /// </summary>
+    internal static string StripRuntimeIdentifier(string outDir) {
+        var trimmed = Path.TrimEndingDirectorySeparator(outDir);
+        var leaf = Path.GetFileName(trimmed);
+        var parent = Path.GetDirectoryName(trimmed);
+        if (parent is null || !_ridPattern.IsMatch(leaf)) return outDir;
+        // net8.0-windows fits the RID pattern too; a TFM-named leaf is the regular layout.
+        if (NetUtil.Instance.IsTfmName(leaf, DefaultComparison)) return outDir;
+        if (!NetUtil.Instance.IsTfmName(Path.GetFileName(parent), DefaultComparison)) return outDir;
+        return parent;
+    }
 
     /// <summary>
     /// Parses an artifacts pivot directory name, <c>&lt;config&gt;[_&lt;tfm&gt;][_&lt;rid&gt;]</c>, as produced by

@@ -129,6 +129,49 @@ public class ArtifactsLayoutTests : IDisposable {
         Assert.DoesNotContain(_console.Messages, m => m.Level == "Warning");
     }
 
+    // ----- bin/<Configuration>/<tfm>/<rid> -------------------------------------------------------
+
+    [Theory]
+    [InlineData("bin/Release/net8.0/win-x64", "bin/Release/net8.0")]
+    [InlineData("bin/Release/net8.0/win-x64/", "bin/Release/net8.0")]
+    [InlineData("bin/Release/net8.0/linux-musl-arm64", "bin/Release/net8.0")]
+    [InlineData("bin/Release/net8.0-windows/win-x64", "bin/Release/net8.0-windows")]
+    [InlineData("bin/Release/net8.0", "bin/Release/net8.0")]
+    [InlineData("bin/Release/net8.0-windows", "bin/Release/net8.0-windows")]
+    [InlineData("bin/Release", "bin/Release")]
+    [InlineData("out/win-x64", "out/win-x64")]
+    public void StripRuntimeIdentifier_OnlyBelowTfmDirectory(string outDir, string expected) {
+        var root = Path.Combine(_root, "Rid");
+        var actual = MarkDeleteProcessor.StripRuntimeIdentifier(Path.Combine(root, outDir));
+
+        Assert.Equal(Norm(Path.Combine(root, expected)), Norm(actual));
+    }
+
+    [Fact]
+    public async Task RuntimeIdentifierLayout_MarksTfmDirectory() {
+        var csproj = CreateProject("Rid");
+        var tfmDir = CreateDir(Path.GetDirectoryName(csproj)!, "bin", "Release", "net8.0");
+        var ridDir = CreateDir(tfmDir, "win-x64");
+
+        var marked = await Mark(new CleaningOptions(), Info(csproj, "Rid", tfm: "net8.0", configuration: "Release", outDir: ridDir));
+
+        Assert.Contains(marked, k => SamePath(k, tfmDir));
+        Assert.DoesNotContain(_console.Messages, m => m.Level == "Warning");
+    }
+
+    [Fact]
+    public async Task RuntimeIdentifierLayout_NonCurrent_KeepsLiveTfm() {
+        var csproj = CreateProject("Rid");
+        var net8 = CreateDir(Path.GetDirectoryName(csproj)!, "bin", "Release", "net8.0");
+        var ridDir = CreateDir(net8, "win-x64");
+        var net7 = CreateDir(Path.GetDirectoryName(csproj)!, "bin", "Release", "net7.0");
+
+        var marked = await Mark(new CleaningOptions { CleanOnlyNonCurrentTfms = true }, Info(csproj, "Rid", tfm: "net8.0", configuration: "Release", outDir: ridDir));
+
+        Assert.Contains(marked, k => SamePath(k, net7));
+        Assert.DoesNotContain(marked, k => SamePath(k, net8));
+    }
+
     // ----- --publish -----------------------------------------------------------------------------
 
     [Fact]
