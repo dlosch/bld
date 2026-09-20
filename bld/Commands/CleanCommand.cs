@@ -53,7 +53,7 @@ internal sealed class CleanCommand : BaseCommand {
     };
 
     private readonly Option<bool> _interactiveOption = new Option<bool>("--interactive", "-i") {
-        Description = "Pick the directories from a list grouped by project: b/o/p/g/t toggle bin, obj, publish, package and test results for every project on the top line or for one project on its line, space toggles a directory, enter confirms. --obj/--publish/--test-results only decide what starts out checked. With --delete the picker is the confirmation. Needs an interactive terminal.",
+        Description = "Pick the directories from a list grouped by project: b/o/p/g/t toggle bin, obj, publish, package and test results for every project on the top line or for one project on its line, space toggles a directory, enter confirms. --obj/--publish/--test-results only decide what starts out checked. Deletes what was picked after one confirmation; pass --output-file to write the script instead. Needs an interactive terminal.",
         DefaultValueFactory = _ => false
     };
 
@@ -118,8 +118,13 @@ internal sealed class CleanCommand : BaseCommand {
             Output.WriteError("--interactive needs an interactive terminal. Use --obj/--publish/--test-results without it instead.");
             return 1;
         }
-        // The picker is the confirmation: what the user checked is what goes, without a second
-        // question per directory. An explicit --confirm still wins.
+        // Picking directories is a deletion flow: the picker chooses, one question confirms the
+        // whole selection. Asking for an output file explicitly still writes the script instead.
+        if (options.Interactive && parseResult.GetResult(_outputFileOption)?.Implicit != false) {
+            options.Delete = true;
+        }
+        // The picker plus that one question are the confirmation, so nothing is asked per
+        // directory afterwards. An explicit --confirm still wins.
         if (options.Interactive && parseResult.GetResult(_confirmLevelOption)?.Implicit != false) {
             options.ConfirmLevel = ConfirmLevel.None;
         }

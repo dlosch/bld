@@ -127,9 +127,7 @@ internal class CleaningApplication(IConsoleOutput _console, Func<IConsoleOutput,
 
         var model = CleanPickerModel.From(result, options);
         var total = model.Groups.SelectMany(g => g.Rows).Sum(r => r.Bytes);
-        var what = result.Files.Count == 0
-            ? $"{result.Directories.Count} directories"
-            : $"{result.Directories.Count} directories and {result.Files.Count} package files";
+        var what = Describe(result);
         var title = $"[bold]Select what to {verb}[/] ({what}, {Markup.Escape(CleanPickerRenderer.Size(total))})";
         var outcome = _console.RunCleanPicker(model, title);
         if (outcome.Cancelled) {
@@ -142,6 +140,24 @@ internal class CleaningApplication(IConsoleOutput _console, Func<IConsoleOutput,
             _console.WriteLine("Nothing selected; nothing " + (options.Delete ? "deleted." : "written."));
             return null;
         }
+
+        // Deleting is not undoable, so the picker's enter is a selection and this is the decision.
+        // --force is the one way to skip it, and it already demands an explicit root.
+        if (options.Delete && !options.Force && !_console.Confirm($"Delete {Describe(kept)} ({CleanPickerRenderer.Size(BytesOf(model, outcome.Selected))})?")) {
+            _console.WriteLine("Nothing deleted.");
+            return null;
+        }
         return kept;
+    }
+
+    private static string Describe(MarkDeleteResult result) =>
+        result.Files.Count == 0
+            ? $"{result.Directories.Count} directories"
+            : $"{result.Directories.Count} directories and {result.Files.Count} package files";
+
+    /// <summary>What the checked rows weigh, from the sizes the picker already measured.</summary>
+    private static long BytesOf(CleanPickerModel model, IReadOnlyList<string> selected) {
+        var chosen = new HashSet<string>(selected.Select(CleanSelection.Canonical), DirExt.PathComparer);
+        return model.Groups.SelectMany(g => g.Rows).Where(r => chosen.Contains(r.Path)).Sum(r => r.Bytes);
     }
 }
