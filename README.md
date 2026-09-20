@@ -64,7 +64,7 @@ Yes, you can just use git/source control to nuke anything not under source contr
 - in process evaluation of properties for each project and configuration using the Microsoft build assemblies and target files, just as a build would (note: the Microsoft.Build evaluation is *not* instant)
 - automatically resolves default msbuild install (typically .NET SDK) and resolves VSToolsPath for additional target files provided by Visual Studio installations (if available, not required)
 - enables you to delete only non-current build output (TagetFramework(s) no longer referenced in proj file), esp. useful after upgrading projects to a recent target framework
-- supports both the classic `bin/<Configuration>/<tfm>` layout and the SDK artifacts layout (`UseArtifactsOutput=true`, `artifacts/bin/<project>/<config>_<tfm>`)
+- supports both the classic `bin/<Configuration>/<tfm>[/<rid>]` layout and the SDK artifacts layout (`UseArtifactsOutput=true`, `artifacts/bin/<project>/<config>_<tfm>`)
 - cleans publish and pack output (`PublishDir`, `PackageOutputPath`, `artifacts/publish`, `artifacts/package`) when `--publish` is given
 - validates tfms for .net projects to make sure the correct stuff gets cleaned
 - by default doesn't delete, only dumps stats and the command line to delete folders. Nothing gets touched unless you specify --delete
@@ -123,7 +123,7 @@ Purpose: enumerate build output, report what would be deleted, and either emit a
 - `--keep-assets` — When cleaning `obj`, preserve NuGet restore artifacts (`project.assets.json`, etc.) and only delete build-output subdirectories. Default: `false`.
 - `--publish` — Also clean publish output (`PublishDir`) and pack output (`PackageOutputPath`). Covers explicitly configured publish directories and, in the artifacts layout, `artifacts/publish/<project>/` and `artifacts/package/`. Default: `false`, because publish output is often kept on purpose for a deployment. A package output directory is never deleted as a whole: it is usually shared (a local feed, `artifacts/package/<config>/`), so only the project's own `<PackageId>.<version>.nupkg`/`.snupkg` files directly in it are deleted, and only for projects that pack (`IsPackable` not `false`). The file name only makes a file a candidate; the id in the package's own `.nuspec` decides, because a NuGet id may end in a numeric segment and `Foo.1.2.0.nupkg` is `Foo.1` version `2.0` as readily as `Foo` version `1.2.0`. A file that cannot be read as a package is left alone.
 - `--test-results` — Also clean `TestResults/` (what `dotnet test` writes: `.trx`, coverage) next to each project (`VSTestResultsDirectory` when the project sets it) and next to its solution. Default: `false`.
-- `--interactive`, `-i` — Pick the directories from a list grouped by project before anything is written or deleted. Every category is marked; `--obj`, `--publish` and `--test-results` only decide what starts out checked (bin always does). Keys: `b`/`o`/`p`/`g`/`t` toggle bin, obj, publish, package and test results for every project on the top line, or for one project on its line or one of its rows; `space` toggles a directory (a whole project or everything on a header line); `a`/`n` all or none; `enter` confirms; `esc` cancels. Each header shows its categories as `[X]`, `[ ]` or `[-]` for a partly checked one, with the selected and total size. Every directory row shows the fully qualified path that would be deleted — never a relative one — cut in the middle (`C:\...\MyApp\bin\Debug\net10.0`) when the terminal is too narrow for it. With `--delete` the picker is the confirmation, so nothing is asked per directory unless `--confirm` is given explicitly. Needs an interactive terminal.
+- `--interactive`, `-i` — Pick the directories from a list grouped by project before anything is written or deleted. Every category is marked; `--obj`, `--publish` and `--test-results` only decide what starts out checked (bin always does). Keys: `b`/`o`/`p`/`g`/`t` toggle bin, obj, publish, package and test results for every project on the top line, or for one project on its line or one of its rows; `space` toggles a directory (a whole project or everything on a header line); `a`/`n` all or none; `enter` confirms; `esc` cancels. Each header shows its categories as `[X]`, `[ ]` or `[-]` for a partly checked one, with the selected and total size. Every directory row shows the fully qualified path that would be deleted — never a relative one — cut in the middle (`C:\...\MyApp\bin\Debug\net10.0`) when the terminal is too narrow for it. It deletes: after `enter` it asks once for the whole selection (`Delete 12 directories (340.2 MiB)?`, default no) and then removes it, without a question per directory unless `--confirm` is given explicitly; `--force` skips that question too. Passing `--output-file`/`-o` writes the deletion script for the selection instead of deleting it. Needs an interactive terminal.
 - `--output-file`, `-o` — Where to write the deletion script (`clean.cmd` or `clean.sh` by default depending on OS).
 - `--delete` — Execute deletions instead of just generating scripts. Default: `false` (dry-run).
 - `--force` — Skip confirmation prompts (requires explicit `--root` to avoid accidental repo-wide deletes). In non-interactive contexts (CI / piped stdin) a missing confirmation is treated as "no" (skip), so `--force` is required to actually delete unattended.
@@ -193,7 +193,7 @@ Helpful when your favorite agent creates your shiny new project targeting a old 
 - (dotnet-outdated is another .NET tool which updates NuGet package versions)
 
 ### containerize
-- What it does: finds Dockerfiles and SDK-style projects using container build properties, and migrates Dockerfiles to those properties.
+- What it does: finds Dockerfiles and SDK-style projects using container build properties, migrates Dockerfiles to those properties, and validates and consolidates the properties projects already carry.
 - How it works: scans the repo (or specific root) and reports Dockerfile paths, project names, or both depending on `--list`, `--projects`, or `--all`. `--migrate` reads each Dockerfile's runtime stage and writes the equivalent `Container*` properties and items into the project it builds (dry run unless `--apply`).
 
 ### build-props
@@ -330,6 +330,9 @@ Before writing, the command checks the packages it is about to update in both di
 - `--apply` — With `--migrate`, write the properties into the project files. The file's indentation, line endings and BOM are kept; the new groups are appended before `</Project>` under a comment naming the Dockerfile.
 - `--delete-dockerfile` — With `--migrate --apply`, delete the migrated Dockerfile and strip the Visual Studio container-tools leftovers from the project: the `Docker*` properties (`DockerDefaultTargetOS`, `DockerfileContext`, ...), the `Microsoft.VisualStudio.Azure.Containers.Tools.Targets` package reference and a `<None Include="Dockerfile" />` item. Without it the Dockerfile stays and those settings are only reported.
 - `--force` — With `--migrate`, migrate a Dockerfile whose runtime image has instructions the SDK cannot express (see below). They are listed and dropped.
+- `--run-as-root` — With `--migrate`, write `ContainerUser=root` for every Dockerfile without `USER` instead of asking (see the `USER` row below).
+- `--validate` — Check the SDK container settings every project under the root carries (projects without any are not listed) and, with `--apply`, rewrite the findings that have an exact equivalent. See **Validation** below.
+- `--interactive`, `-i` — With `--migrate` or `--validate`, ask instead of `--apply`: each Dockerfile's plan is shown, then whether to migrate it anyway when it has instructions the SDK cannot express (default no), whether to write the settings (default yes) and whether to delete the Dockerfile and the Visual Studio container-tools settings (default no; `--delete-dockerfile` answers yes for all). Each fixable validation finding is asked for (default yes). Answers are written immediately; a non-interactive terminal is an error.
 
 Examples:
 
@@ -337,20 +340,37 @@ Examples:
 bld containerize --root C:\src\MyRepo --all --depth 5
 bld containerize --migrate --root C:\src\MyRepo
 bld containerize --migrate --apply --delete-dockerfile src\Api\Api.csproj
+bld containerize --migrate -i src
+bld containerize --validate --apply src\Api\Api.csproj
+bld containerize --validate -i
 ```
 
-**Migration.** The runtime image is the last stage plus every stage it derives `FROM`, folded in order the way Docker layers them; the build stages are what `dotnet publish /t:PublishContainer` replaces. `ARG` defaults and `ENV` values are substituted (`$X`, `${X}`, `${X:-default}`); a build arg without a default is left as written and reported. The project is the one the Dockerfile publishes, failing that the one it builds, the one whose dll the `ENTRYPOINT` runs, the only `.csproj` it mentions, or the only `.csproj` next to it. A project that already has `Container*` settings is skipped.
+**Validation.** The project file is read as XML, so a value that comes from `Directory.Build.props` or an import is unknown and left alone; a conditioned setting is reported but never rewritten. Findings with a fix are written by `--apply`; the rest need a decision.
+
+| Finding | Fix with `--apply` |
+|---|---|
+| `ContainerBaseImage` is exactly the image the SDK computes for the project (`aspnet:8.0` on a Web SDK `net8.0` project) | removed — unless `ContainerFamily` is set too, since removing the pin would activate it |
+| `ContainerBaseImage` is a family variant of that image (`runtime-deps:10.0-azurelinux3.0-distroless-extra-amd64` on an AOT `net10.0` project) | replaced by `ContainerFamily` (`azurelinux3.0-distroless-extra`); a platform suffix (`-amd64`, `-arm64v8`, `-arm32v7`) is dropped, since the SDK takes the platform from the `RuntimeIdentifier`; removed when `ContainerFamily` already says the same |
+| `ContainerBaseImage` pins another repository or version than the SDK would pick; `ContainerFamily` next to a `ContainerBaseImage` (ignored by the SDK) | reported |
+| `ContainerImageName` (obsolete, `CONTAINER003`) | renamed to `ContainerRepository`; removed when equal to an existing one; reported when it overrides a different one |
+| `ContainerEntrypoint`/`ContainerEntrypointArgs` (deprecated since .NET 8) | renamed to `ContainerAppCommand`/`ContainerAppCommandArgs` with `ContainerAppCommandInstruction=Entrypoint` when the instruction is `None` (the same ENTRYPOINT and CMD); reported otherwise, since the SDK's app command is the CMD behind such an entrypoint and the rename would drop it |
+| `ContainerWorkingDirectory` `/app` | removed (the SDK default) |
+| an element with the `Container` prefix the SDK does not read (`ContainerImage`) | reported |
+| `ContainerAppCommandInstruction`, `ContainerImageFormat`, `LocalRegistry` outside their allowed values; a tag or `ContainerRepository` the registry would reject; `ContainerImageTag` holding a list or set next to `ContainerImageTags`; a `ContainerPort` that is not a port or not `tcp`/`udp`; `ContainerRuntimeIdentifiers` not a subset of `RuntimeIdentifiers` | reported |
+
+**Migration.** The runtime image is the last stage plus every stage it derives `FROM`, folded in order the way Docker layers them; the build stages are what `dotnet publish /t:PublishContainer` replaces. `ARG` defaults and `ENV` values are substituted (`$X`, `${X}`, `${X:-default}`); a build arg without a default is left as written and reported. The project is the one the Dockerfile publishes, failing that the one it builds, the one whose dll the `ENTRYPOINT` runs, the only `.csproj` it mentions, or the only `.csproj` next to it. A project that already has any SDK container setting (`ContainerBaseImage`, `ContainerFamily`, `ContainerRepository`, `ContainerImageTag(s)`, `ContainerRegistry`, `ContainerRuntimeIdentifier(s)`, `ContainerArchiveOutputPath`, `LocalRegistry`, `ContainerUser`, `ContainerPort` items, ...) is skipped.
 
 | Dockerfile | Project |
 |---|---|
-| `FROM` of the runtime stage | `ContainerBaseImage` — omitted when it is exactly the image the SDK computes for the project (`aspnet` for the Web SDK, `runtime` otherwise, `runtime-deps` when self-contained or AOT, tagged with the target framework's version), so the image follows a later `tfm` migration instead of pinning the old runtime |
+| `FROM` of the runtime stage | `ContainerBaseImage` — omitted when it is exactly the image the SDK computes for the project (`aspnet` for the Web SDK, `runtime` otherwise, `runtime-deps` when self-contained or AOT, tagged with the target framework's version), so the image follows a later `tfm` migration instead of pinning the old runtime. A variant of that image (`aspnet:8.0-alpine`, `8.0-noble-chiseled`) becomes `ContainerFamily` (`alpine`, `noble-chiseled`), which the SDK appends to the tag it computes, so the variant stays and the version still follows the target framework. Windows tags (`nanoserver`, `windowsservercore`) stay an explicit `ContainerBaseImage` |
 | `EXPOSE 8080`, `EXPOSE 53/udp` | `ContainerPort` (`Type` only for non-tcp) |
 | `ENV`, `LABEL`, `MAINTAINER` | `ContainerEnvironmentVariable`, `ContainerLabel` |
 | `WORKDIR` | `ContainerWorkingDirectory` — omitted for the SDK default `/app` |
 | `USER` | `ContainerUser` |
+| no `USER` | the image ran as root, while the SDK runs .NET 8+ Microsoft images as the non-root `app` user. The command asks per Dockerfile whether to keep root (default no) and writes `ContainerUser=root` on yes; `--run-as-root` answers yes for all, and without a terminal the SDK default is kept and noted |
 | `ENTRYPOINT ["dotnet", "App.dll"]` or `["./App"]` | nothing: that is the SDK's default app command |
-| other `ENTRYPOINT` | `ContainerEntrypoint` items (shell form becomes `/bin/sh -c ...`) plus `ContainerAppCommandInstruction`: `DefaultArgs` when `CMD` is the default app command (the SDK keeps it as `CMD`), `None` otherwise, with a non-default `CMD` as `ContainerDefaultArgs` |
-| `CMD` without `ENTRYPOINT` | `ContainerDefaultArgs` with `ContainerAppCommandInstruction=None`, unless it is the default app command |
+| other `ENTRYPOINT` | `ContainerAppCommand` items (shell form becomes `/bin/sh -c ...`) with `ContainerAppCommandInstruction=Entrypoint`, and `CMD` as `ContainerDefaultArgs`: the SDK makes the app command the `ENTRYPOINT` and the default args the `CMD`. The deprecated `ContainerEntrypoint` items are not written |
+| `CMD` without `ENTRYPOINT` | `ContainerDefaultArgs` with `ContainerAppCommandInstruction=None`, unless it is the default app command: the image has no `ENTRYPOINT` and `CMD` stays overridable |
 | `COPY --from=<build stage> <publish output> .` | nothing: the SDK publishes into the image itself |
 | `RUN`, `ADD`, `VOLUME`, `HEALTHCHECK`, `SHELL`, `STOPSIGNAL`, `ONBUILD` in the runtime image, `COPY` from the build context, `COPY --from` of anything but a stage's `dotnet publish`/`build` output | **not migrated**: listed per Dockerfile and blocks it unless `--force` |
 
