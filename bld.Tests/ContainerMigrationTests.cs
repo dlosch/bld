@@ -30,6 +30,9 @@ public class ContainerMigrationTests : IDisposable {
     private async Task<ContainerMigrationService.MigrationPlan> PlanAsync(string dockerfile, params string[] projects) =>
         await new ContainerMigrationService(_console).PlanAsync(dockerfile, projects, default);
 
+    private async Task<ContainerMigrationService.MigrationPlan> PlanAsync(bool? runAsRoot, string dockerfile, params string[] projects) =>
+        await new ContainerMigrationService(_console, runAsRoot).PlanAsync(dockerfile, projects, default);
+
     private static XElement Group(ContainerMigrationService.MigrationPlan plan, string name) =>
         Assert.Single(plan.Elements, e => e.Name.LocalName == name);
 
@@ -74,6 +77,10 @@ public class ContainerMigrationTests : IDisposable {
         Assert.Null(Property(plan, "ContainerWorkingDirectory"));
         Assert.Null(Property(plan, "ContainerAppCommandInstruction"));
         Assert.Empty(Items(plan, "ContainerEntrypoint"));
+        Assert.Empty(Items(plan, "ContainerAppCommand"));
+        // No USER and no answer: the SDK's non-root default stays, and the plan says so.
+        Assert.Null(Property(plan, "ContainerUser"));
+        Assert.Contains(plan.Notes, n => n.Contains("no USER"));
 
         var port = Assert.Single(Items(plan, "ContainerPort"));
         Assert.Equal("5000", port.Attribute("Include")?.Value);
@@ -162,7 +169,9 @@ public class ContainerMigrationTests : IDisposable {
 
         Assert.Null(plan.SkipReason);
         Assert.Empty(plan.Unsupported);
-        Assert.Equal("mcr.microsoft.com/dotnet/aspnet:8.0-alpine", Property(plan, "ContainerBaseImage"));
+        // The alpine variant of the SDK's own image: ContainerFamily keeps the variant without pinning the version.
+        Assert.Null(Property(plan, "ContainerBaseImage"));
+        Assert.Equal("alpine", Property(plan, "ContainerFamily"));
         Assert.Equal("$APP_UID", Property(plan, "ContainerUser"));
         Assert.Equal("/data", Property(plan, "ContainerWorkingDirectory"));
 
@@ -172,13 +181,15 @@ public class ContainerMigrationTests : IDisposable {
         Assert.Contains(plan.Notes, n => n.Contains("APP_UID"));
     }
 
+    // ContainerEntrypoint is deprecated since .NET 8: a custom ENTRYPOINT is the app command with the
+    // Entrypoint instruction, CMD the default args. CMD alone stays None so it remains overridable.
     [Theory]
-    [InlineData("ENTRYPOINT [\"./entrypoint.sh\"]\nCMD [\"dotnet\", \"App.dll\"]\n", "DefaultArgs", "./entrypoint.sh", "")]
-    [InlineData("ENTRYPOINT [\"./entrypoint.sh\"]\n", "None", "./entrypoint.sh", "")]
-    [InlineData("ENTRYPOINT [\"./entrypoint.sh\", \"--wait\"]\nCMD [\"--serve\", \"a;b\"]\n", "None", "./entrypoint.sh|--wait", "--serve|a%3Bb")]
-    [InlineData("ENTRYPOINT ./run.sh --x\n", "None", "/bin/sh|-c|./run.sh --x", "")]
+    [InlineData("ENTRYPOINT [\"./entrypoint.sh\"]\nCMD [\"dotnet\", \"App.dll\"]\n", "Entrypoint", "./entrypoint.sh", "dotnet|App.dll")]
+    [InlineData("ENTRYPOINT [\"./entrypoint.sh\"]\n", "Entrypoint", "./entrypoint.sh", "")]
+    [InlineData("ENTRYPOINT [\"./entrypoint.sh\", \"--wait\"]\nCMD [\"--serve\", \"a;b\"]\n", "Entrypoint", "./entrypoint.sh|--wait", "--serve|a%3Bb")]
+    [InlineData("ENTRYPOINT ./run.sh --x\n", "Entrypoint", "/bin/sh|-c|./run.sh --x", "")]
     [InlineData("CMD [\"dotnet\", \"App.dll\", \"--migrate\"]\n", "None", "", "dotnet|App.dll|--migrate")]
-    public async Task Plan_MapsEntrypointAndCmdToSdkInstructions(string tail, string instruction, string entrypoint, string defaultArgs) {
+    public async Task Plan_MapsEntrypointAndCmdToSdkInstructions(string tail, string instruction, string appCommand, string defaultArgs) {
         var project = Write("App/App.csproj", WebProject.Replace("Sdk.Web", "Sdk"));
         var dockerfile = Write("App/Dockerfile",
             "FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build\n" +
@@ -191,8 +202,74 @@ public class ContainerMigrationTests : IDisposable {
 
         Assert.Null(plan.SkipReason);
         Assert.Equal(instruction, Property(plan, "ContainerAppCommandInstruction"));
-        Assert.Equal(entrypoint, string.Join('|', Items(plan, "ContainerEntrypoint").Select(e => e.Attribute("Include")?.Value)));
+        Assert.Equal(appCommand, string.Join('|', Items(plan, "ContainerAppCommand").Select(e => e.Attribute("Include")?.Value)));
         Assert.Equal(defaultArgs, string.Join('|', Items(plan, "ContainerDefaultArgs").Select(e => e.Attribute("Include")?.Value)));
+        Assert.Empty(Items(plan, "ContainerEntrypoint"));
+        Assert.Empty(Items(plan, "ContainerEntrypointArgs"));
+    }
+
+    [Fact]
+    public async Task Plan_NoUser_AsksWhetherToKeepRoot() {
+        var project = Write("App/App.csproj", WebProject);
+        var dockerfile = Write("App/Dockerfile", "FROM mcr.microsoft.com/dotnet/aspnet:8.0\nENTRYPOINT [\"dotnet\", \"App.dll\"]\n");
+
+        _console.ConfirmAnswers.Enqueue(true);
+        var plan = await PlanAsync(dockerfile, project);
+        Assert.Equal("root", Property(plan, "ContainerUser"));
+        Assert.DoesNotContain(plan.Notes, n => n.Contains("no USER"));
+
+        _console.ConfirmAnswers.Enqueue(false);
+        plan = await PlanAsync(dockerfile, project);
+        Assert.Null(Property(plan, "ContainerUser"));
+        Assert.Contains(plan.Notes, n => n.Contains("no USER"));
+
+        // --run-as-root answers for every Dockerfile; without a terminal the SDK default stays.
+        plan = await PlanAsync(runAsRoot: true, dockerfile, project);
+        Assert.Equal("root", Property(plan, "ContainerUser"));
+
+        _console.CanPrompt = false;
+        _console.ConfirmAnswers.Enqueue(true);
+        plan = await PlanAsync(dockerfile, project);
+        Assert.Null(Property(plan, "ContainerUser"));
+        Assert.Single(_console.ConfirmAnswers);
+
+        // An explicit USER is never asked about.
+        var withUser = Write("App/Dockerfile.user", "FROM mcr.microsoft.com/dotnet/aspnet:8.0\nUSER app\nENTRYPOINT [\"dotnet\", \"App.dll\"]\n");
+        _console.CanPrompt = true;
+        plan = await PlanAsync(runAsRoot: true, withUser, project);
+        Assert.Equal("app", Property(plan, "ContainerUser"));
+    }
+
+    [Theory]
+    [InlineData("Microsoft.NET.Sdk.Web", "mcr.microsoft.com/dotnet/aspnet:8.0-noble-chiseled", "noble-chiseled", null)]
+    [InlineData("Microsoft.NET.Sdk.Web", "mcr.microsoft.com/dotnet/aspnet:8.0-alpine3.20", "alpine3.20", null)]
+    [InlineData("Microsoft.NET.Sdk", "mcr.microsoft.com/dotnet/runtime:8.0-alpine", "alpine", null)]
+    // Another repository than the SDK would pick, another version, or a Windows tag: the pin stays.
+    [InlineData("Microsoft.NET.Sdk.Web", "mcr.microsoft.com/dotnet/runtime:8.0-alpine", null, "mcr.microsoft.com/dotnet/runtime:8.0-alpine")]
+    [InlineData("Microsoft.NET.Sdk.Web", "mcr.microsoft.com/dotnet/aspnet:7.0-alpine", null, "mcr.microsoft.com/dotnet/aspnet:7.0-alpine")]
+    [InlineData("Microsoft.NET.Sdk.Web", "mcr.microsoft.com/dotnet/aspnet:8.0-nanoserver-ltsc2022", null, "mcr.microsoft.com/dotnet/aspnet:8.0-nanoserver-ltsc2022")]
+    public async Task Plan_PrefersContainerFamilyOverPinningTheSdkImage(string sdk, string image, string? family, string? baseImage) {
+        var project = Write("App/App.csproj", WebProject.Replace("Microsoft.NET.Sdk.Web", sdk));
+        var dockerfile = Write("App/Dockerfile", $"FROM {image}\nENTRYPOINT [\"dotnet\", \"App.dll\"]\n");
+
+        var plan = await PlanAsync(dockerfile, project);
+
+        Assert.Equal(family, Property(plan, "ContainerFamily"));
+        Assert.Equal(baseImage, Property(plan, "ContainerBaseImage"));
+    }
+
+    [Theory]
+    [InlineData("<ContainerRuntimeIdentifiers>linux-x64;linux-arm64</ContainerRuntimeIdentifiers>", "ContainerRuntimeIdentifiers")]
+    [InlineData("<ContainerImageTags>1.0;latest</ContainerImageTags>", "ContainerImageTags")]
+    [InlineData("<ContainerImageName>app</ContainerImageName>", "ContainerImageName")]
+    [InlineData("<LocalRegistry>Podman</LocalRegistry>", "LocalRegistry")]
+    public async Task Plan_SkipsProjectWithAnySdkContainerProperty(string property, string expected) {
+        var project = Write("App/App.csproj", WebProject.Replace("</PropertyGroup>", property + "</PropertyGroup>"));
+        var dockerfile = Write("App/Dockerfile", "FROM mcr.microsoft.com/dotnet/aspnet:8.0\nENTRYPOINT [\"dotnet\", \"App.dll\"]\n");
+
+        var plan = await PlanAsync(dockerfile, project);
+
+        Assert.Contains(expected, plan.SkipReason);
     }
 
     [Fact]
@@ -389,7 +466,7 @@ public class ContainerMigrationTests : IDisposable {
             "    <!-- Container image settings migrated from Dockerfile -->\r\n" +
             "    <PropertyGroup>\r\n" +
             "        <EnableSdkContainerSupport>true</EnableSdkContainerSupport>\r\n" +
-            "        <ContainerBaseImage>mcr.microsoft.com/dotnet/aspnet:8.0-noble</ContainerBaseImage>\r\n" +
+            "        <ContainerFamily>noble</ContainerFamily>\r\n" +
             "    </PropertyGroup>\r\n" +
             "    <ItemGroup>\r\n" +
             "        <ContainerPort Include=\"8080\" />\r\n" +

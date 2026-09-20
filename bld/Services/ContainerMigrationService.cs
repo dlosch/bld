@@ -14,9 +14,15 @@ namespace bld.Services;
 /// </summary>
 internal sealed class ContainerMigrationService {
     private readonly IConsoleOutput _console;
+    private readonly bool? _runAsRoot;
 
-    public ContainerMigrationService(IConsoleOutput console) {
+    /// <param name="runAsRoot">
+    /// What to write for a Dockerfile without USER: true writes ContainerUser=root, false leaves the SDK
+    /// default, null asks (and leaves the default when it cannot ask).
+    /// </param>
+    public ContainerMigrationService(IConsoleOutput console, bool? runAsRoot = null) {
         _console = console;
+        _runAsRoot = runAsRoot;
     }
 
     internal sealed class MigrationPlan {
@@ -42,9 +48,13 @@ internal sealed class ContainerMigrationService {
     ];
     private const string DockerToolsPackage = "Microsoft.VisualStudio.Azure.Containers.Tools.Targets";
 
+    // Every property and item the SDK reads (Microsoft.NET.Build.Containers.targets); ContainerImageName is
+    // the obsolete spelling of ContainerRepository the SDK still honors.
     private static readonly string[] ContainerProperties = [
-        "ContainerBaseImage", "ContainerImage", "ContainerRepository", "ContainerWorkingDirectory", "ContainerUser",
-        "ContainerAppCommandInstruction", "ContainerFamily",
+        "ContainerBaseImage", "ContainerFamily", "ContainerRuntimeIdentifier", "ContainerRuntimeIdentifiers",
+        "ContainerRepository", "ContainerImageName", "ContainerImageTag", "ContainerImageTags", "ContainerImageFormat",
+        "ContainerRegistry", "ContainerArchiveOutputPath", "LocalRegistry",
+        "ContainerWorkingDirectory", "ContainerUser", "ContainerAppCommandInstruction", "ContainerPublishInParallel",
     ];
     private static readonly string[] ContainerItems = [
         "ContainerPort", "ContainerEnvironmentVariable", "ContainerLabel", "ContainerEntrypoint", "ContainerEntrypointArgs",
@@ -53,7 +63,8 @@ internal sealed class ContainerMigrationService {
 
     private static readonly Regex ProjectTokenRegex = new(@"[^\s""'\[\],]+\.csproj", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     private static readonly Regex DotnetCommandRegex = new(@"\bdotnet\s+(publish|build)\b(?<args>[^&|;]*)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
-    private static readonly Regex DefaultImageRegex = new(@"^mcr\.microsoft\.com/dotnet/(?<family>aspnet|runtime|runtime-deps):(?<version>\d+\.\d+)$", RegexOptions.Compiled);
+    // <repo>:<version>[-<family>]: the family is what ContainerFamily appends to the tag the SDK computes.
+    private static readonly Regex DefaultImageRegex = new(@"^mcr\.microsoft\.com/dotnet/(?<repo>aspnet|runtime|runtime-deps):(?<version>\d+\.\d+)(-(?<family>[a-z0-9.-]+))?$", RegexOptions.Compiled);
 
     public async Task<MigrationPlan> PlanAsync(string dockerfilePath, IReadOnlyList<string> projectFiles, CancellationToken cancellationToken) {
         var plan = new MigrationPlan { DockerfilePath = dockerfilePath };
@@ -178,11 +189,21 @@ internal sealed class ContainerMigrationService {
         // is not a library. Writing it is harmless either way.
         properties.Add(new XElement("EnableSdkContainerSupport", "true"));
 
-        if (IsSdkDefaultBaseImage(baseImage, project)) {
+        var family = SdkImageFamily(baseImage, project, out var architecture);
+        if (family is null) {
+            properties.Add(new XElement("ContainerBaseImage", EscapeProperty(baseImage)));
+        }
+        else if (family.Length == 0) {
             plan.Notes.Add($"ContainerBaseImage not written: {baseImage} is what the SDK picks for {project.TargetFramework}, and an explicit pin would not follow a target framework change");
         }
         else {
-            properties.Add(new XElement("ContainerBaseImage", EscapeProperty(baseImage)));
+            // The SDK appends the family to the tag it computes, so this is the same image as the pin
+            // would be, but the version still follows the target framework.
+            properties.Add(new XElement("ContainerFamily", EscapeProperty(family)));
+            plan.Notes.Add($"ContainerBaseImage not written: {baseImage} is the {family} variant of what the SDK picks for {project.TargetFramework}; ContainerFamily keeps the variant and follows a target framework change");
+        }
+        if (architecture is { }) {
+            plan.Notes.Add($"{baseImage} names the {architecture} platform of a multi-platform tag; the SDK takes the platform from the RuntimeIdentifier (default: the SDK's own architecture on Linux), set ContainerRuntimeIdentifier to pin it");
         }
 
         if (workDir is { } && !IsDefaultWorkDir(workDir)) {
@@ -191,26 +212,40 @@ internal sealed class ContainerMigrationService {
         if (user is { }) {
             properties.Add(new XElement("ContainerUser", EscapeProperty(user)));
         }
+        else {
+            // Without USER the Dockerfile's image ran as root; the SDK runs .NET 8+ Microsoft images as
+            // the non-root `app` user instead. That is the better default, but not a silent one.
+            var root = _runAsRoot ?? (_console.CanPrompt && _console.Confirm($"{dockerfilePath} has no USER instruction, so its image ran as root. Keep running as root?", defaultValue: false));
+            if (root) {
+                properties.Add(new XElement("ContainerUser", "root"));
+            }
+            else {
+                plan.Notes.Add("no USER in the Dockerfile: the SDK's default user applies (non-root `app` on .NET 8+ Microsoft images); set ContainerUser=root to keep running as root");
+            }
+        }
 
         var entrypointIsDefault = entrypoint is { } && IsDefaultAppCommand(entrypoint, project);
         var cmdIsDefault = cmd is { } && IsDefaultAppCommand(cmd, project);
         if (entrypoint is { } && !entrypointIsDefault) {
-            // CONTAINER2027: an entrypoint without ContainerAppCommandInstruction is an error. DefaultArgs
-            // keeps the SDK's `dotnet app.dll` as CMD, None reproduces the Dockerfile verbatim.
-            foreach (var part in entrypoint) items.Add(new XElement("ContainerEntrypoint", new XAttribute("Include", EscapeItemSpec(part))));
-            properties.Add(new XElement("ContainerAppCommandInstruction", cmdIsDefault ? "DefaultArgs" : "None"));
-            if (cmd is { } && !cmdIsDefault) {
+            // ContainerEntrypoint is deprecated since .NET 8. With the Entrypoint instruction the app
+            // command is the ENTRYPOINT and ContainerDefaultArgs the CMD, which is the Dockerfile verbatim.
+            foreach (var part in entrypoint) items.Add(new XElement("ContainerAppCommand", new XAttribute("Include", EscapeItemSpec(part))));
+            properties.Add(new XElement("ContainerAppCommandInstruction", "Entrypoint"));
+            if (cmd is { }) {
                 foreach (var part in cmd) items.Add(new XElement("ContainerDefaultArgs", new XAttribute("Include", EscapeItemSpec(part))));
             }
-            if (cmd is null) plan.Notes.Add("ENTRYPOINT replaces the SDK's app command; the entrypoint must start the application itself");
+            else {
+                plan.Notes.Add("ENTRYPOINT replaces the SDK's app command; the entrypoint must start the application itself");
+            }
         }
         else {
             if (entrypointIsDefault) plan.Notes.Add("ENTRYPOINT matches the SDK's default app command; not written");
             if (cmd is { } && !cmdIsDefault) {
                 if (entrypoint is null) {
-                    // No ENTRYPOINT means CMD is the command. None keeps the app command out of the image.
+                    // No ENTRYPOINT means CMD is the command. None keeps the app command out of the image,
+                    // so CMD stays overridable exactly as `docker run <image> <command>` had it.
                     properties.Add(new XElement("ContainerAppCommandInstruction", "None"));
-                    plan.Notes.Add("CMD without ENTRYPOINT is written as ContainerDefaultArgs with ContainerAppCommandInstruction=None; the image will not start the application by itself");
+                    plan.Notes.Add("CMD without ENTRYPOINT is written as ContainerDefaultArgs with ContainerAppCommandInstruction=None: the image has no ENTRYPOINT and the SDK's app command is not added");
                 }
                 foreach (var part in cmd) items.Add(new XElement("ContainerDefaultArgs", new XAttribute("Include", EscapeItemSpec(part))));
             }
@@ -487,9 +522,9 @@ internal sealed class ContainerMigrationService {
 
     // ---- Project analysis ----------------------------------------------------------------------
 
-    private sealed record ProjectFacts(string? Sdk, string? TargetFramework, string AssemblyName, bool SelfContained, List<string> ExistingContainerSettings, List<string> DockerToolsReferences);
+    internal sealed record ProjectFacts(string? Sdk, string? TargetFramework, string AssemblyName, bool SelfContained, List<string> ExistingContainerSettings, List<string> DockerToolsReferences);
 
-    private static async Task<ProjectFacts> ReadProjectAsync(string projectPath, CancellationToken cancellationToken) {
+    internal static async Task<ProjectFacts> ReadProjectAsync(string projectPath, CancellationToken cancellationToken) {
         XDocument doc;
         using (var stream = File.OpenRead(projectPath)) {
             doc = await XDocument.LoadAsync(stream, LoadOptions.None, cancellationToken);
@@ -517,20 +552,53 @@ internal sealed class ContainerMigrationService {
     }
 
     /// <summary>
-    /// Whether the image is the one the SDK would compute anyway (see ComputeDotnetBaseImageAndTag):
+    /// Null unless the image is the one the SDK would compute anyway (see ComputeDotnetBaseImageAndTag):
     /// aspnet for web projects, runtime for the rest, runtime-deps when self-contained, tagged with the
-    /// target framework's version. Only then is leaving ContainerBaseImage out the same image.
+    /// target framework's version. Then the empty string for exactly that image, or the family suffix of
+    /// the tag (`alpine`, `noble-chiseled`), which ContainerFamily reproduces. Windows tags stay explicit:
+    /// the SDK would still target a Linux runtime identifier with them. A platform suffix (`-amd64`,
+    /// `-arm64v8`) names one platform of the multi-platform tag; it is returned separately, since the
+    /// SDK takes the platform from the runtime identifier.
     /// </summary>
-    private static bool IsSdkDefaultBaseImage(string image, ProjectFacts project) {
+    internal static string? SdkImageFamily(string image, ProjectFacts project, out string? architecture) {
+        architecture = null;
         var match = DefaultImageRegex.Match(image);
-        if (!match.Success || project.TargetFramework is null) return false;
-        if (!project.TargetFramework.Equals("net" + match.Groups["version"].Value, StringComparison.OrdinalIgnoreCase)) return false;
+        if (!match.Success || project.TargetFramework is null) return null;
+        if (!project.TargetFramework.Equals("net" + match.Groups["version"].Value, StringComparison.OrdinalIgnoreCase)) return null;
+        if (match.Groups["repo"].Value != SdkImageRepository(project)) return null;
 
         var family = match.Groups["family"].Value;
-        if (project.SelfContained) return family == "runtime-deps";
-        var isWeb = project.Sdk?.Equals("Microsoft.NET.Sdk.Web", StringComparison.OrdinalIgnoreCase) == true;
-        return family == (isWeb ? "aspnet" : "runtime");
+        if (family.Contains("nanoserver", StringComparison.OrdinalIgnoreCase) || family.Contains("windowsservercore", StringComparison.OrdinalIgnoreCase)) return null;
+        var arch = ArchitectureSuffix.Match(family);
+        if (arch.Success) {
+            architecture = arch.Groups["arch"].Value;
+            family = family[..arch.Index];
+        }
+        return family;
     }
+
+    /// <summary>The repository the SDK picks (see ComputeDotnetBaseImageAndTag), or null when the pinned image is not one of them.</summary>
+    internal static string SdkImageRepository(ProjectFacts project) {
+        var isWeb = project.Sdk?.Equals("Microsoft.NET.Sdk.Web", StringComparison.OrdinalIgnoreCase) == true;
+        return project.SelfContained ? "runtime-deps" : isWeb ? "aspnet" : "runtime";
+    }
+
+    /// <summary>The image the SDK would compute for the project without ContainerBaseImage, for messages; null when the version is unknown.</summary>
+    internal static string? SdkImageName(ProjectFacts project) =>
+        project.TargetFramework is { } tfm && tfm.StartsWith("net", StringComparison.OrdinalIgnoreCase) && tfm.Length > 3 && char.IsDigit(tfm[3])
+            ? $"mcr.microsoft.com/dotnet/{SdkImageRepository(project)}:{tfm[3..].Split('-')[0]}"
+            : null;
+
+    /// <summary>Parses a pinned image into the parts ContainerFamily can and cannot stand in for.</summary>
+    internal static bool TryParseSdkImage(string image, out string repo, out string version, out string family) {
+        var match = DefaultImageRegex.Match(image);
+        repo = match.Groups["repo"].Value;
+        version = match.Groups["version"].Value;
+        family = match.Groups["family"].Value;
+        return match.Success;
+    }
+
+    private static readonly Regex ArchitectureSuffix = new(@"(^|-)(?<arch>amd64|arm64v8|arm32v7)$", RegexOptions.Compiled);
 
     private static bool IsDefaultWorkDir(string workDir) =>
         workDir.TrimEnd('/', '\\').Equals("/app", StringComparison.Ordinal)
@@ -618,7 +686,7 @@ internal sealed class ContainerMigrationService {
         }
     }
 
-    private static void RemoveWithLeadingWhitespace(XElement element) {
+    internal static void RemoveWithLeadingWhitespace(XElement element) {
         if (element.PreviousNode is XText previous && string.IsNullOrWhiteSpace(previous.Value)) previous.Remove();
         element.Remove();
     }
