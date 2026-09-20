@@ -42,8 +42,23 @@ internal sealed class ContainerizeCommand : BaseCommand {
         DefaultValueFactory = _ => false
     };
 
+    private readonly Option<bool> _validateOption = new Option<bool>("--validate") {
+        Description = "Check the SDK container settings of each project: names the SDK does not read, the obsolete ContainerImageName, deprecated ContainerEntrypoint items, invalid values, a ContainerBaseImage the SDK computes anyway or a family variant of it (ContainerFamily). With --apply, rewrite the findings that have an exact equivalent.",
+        DefaultValueFactory = _ => false
+    };
+
+    private readonly Option<bool> _interactiveOption = new Option<bool>("--interactive", "-i") {
+        Description = "With --migrate or --validate, ask per Dockerfile or finding and write the answers: whether to migrate a Dockerfile (and drop what the SDK cannot express, and delete it afterwards), which findings to fix. Writes without --apply.",
+        DefaultValueFactory = _ => false
+    };
+
+    private readonly Option<bool> _runAsRootOption = new Option<bool>("--run-as-root") {
+        Description = "With --migrate, write ContainerUser=root for a Dockerfile without USER instead of asking. Without it the question is asked per Dockerfile; when it cannot be asked the SDK's default user (non-root app on .NET 8+ images) is kept.",
+        DefaultValueFactory = _ => false
+    };
+
     public ContainerizeCommand(IConsoleOutput console)
-        : base("containerize", "Analyze Dockerfiles and .NET projects with SDK container build properties (PublishProfile=DefaultContainer, ContainerBaseImage, or ContainerImage), or migrate Dockerfiles to those properties.", console) {
+        : base("containerize", "Analyze Dockerfiles and .NET projects with SDK container build properties (PublishProfile=DefaultContainer, ContainerBaseImage, ContainerFamily, ContainerRepository, ...), or migrate Dockerfiles to those properties.", console) {
         Add(_rootOption);
         Add(_depthOption);
         Add(_logLevelOption);
@@ -54,6 +69,9 @@ internal sealed class ContainerizeCommand : BaseCommand {
         Add(_applyOption);
         Add(_deleteDockerfileOption);
         Add(_forceOption);
+        Add(_runAsRootOption);
+        Add(_validateOption);
+        Add(_interactiveOption);
         Add(_vsToolsPath);
         Add(_noResolveVsToolsPath);
         Add(_concurrencyOption);
@@ -72,12 +90,29 @@ internal sealed class ContainerizeCommand : BaseCommand {
         var scanAll = parseResult.GetValue(_allOption);
         var markdownOutput = parseResult.GetValue(_markdownOption);
 
+        var interactive = parseResult.GetValue(_interactiveOption);
+        if (interactive) {
+            if (!parseResult.GetValue(_validateOption) && !parseResult.GetValue(_migrateOption)) {
+                Output.WriteError("--interactive needs --migrate or --validate.");
+                return 1;
+            }
+            if (!Output.CanPrompt) {
+                Output.WriteError("--interactive needs an interactive terminal. Use --apply instead.");
+                return 1;
+            }
+        }
+
+        if (parseResult.GetValue(_validateOption)) {
+            return await ValidateAsync(rootPath, depth, apply: parseResult.GetValue(_applyOption), interactive, markdownOutput, cancellationToken);
+        }
+
         if (parseResult.GetValue(_migrateOption)) {
             return await MigrateAsync(rootPath, depth,
                 apply: parseResult.GetValue(_applyOption),
                 deleteDockerfile: parseResult.GetValue(_deleteDockerfileOption),
                 force: parseResult.GetValue(_forceOption),
-                markdownOutput, cancellationToken);
+                runAsRoot: parseResult.GetValue(_runAsRootOption) ? true : null,
+                interactive, markdownOutput, cancellationToken);
         }
 
         // If --all is specified, scan both; otherwise respect individual flags
@@ -154,8 +189,9 @@ internal sealed class ContainerizeCommand : BaseCommand {
                                 relativePath,
                                 project.PublishProfile ?? string.Empty,
                                 project.ContainerBaseImage ?? string.Empty,
-                                project.ContainerImage ?? string.Empty,
                                 project.ContainerFamily ?? string.Empty,
+                                project.ContainerRepository ?? string.Empty,
+                                project.ContainerImageTag ?? string.Empty,
                                 project.ContainerRegistry ?? string.Empty,
                                 project.EnableSdkContainerSupport ? "Enabled" : string.Empty
                             };
@@ -164,7 +200,7 @@ internal sealed class ContainerizeCommand : BaseCommand {
                     MarkdownTableFormatter.Write(
                         Output,
                         ".NET container projects (markdown)",
-                        new[] { "Project", "Path", "PublishProfile", "ContainerBaseImage", "ContainerImage", "ContainerFamily", "ContainerRegistry", "SDKContainerSupport" },
+                        new[] { "Project", "Path", "PublishProfile", "ContainerBaseImage", "ContainerFamily", "ContainerRepository", "ContainerImageTag", "ContainerRegistry", "SDKContainerSupport" },
                         rows);
                 }
                 else {
@@ -188,12 +224,16 @@ internal sealed class ContainerizeCommand : BaseCommand {
                                 Output.WriteLine($"    Container Base Image: {project.ContainerBaseImage}");
                             }
                             
-                            if (project.ContainerImage != null) {
-                                Output.WriteLine($"    Container Image: {project.ContainerImage}");
-                            }
-                            
                             if (project.ContainerFamily != null) {
                                 Output.WriteLine($"    Container Family: {project.ContainerFamily}");
+                            }
+
+                            if (project.ContainerRepository != null) {
+                                Output.WriteLine($"    Container Repository: {project.ContainerRepository}");
+                            }
+
+                            if (project.ContainerImageTag != null) {
+                                Output.WriteLine($"    Container Image Tag: {project.ContainerImageTag}");
                             }
 
                             if (project.ContainerRegistry != null) {
@@ -298,8 +338,8 @@ internal sealed class ContainerizeCommand : BaseCommand {
     /// Plans one migration per Dockerfile and, with --apply, writes it. The project files are read as
     /// XML, so this needs no MSBuild registration. Returns 1 when a write failed.
     /// </summary>
-    private async Task<int> MigrateAsync(string rootPath, int depth, bool apply, bool deleteDockerfile, bool force, bool markdownOutput, CancellationToken cancellationToken) {
-        if (deleteDockerfile && !apply) {
+    private async Task<int> MigrateAsync(string rootPath, int depth, bool apply, bool deleteDockerfile, bool force, bool? runAsRoot, bool interactive, bool markdownOutput, CancellationToken cancellationToken) {
+        if (deleteDockerfile && !apply && !interactive) {
             Output.WriteWarning("--delete-dockerfile has no effect without --apply.");
         }
 
@@ -322,14 +362,14 @@ internal sealed class ContainerizeCommand : BaseCommand {
         }
 
         Output.WriteInfo($"Scanning: {rootPath}");
-        Output.WriteInfo($"Mode: {(apply ? "Apply changes" : "Dry run")}");
+        Output.WriteInfo($"Mode: {(interactive ? "Interactive" : apply ? "Apply changes" : "Dry run")}");
 
         if (dockerfiles.Count == 0) {
             Output.WriteWarning("No Dockerfiles found.");
             return 0;
         }
 
-        var service = new Services.ContainerMigrationService(Output);
+        var service = new Services.ContainerMigrationService(Output, runAsRoot);
         var plans = new List<Services.ContainerMigrationService.MigrationPlan>();
         var claimed = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var dockerfile in dockerfiles.OrderBy(path => path, StringComparer.OrdinalIgnoreCase)) {
@@ -354,7 +394,8 @@ internal sealed class ContainerizeCommand : BaseCommand {
 
         var failures = 0;
         var written = 0;
-        if (markdownOutput) {
+        var declined = 0;
+        if (markdownOutput && !interactive) {
             var rows = plans.Select(plan => (IReadOnlyList<string?>)new[] {
                 Rel(plan.DockerfilePath),
                 plan.ProjectPath is { } ? Rel(plan.ProjectPath) : string.Empty,
@@ -374,7 +415,7 @@ internal sealed class ContainerizeCommand : BaseCommand {
                     Output.WriteLine($"    Skipped: {plan.SkipReason}");
                 }
                 else {
-                    Output.WriteLine(apply && plan.CanApply(force) ? "    Adding:" : "    Would add:");
+                    Output.WriteLine(apply && !interactive && plan.CanApply(force) ? "    Adding:" : "    Would add:");
                     foreach (var element in plan.Elements) {
                         foreach (var line in element.ToString().Split('\n')) {
                             Output.WriteLine("      " + line.TrimEnd('\r'));
@@ -383,14 +424,33 @@ internal sealed class ContainerizeCommand : BaseCommand {
                 }
                 foreach (var item in plan.Unsupported) Output.WriteLine($"    Not migrated: {item}");
                 foreach (var note in plan.Notes) Output.WriteLine($"    Note: {note}");
-                if (plan.SkipReason is null && plan.Unsupported.Count > 0 && !force) {
+                if (plan.SkipReason is null && plan.Unsupported.Count > 0 && !force && !interactive) {
                     Output.WriteLine("    Skipped: the runtime image has instructions the SDK cannot express; pass --force to migrate without them.");
+                }
+
+                if (interactive && plan.SkipReason is null) {
+                    // Each Dockerfile is its own decision: drop what the SDK cannot express, write, delete.
+                    var forced = force || (plan.Unsupported.Count > 0
+                        && Output.Confirm($"    Migrate anyway, dropping the {plan.Unsupported.Count} instruction(s) the SDK cannot express?", defaultValue: false));
+                    if (!plan.CanApply(forced) || !Output.Confirm($"    Write these settings into {Rel(plan.ProjectPath!)}?", defaultValue: true)) {
+                        declined++;
+                    }
+                    else {
+                        var delete = deleteDockerfile || Output.Confirm($"    Delete {Rel(plan.DockerfilePath)} and the Visual Studio container-tools settings?", defaultValue: false);
+                        if (await service.ApplyAsync(plan, delete, cancellationToken)) {
+                            written++;
+                            Output.WriteLine($"    ✓ Updated {Rel(plan.ProjectPath!)}{(delete ? $", deleted {Rel(plan.DockerfilePath)}" : "")}");
+                        }
+                        else {
+                            failures++;
+                        }
+                    }
                 }
                 Output.WriteLine("");
             }
         }
 
-        if (apply) {
+        if (apply && !interactive) {
             foreach (var plan in plans.Where(p => p.CanApply(force))) {
                 cancellationToken.ThrowIfCancellationRequested();
                 if (await service.ApplyAsync(plan, deleteDockerfile, cancellationToken)) {
@@ -407,12 +467,105 @@ internal sealed class ContainerizeCommand : BaseCommand {
         var blocked = plans.Count(p => p.SkipReason is null && !p.CanApply(force));
         var skipped = plans.Count(p => p.SkipReason is { });
         Output.WriteLine("");
-        Output.WriteLine(apply
+        Output.WriteLine(interactive
+            ? $"Migrated {written} of {plans.Count} Dockerfile(s); {declined} declined, {skipped} skipped, {failures} failed."
+            : apply
             ? $"Migrated {written} of {plans.Count} Dockerfile(s); {blocked} blocked by unsupported instructions, {skipped} skipped, {failures} failed."
             : $"{ready} of {plans.Count} Dockerfile(s) can be migrated; {blocked} blocked by unsupported instructions, {skipped} skipped. Pass --apply to write.");
         if (written > 0) {
             Output.WriteLine("Build the image with: dotnet publish <project> -c Release /t:PublishContainer");
         }
+
+        return failures > 0 ? 1 : 0;
+    }
+
+    /// <summary>
+    /// Reports the SDK container settings of every project under the root and, with --apply, writes
+    /// the fixable findings. Projects without any container setting are not listed. Returns 1 when a
+    /// write failed.
+    /// </summary>
+    private async Task<int> ValidateAsync(string rootPath, int depth, bool apply, bool interactive, bool markdownOutput, CancellationToken cancellationToken) {
+        var searchRoot = Directory.Exists(rootPath) ? rootPath : Path.GetDirectoryName(rootPath)!;
+        string Rel(string path) => Path.GetRelativePath(searchRoot, path);
+        var projectFiles = await ProjectContainerScanner.FindProjectFilesAsync(rootPath, depth,
+            (path, ex) => Output.WriteWarning($"Could not scan {path}: {ex.FormatMessage()}"));
+
+        Output.WriteInfo($"Scanning: {rootPath}");
+        Output.WriteInfo($"Mode: {(interactive ? "Interactive" : apply ? "Apply changes" : "Report")}");
+
+        var service = new Services.ContainerValidationService(Output);
+        var reports = new List<Services.ContainerValidationService.Report>();
+        foreach (var projectFile in projectFiles.OrderBy(p => p, StringComparer.OrdinalIgnoreCase)) {
+            cancellationToken.ThrowIfCancellationRequested();
+            try {
+                if (await service.ValidateAsync(projectFile, cancellationToken) is { } report) reports.Add(report);
+            }
+            catch (Exception ex) {
+                Output.WriteWarning($"Could not read {projectFile}: {ex.FormatMessage()}");
+            }
+        }
+
+        if (reports.Count == 0) {
+            Output.WriteWarning("No projects with SDK container settings found.");
+            return 0;
+        }
+
+        var failures = 0;
+        var written = 0;
+        if (markdownOutput && !interactive) {
+            var rows = reports.SelectMany(report => report.Findings.Count == 0
+                ? new[] { (IReadOnlyList<string?>)new[] { Rel(report.ProjectPath), string.Empty, "ok", string.Empty } }
+                : report.Findings.Select(f => (IReadOnlyList<string?>)new[] { Rel(report.ProjectPath), f.Setting, f.Message, f.Fix ?? string.Empty }));
+            MarkdownTableFormatter.Write(Output, "Container settings (markdown)", new[] { "Project", "Setting", "Finding", "Fix" }, rows);
+        }
+        else {
+            foreach (var report in reports) {
+                Output.WriteLine($"  • {Rel(report.ProjectPath)}");
+                if (report.Findings.Count == 0) {
+                    Output.WriteLine($"    ok: {report.SettingCount} container setting(s), nothing to report");
+                }
+                foreach (var finding in report.Findings) {
+                    Output.WriteLine($"    {finding.Setting}: {finding.Message}");
+                    if (finding.Fix is null) continue;
+                    if (interactive) {
+                        finding.Skip = !Output.Confirm($"      Fix: {finding.Fix}?", defaultValue: true);
+                    }
+                    else {
+                        Output.WriteLine($"      {(apply ? "Fixing" : "Fix")}: {finding.Fix}");
+                    }
+                }
+                if (interactive && report.Fixable > 0) {
+                    if (await service.ApplyAsync(report, cancellationToken)) {
+                        written++;
+                        Output.WriteLine($"    ✓ Updated {Rel(report.ProjectPath)}");
+                    }
+                    else {
+                        failures++;
+                    }
+                }
+                Output.WriteLine("");
+            }
+        }
+
+        if (apply && !interactive) {
+            foreach (var report in reports.Where(r => r.Fixable > 0)) {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (await service.ApplyAsync(report, cancellationToken)) {
+                    written++;
+                    Output.WriteLine($"✓ Updated {Rel(report.ProjectPath)}");
+                }
+                else {
+                    failures++;
+                }
+            }
+        }
+
+        var findings = reports.Sum(r => r.Findings.Count);
+        var fixable = reports.Sum(r => r.Fixable);
+        Output.WriteLine("");
+        Output.WriteLine(apply || interactive
+            ? $"{reports.Count} project(s) with container settings; {findings} finding(s), {fixable} fixed in {written} project(s), {failures} failed."
+            : $"{reports.Count} project(s) with container settings; {findings} finding(s), {fixable} fixable.{(fixable > 0 ? " Pass --apply to write." : string.Empty)}");
 
         return failures > 0 ? 1 : 0;
     }

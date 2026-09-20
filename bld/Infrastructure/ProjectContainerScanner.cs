@@ -14,8 +14,9 @@ internal class ProjectContainerScanner {
         public bool HasContainerSupport { get; init; }
         public string? PublishProfile { get; init; }
         public string? ContainerBaseImage { get; init; }
-        public string? ContainerImage { get; init; }
         public string? ContainerFamily { get; init; }
+        public string? ContainerRepository { get; init; }
+        public string? ContainerImageTag { get; init; }
         public string? ContainerRegistry { get; init; }
         public bool EnableSdkContainerSupport { get; init; }
     }
@@ -85,17 +86,26 @@ internal class ProjectContainerScanner {
             var publishProfile = project.GetPropertyValue("PublishProfile");
             var enableSdkContainer = project.GetPropertyValue("EnableSdkContainerSupport");
             var containerBaseImage = project.GetPropertyValue("ContainerBaseImage");
-            var containerImage = project.GetPropertyValue("ContainerImage");
             var containerFamily = project.GetPropertyValue("ContainerFamily");
+            // ContainerImageName is the obsolete spelling the SDK still maps onto ContainerRepository.
+            var containerRepository = project.GetPropertyValue("ContainerRepository");
+            if (string.IsNullOrEmpty(containerRepository)) containerRepository = project.GetPropertyValue("ContainerImageName");
+            var containerImageTag = project.GetPropertyValue("ContainerImageTags");
+            if (string.IsNullOrEmpty(containerImageTag)) containerImageTag = project.GetPropertyValue("ContainerImageTag");
             var containerRegistry = project.GetPropertyValue("ContainerRegistry");
 
-            // Only include projects that will actually create containers
-            // Check for PublishProfile=DefaultContainer OR ContainerBaseImage OR ContainerImage
-            // Don't include projects with just EnableSdkContainerSupport as library projects may have this
-            bool hasContainerSupport = 
+            // Only include projects that will actually create containers: the publish profile or any
+            // property that names the image or where it goes. Not EnableSdkContainerSupport alone,
+            // which library projects may carry.
+            bool hasContainerSupport =
                 publishProfile?.Equals("DefaultContainer", StringComparison.OrdinalIgnoreCase) == true ||
                 !string.IsNullOrEmpty(containerBaseImage) ||
-                !string.IsNullOrEmpty(containerImage);
+                !string.IsNullOrEmpty(containerFamily) ||
+                !string.IsNullOrEmpty(containerRepository) ||
+                !string.IsNullOrEmpty(containerImageTag) ||
+                !string.IsNullOrEmpty(containerRegistry) ||
+                !string.IsNullOrEmpty(project.GetPropertyValue("ContainerArchiveOutputPath")) ||
+                !string.IsNullOrEmpty(project.GetPropertyValue("ContainerRuntimeIdentifiers"));
 
             if (!hasContainerSupport) {
                 return Task.FromResult<ContainerProjectInfo?>(null);
@@ -112,8 +122,9 @@ internal class ProjectContainerScanner {
                 HasContainerSupport = hasContainerSupport,
                 PublishProfile = string.IsNullOrEmpty(publishProfile) ? null : publishProfile,
                 ContainerBaseImage = string.IsNullOrEmpty(containerBaseImage) ? null : containerBaseImage,
-                ContainerImage = string.IsNullOrEmpty(containerImage) ? null : containerImage,
                 ContainerFamily = string.IsNullOrEmpty(containerFamily) ? null : containerFamily,
+                ContainerRepository = string.IsNullOrEmpty(containerRepository) ? null : containerRepository,
+                ContainerImageTag = string.IsNullOrEmpty(containerImageTag) ? null : containerImageTag,
                 ContainerRegistry = string.IsNullOrEmpty(containerRegistry) ? null : containerRegistry,
                 EnableSdkContainerSupport = enableSdkContainer?.Equals("true", StringComparison.OrdinalIgnoreCase) == true
             });
