@@ -350,7 +350,8 @@ bld containerize --validate -i
 | Finding | Fix with `--apply` |
 |---|---|
 | `ContainerBaseImage` is exactly the image the SDK computes for the project (`aspnet:8.0` on a Web SDK `net8.0` project) | removed — unless `ContainerFamily` is set too, since removing the pin would activate it |
-| `ContainerBaseImage` is a family variant of that image (`runtime-deps:10.0-azurelinux3.0-distroless-extra-amd64` on an AOT `net10.0` project) | replaced by `ContainerFamily` (`azurelinux3.0-distroless-extra`); a platform suffix (`-amd64`, `-arm64v8`, `-arm32v7`) is dropped, since the SDK takes the platform from the `RuntimeIdentifier`; removed when `ContainerFamily` already says the same |
+| `ContainerBaseImage` is a family variant of that image (`runtime-deps:10.0-azurelinux3.0-distroless-extra` on an AOT `net10.0` project) | replaced by `ContainerFamily` (`azurelinux3.0-distroless-extra`); removed when `ContainerFamily` already says the same |
+| either of those with a platform suffix (`-amd64`, `-arm64v8`, `-arm32v7`) | reported — `ContainerFamily` cannot carry the platform, so without the pin the image follows the `RuntimeIdentifier` (the building machine's architecture by default); `ContainerRuntimeIdentifier` pins it |
 | `ContainerBaseImage` pins another repository or version than the SDK would pick; `ContainerFamily` next to a `ContainerBaseImage` (ignored by the SDK) | reported |
 | `ContainerImageName` (obsolete, `CONTAINER003`) | renamed to `ContainerRepository`; removed when equal to an existing one; reported when it overrides a different one |
 | `ContainerEntrypoint`/`ContainerEntrypointArgs` (deprecated since .NET 8) | renamed to `ContainerAppCommand`/`ContainerAppCommandArgs` with `ContainerAppCommandInstruction=Entrypoint` when the instruction is `None` (the same ENTRYPOINT and CMD); reported otherwise, since the SDK's app command is the CMD behind such an entrypoint and the rename would drop it |

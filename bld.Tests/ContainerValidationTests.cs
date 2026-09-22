@@ -41,22 +41,56 @@ public class ContainerValidationTests : IDisposable {
     }
 
     [Fact]
-    public async Task Validate_PinnedFamilyVariantWithPlatform_BecomesContainerFamily() {
-        // The image the SDK computes for an AOT net10.0 project, with a family and a platform suffix.
+    public async Task Validate_PinnedFamilyVariant_BecomesContainerFamily() {
+        // The image the SDK computes for an AOT net10.0 project, with a family suffix.
         var project = Write("App/App.csproj", Project("Microsoft.NET.Sdk.Web", "net10.0",
             "    <PublishAot>true</PublishAot>\n" +
-            "    <ContainerBaseImage>mcr.microsoft.com/dotnet/runtime-deps:10.0-azurelinux3.0-distroless-extra-amd64</ContainerBaseImage>\n"));
+            "    <ContainerBaseImage>mcr.microsoft.com/dotnet/runtime-deps:10.0-azurelinux3.0-distroless-extra</ContainerBaseImage>\n"));
 
         var report = await ValidateAsync(project);
 
         var finding = Single(report, "ContainerBaseImage");
         Assert.Equal("replace with ContainerFamily=azurelinux3.0-distroless-extra", finding.Fix);
-        Assert.Contains("-amd64 platform then follows the RuntimeIdentifier", finding.Message);
 
         Assert.True(await new ContainerValidationService(_console).ApplyAsync(report!, default));
         Assert.Equal(Project("Microsoft.NET.Sdk.Web", "net10.0",
             "    <PublishAot>true</PublishAot>\n" +
             "    <ContainerFamily>azurelinux3.0-distroless-extra</ContainerFamily>\n"), await File.ReadAllTextAsync(project));
+    }
+
+    [Fact]
+    public async Task Validate_PinnedFamilyVariantWithPlatform_IsReportedOnly() {
+        // ContainerFamily cannot carry the -amd64: without the pin the platform follows the
+        // RuntimeIdentifier, so the fix is the user's call and --apply leaves the file alone.
+        var contents = Project("Microsoft.NET.Sdk.Web", "net10.0",
+            "    <PublishAot>true</PublishAot>\n" +
+            "    <ContainerBaseImage>mcr.microsoft.com/dotnet/runtime-deps:10.0-azurelinux3.0-distroless-extra-amd64</ContainerBaseImage>\n");
+        var project = Write("App/App.csproj", contents);
+
+        var report = await ValidateAsync(project);
+
+        var finding = Single(report, "ContainerBaseImage");
+        Assert.Null(finding.Fix);
+        Assert.Contains("ContainerFamily=azurelinux3.0-distroless-extra", finding.Message);
+        Assert.Contains("-amd64 platform then follows the RuntimeIdentifier", finding.Message);
+
+        Assert.Equal(0, report!.Fixable);
+        Assert.False(await new ContainerValidationService(_console).ApplyAsync(report, default));
+        Assert.Equal(contents, await File.ReadAllTextAsync(project));
+    }
+
+    [Fact]
+    public async Task Validate_PinnedSdkDefaultImageWithPlatform_IsReportedOnly() {
+        var contents = Project("Microsoft.NET.Sdk.Web", "net8.0",
+            "    <ContainerBaseImage>mcr.microsoft.com/dotnet/aspnet:8.0-amd64</ContainerBaseImage>\n");
+        var project = Write("App/App.csproj", contents);
+
+        var report = await ValidateAsync(project);
+
+        var finding = Single(report, "ContainerBaseImage");
+        Assert.Null(finding.Fix);
+        Assert.Contains("-amd64 platform then follows the RuntimeIdentifier", finding.Message);
+        Assert.Equal(contents, await File.ReadAllTextAsync(project));
     }
 
     [Fact]

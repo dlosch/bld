@@ -208,6 +208,10 @@ internal sealed class ContainerValidationService {
             }
 
             var platform = architecture is { } ? $"; the -{architecture} platform then follows the RuntimeIdentifier (set ContainerRuntimeIdentifier to pin it)" : string.Empty;
+            // A platform suffix is the one part ContainerFamily cannot carry: dropping it hands the
+            // architecture to the RuntimeIdentifier, so the image follows the building machine. That is
+            // a decision, not an exact equivalent, and --apply does not make it.
+            var fixable = !conditioned && architecture is null;
             if (family.Length == 0) {
                 if (familySet && !string.IsNullOrEmpty(familyValue)) {
                     report.Findings.Add(new Finding { Setting = "ContainerBaseImage", Message = $"{image} is what the SDK picks for {facts.TargetFramework}, but removing it would activate ContainerFamily={familyValue}, a different image" });
@@ -216,8 +220,8 @@ internal sealed class ContainerValidationService {
                 report.Findings.Add(new Finding {
                     Setting = "ContainerBaseImage",
                     Message = $"{image} is what the SDK picks for {facts.TargetFramework}; the pin only stops the image from following a target framework change{platform}",
-                    Fix = conditioned ? null : "remove",
-                    Apply = conditioned ? null : p => Remove(Find(p, "ContainerBaseImage", image)),
+                    Fix = fixable ? "remove" : null,
+                    Apply = fixable ? p => Remove(Find(p, "ContainerBaseImage", image)) : null,
                 });
                 continue;
             }
@@ -226,8 +230,8 @@ internal sealed class ContainerValidationService {
                 report.Findings.Add(new Finding {
                     Setting = "ContainerBaseImage",
                     Message = $"{image} is the {family} variant of what the SDK picks for {facts.TargetFramework}; ContainerFamily={family} keeps the variant and follows a target framework change{platform}",
-                    Fix = conditioned ? null : $"replace with ContainerFamily={family}",
-                    Apply = conditioned ? null : p => {
+                    Fix = fixable ? $"replace with ContainerFamily={family}" : null,
+                    Apply = !fixable ? null : p => {
                         var e = Find(p, "ContainerBaseImage", image);
                         if (e is null) return false;
                         Rename(e, "ContainerFamily");
@@ -240,8 +244,8 @@ internal sealed class ContainerValidationService {
                 report.Findings.Add(new Finding {
                     Setting = "ContainerBaseImage",
                     Message = $"{image} is what ContainerFamily={familyValue} already selects for {facts.TargetFramework}{platform}",
-                    Fix = conditioned ? null : "remove",
-                    Apply = conditioned ? null : p => Remove(Find(p, "ContainerBaseImage", image)),
+                    Fix = fixable ? "remove" : null,
+                    Apply = fixable ? p => Remove(Find(p, "ContainerBaseImage", image)) : null,
                 });
             }
             else {
