@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented in this file.
 
-## [Unreleased]
+## [0.4.3] - 2026-09-22
 
 ### Changes
 - change `containerize --migrate`: a custom `ENTRYPOINT` is written as `ContainerAppCommand` items with `ContainerAppCommandInstruction=Entrypoint` and `CMD` as `ContainerDefaultArgs`, instead of the `ContainerEntrypoint` items the SDK deprecated in .NET 8. A variant of the image the SDK would pick anyway (`aspnet:8.0-alpine`, `8.0-noble-chiseled`) becomes `ContainerFamily` rather than a pinned `ContainerBaseImage`, so the variant stays and the version follows the target framework; Windows tags stay pinned. A Dockerfile without `USER` ran as root while the SDK defaults to the non-root `app` user on .NET 8+ images: the command now asks per Dockerfile whether to keep root and writes `ContainerUser=root` on yes; `--run-as-root` answers yes for all, and without a terminal the SDK default is kept and noted. The "already has container settings" check covers every SDK property (`ContainerRegistry`, `ContainerImageTag(s)`, `ContainerRuntimeIdentifier(s)`, `ContainerImageFormat`, `ContainerArchiveOutputPath`, `LocalRegistry`, ...).
