@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented in this file.
 
-## [Unreleased]
+## [0.5.0] - 2026-09-26
 
 - [BUG] `clean --non-current`: a project whose current output sits directly in `bin/<Configuration>` (legacy projects, `AppendTargetFrameworkToOutputPath=false`) had that whole directory marked, deleting the output `--non-current` promises to keep. Only TFM directories below it that no project targets are marked now.
 - [BUG] `clean -o` on Windows: the script relied on `setlocal disabledelayedexpansion`, which does not stop cmd from expanding `%VAR%`, so a path containing `%TEMP%` deleted another directory. `%` is written as `%%`.
