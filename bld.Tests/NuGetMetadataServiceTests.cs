@@ -261,6 +261,27 @@ public class NuGetMetadataServiceTests {
         Assert.Null(result);
     }
 
+    /// <summary>
+    /// Regression: the catch-all turned a cancelled lookup into null, which the caller counts as a failed
+    /// fetch, so Ctrl+C reported every package as an error instead of stopping.
+    /// </summary>
+    [Fact]
+    public async Task GetLatestVersionWithFrameworkCheckAsync_LetsCancellationThrough() {
+        using var client = new HttpClient(new StaticResponseHandler(CapIndexJson, CapPageJson));
+        var request = new PackageVersionRequest {
+            PackageId = "My.Package",
+            AllowPrerelease = false,
+            CompatibleTargetFrameworks = ["net8.0"]
+        };
+        using var cancelled = new CancellationTokenSource();
+        cancelled.Cancel();
+        var console = new TestConsole();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+            await NugetMetadataService.GetLatestVersionWithFrameworkCheckAsync(client, new NugetMetadataOptions(), console, request, cancellationToken: cancelled.Token));
+        Assert.DoesNotContain(console.Messages, m => m.Level == "Error");
+    }
+
     private const string TrainPageJson = """
         {
           "@id": "https://api.nuget.org/v3/registration5-gz-semver2/my.package/page0.json",

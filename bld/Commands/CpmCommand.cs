@@ -38,7 +38,6 @@ internal sealed class CpmCommand : BaseCommand {
             VSToolsPath = parseResult.GetValue(_vsToolsPath),
             NoResolveVSToolsPath = parseResult.GetValue(_noResolveVsToolsPath),
             MaxDegreeOfParallelism = parseResult.GetValue(_concurrencyOption),
-            MarkdownOutput = parseResult.GetValue(_markdownOption),
         };
 
         if (!options.NoResolveVSToolsPath && string.IsNullOrEmpty(options.VSToolsPath)) {

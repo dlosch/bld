@@ -137,6 +137,7 @@ internal sealed class OutdatedCommand : BaseCommand {
     };
 
     public OutdatedCommand(IConsoleOutput console) : base("outdated", "Check for outdated NuGet packages and optionally update them to latest versions.", console) {
+        Add(_markdownOption);
         Add(_rootOption);
         Add(_depthOption);
         Add(_applyOption);

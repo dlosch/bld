@@ -59,6 +59,7 @@ internal sealed class ContainerizeCommand : BaseCommand {
 
     public ContainerizeCommand(IConsoleOutput console)
         : base("containerize", "Analyze Dockerfiles and .NET projects with SDK container build properties (PublishProfile=DefaultContainer, ContainerBaseImage, ContainerFamily, ContainerRepository, ...), or migrate Dockerfiles to those properties.", console) {
+        Add(_markdownOption);
         Add(_rootOption);
         Add(_depthOption);
         Add(_logLevelOption);
@@ -372,7 +373,10 @@ internal sealed class ContainerizeCommand : BaseCommand {
         var service = new Services.ContainerMigrationService(Output, runAsRoot);
         var plans = new List<Services.ContainerMigrationService.MigrationPlan>();
         var claimed = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var dockerfile in dockerfiles.OrderBy(path => path, StringComparer.OrdinalIgnoreCase)) {
+        // The plain Dockerfile goes first, so it is the one that claims a project it shares with variants.
+        foreach (var dockerfile in dockerfiles
+                     .OrderBy(path => !Path.GetFileName(path).Equals("Dockerfile", StringComparison.OrdinalIgnoreCase))
+                     .ThenBy(path => path, StringComparer.OrdinalIgnoreCase)) {
             cancellationToken.ThrowIfCancellationRequested();
             try {
                 var plan = await service.PlanAsync(dockerfile, projectFiles, cancellationToken);

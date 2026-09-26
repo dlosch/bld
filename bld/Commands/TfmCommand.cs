@@ -37,6 +37,7 @@ internal sealed class TfmCommand : BaseCommand {
     };
 
     public TfmCommand(IConsoleOutput console) : base("tfm", "Migrate TargetFramework/TargetFrameworks between versions.", console) {
+        Add(_markdownOption);
         Add(_rootOption);
         Add(_depthOption);
         Add(_fromOption);

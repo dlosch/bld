@@ -129,7 +129,7 @@ internal class TfmService {
 
                 if (written) {
                     migrated++;
-                    if (!project.UsesTargetFrameworks) _console.WriteLine($"Updated {Path.GetFileName(project.ProjectPath)} to {toTfm}");
+                    if (!project.UsesTargetFrameworks) _console.WriteLine($"Updated {Path.GetFileName(project.ProjectPath)} to {TargetFor(project.CurrentTfm, toTfm)}");
                 }
                 else {
                     notMigrated++;
@@ -204,7 +204,7 @@ internal class TfmService {
                         oldTfm = IsEolTfm(project.CurrentTfm, eolTfms)
                             ? $"{project.CurrentTfm} (EOL)"
                             : project.CurrentTfm;
-                        newTfm = toTfm;
+                        newTfm = TargetFor(project.CurrentTfm, toTfm);
                     }
 
                     return (IReadOnlyList<string?>)new[] {
@@ -239,7 +239,7 @@ internal class TfmService {
                         oldTfm = IsEolTfm(project.CurrentTfm, eolTfms)
                             ? $"[red]{Markup.Escape(project.CurrentTfm)} [[EOL]][/]"
                             : Markup.Escape(project.CurrentTfm);
-                        newTfm = Markup.Escape(toTfm);
+                        newTfm = Markup.Escape(TargetFor(project.CurrentTfm, toTfm));
                     }
 
                     table.AddRow(projectName, oldTfm, newTfm);
@@ -301,7 +301,7 @@ internal class TfmService {
                 }
 
                 // If already at target framework and not EOL, nothing to do
-                if (tfmValue.Equals(toTfm, StringComparison.OrdinalIgnoreCase) && !IsEolTfm(tfmValue, eolTfms)) {
+                if (tfmValue.Equals(TargetFor(tfmValue, toTfm), StringComparison.OrdinalIgnoreCase) && !IsEolTfm(tfmValue, eolTfms)) {
                     return null;
                 }
 
@@ -432,7 +432,7 @@ internal class TfmService {
     /// silently declined to make while still reporting success.
     /// </summary>
     internal bool WillUpdateSingleTfm(string fromTfm, string toTfm, ISet<string> eolTfms) =>
-        !fromTfm.Equals(toTfm, StringComparison.OrdinalIgnoreCase)
+        !fromTfm.Equals(TargetFor(fromTfm, toTfm), StringComparison.OrdinalIgnoreCase)
         && (IsEolTfm(fromTfm, eolTfms) || ShouldUpdateTfm(fromTfm, toTfm));
 
     private async Task<bool> UpdateProjectTargetFrameworkAsync(string projectPath, string fromTfm, string toTfm, ISet<string> eolTfms, CancellationToken cancellationToken) {
@@ -449,7 +449,7 @@ internal class TfmService {
                     return false;
                 }
 
-                targetFrameworkElement.Value = toTfm;
+                targetFrameworkElement.Value = TargetFor(fromTfm, toTfm);
                 return true;
             }, cancellationToken);
         }
@@ -514,7 +514,8 @@ internal class TfmService {
             // TFM the user asked to migrate, so "--from net6.0 --to net10.0" on <net6.0;net7.0> produced
             // an empty list and wrote <TargetFrameworks></TargetFrameworks>.
             if (fromTfms.Count > 0 && fromTfms.Any(f => tfm.Equals(f, StringComparison.OrdinalIgnoreCase))) {
-                if (seen.Add(toTfm)) result.Add(toTfm); // replace the matched source TFM with the target
+                var target = TargetFor(tfm, toTfm);
+                if (seen.Add(target)) result.Add(target); // replace the matched source TFM with the target
                 continue;
             }
 
@@ -560,7 +561,7 @@ internal class TfmService {
 
     private static bool IsEolTfm(string tfm, ISet<string> eolTfms) {
         if (string.IsNullOrWhiteSpace(tfm)) return false;
-        var normalized = tfm.Trim().ToLowerInvariant();
+        var normalized = SplitPlatform(tfm.Trim()).Base.ToLowerInvariant();
         return eolTfms.Contains(normalized);
     }
 
@@ -629,7 +630,37 @@ internal class TfmService {
         return targetVersion.Major == currentVersion.Major + 1 && targetVersion.Minor == 0;
     }
 
-    private bool ShouldUpdateTfm(string currentTfm, string targetTfm) {
+    /// <summary>
+    /// "net8.0-windows10.0.19041.0" -> ("net8.0", "-windows10.0.19041.0"). Only .NET 5+ has platform TFMs;
+    /// anything else comes back whole with an empty platform.
+    /// </summary>
+    internal static (string Base, string Platform) SplitPlatform(string tfm) {
+        var dash = tfm.IndexOf('-');
+        return dash > 3 && tfm.StartsWith("net", StringComparison.OrdinalIgnoreCase) && char.IsDigit(tfm[3])
+            ? (tfm[..dash], tfm[dash..])
+            : (tfm, "");
+    }
+
+    /// <summary>
+    /// What <paramref name="fromTfm"/> migrates to: the target keeps the source's platform unless it names
+    /// one itself, so --to net10.0 moves net8.0-windows to net10.0-windows instead of dropping Windows.
+    /// </summary>
+    internal static string TargetFor(string fromTfm, string toTfm) {
+        var fromPlatform = SplitPlatform(fromTfm).Platform;
+        return fromPlatform.Length > 0 && SplitPlatform(toTfm).Platform.Length == 0 ? toTfm + fromPlatform : toTfm;
+    }
+
+    /// <summary>"-windows10.0.19041.0" -> "windows": the platform without its version.</summary>
+    private static string PlatformName(string tfm) =>
+        new string(SplitPlatform(tfm).Platform.TrimStart('-').TakeWhile(char.IsLetter).ToArray());
+
+    private bool ShouldUpdateTfm(string currentTfm, string toTfm) {
+        // Moving to another platform (or onto or off one) is a different app, not a newer framework.
+        var targetTfm = TargetFor(currentTfm, toTfm);
+        if (!string.Equals(PlatformName(currentTfm), PlatformName(targetTfm), StringComparison.OrdinalIgnoreCase)) {
+            return false;
+        }
+
         // Parse TFM versions
         if (!TryParseTfmVersion(currentTfm, out var currentType, out var currentVersion) ||
             !TryParseTfmVersion(targetTfm, out var targetType, out var targetVersion)) {
@@ -653,7 +684,8 @@ internal class TfmService {
             return false;
         }
 
-        tfm = tfm.ToLowerInvariant();
+        // net8.0-windows is .NET 8; Version.TryParse("8.0-windows") failed, so no platform TFM ever migrated.
+        tfm = SplitPlatform(tfm).Base.ToLowerInvariant();
 
         // .NET Standard
         if (tfm.StartsWith("netstandard")) {

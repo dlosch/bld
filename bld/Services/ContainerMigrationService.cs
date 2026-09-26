@@ -141,9 +141,23 @@ internal sealed class ContainerMigrationService {
                             if (!ports.Contains((port, type))) ports.Add((port, type));
                         }
                         break;
-                    case "WORKDIR":
-                        workDir = DockerfileSubstitution.Substitute(DockerfileSubstitution.Unquote(args), values, unresolved);
+                    case "WORKDIR": {
+                        // Docker resolves a relative WORKDIR against the one before it: /app then bin
+                        // is /app/bin. The first one is relative to the base image's, which is not known
+                        // here (/app on the .NET 8+ Microsoft images), so that one stays as written.
+                        var next = DockerfileSubstitution.Substitute(DockerfileSubstitution.Unquote(args), values, unresolved);
+                        if (next.StartsWith('/')) {
+                            workDir = NormalizeUnixPath(next);
+                        }
+                        else if (workDir is { }) {
+                            workDir = NormalizeUnixPath(workDir.TrimEnd('/') + "/" + next);
+                        }
+                        else {
+                            workDir = next;
+                            plan.Notes.Add($"WORKDIR {next} is relative to the base image's working directory; check ContainerWorkingDirectory");
+                        }
                         break;
+                    }
                     case "USER":
                         user = DockerfileSubstitution.Substitute(DockerfileSubstitution.Unquote(args), values, unresolved);
                         break;
@@ -512,6 +526,23 @@ internal sealed class ContainerMigrationService {
     }
 
     private static string NormalizeDir(string path) => path.Replace('\\', '/').TrimEnd('/');
+
+    /// <summary>
+    /// Resolves "." and ".." in an absolute container path the way Docker does for WORKDIR: /app/../lib
+    /// is /lib, and ".." at the root stays at the root. Path.GetFullPath would apply the host's rules.
+    /// </summary>
+    internal static string NormalizeUnixPath(string path) {
+        var segments = new List<string>();
+        foreach (var segment in path.Split('/', StringSplitOptions.RemoveEmptyEntries)) {
+            if (segment == ".") continue;
+            if (segment == "..") {
+                if (segments.Count > 0) segments.RemoveAt(segments.Count - 1);
+                continue;
+            }
+            segments.Add(segment);
+        }
+        return "/" + string.Join('/', segments);
+    }
 
     private static string StripRunFlags(string arguments) {
         var tokens = DockerfileSubstitution.Tokenize(arguments);

@@ -24,6 +24,7 @@ internal sealed class BuildPropsCommand : BaseCommand {
 
     public BuildPropsCommand(IConsoleOutput console)
         : base("build-props", "Analyze Directory.Build.props files and property provenance across projects. (BETA)", console) {
+        Add(_markdownOption);
         Add(_rootOption);
         Add(_depthOption);
         Add(_listOption);

@@ -369,7 +369,8 @@ done:
             logger?.WriteDebug($"No matching version found for {request.PackageId} with any of the requested frameworks");
             return null;
         }
-        catch (Exception ex) {
+        // Cancellation is not a failed lookup; counting it as one reported every package as an error.
+        catch (Exception ex) when (ex is not OperationCanceledException) {
             logger?.WriteError($"Error fetching package metadata for {request.PackageId}{(feed is null ? "" : $" from {feed.Name}")}: {ex.FormatMessage()}", ex);
             return null;
         }

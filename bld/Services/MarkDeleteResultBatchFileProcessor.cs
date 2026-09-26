@@ -96,7 +96,8 @@ internal class MarkDeleteResultBatchFileProcessor : IMarkDeleteResultProcessor {
         if (writer.GetResult() is string batch && batch.Length > 0) {
             if (_options.OutputFile is { } && (!File.Exists(_options.OutputFile) || _console.Confirm($"File exists: {_options.OutputFile}. Overwrite?"))) {
                 _console.WriteInfo($"Writing batch file {_options.OutputFile}");
-                File.WriteAllText(_options.OutputFile, batch);
+                WriteScript(_options.OutputFile, batch);
+                _console.WriteLine($"Wrote {_options.OutputFile}. Review it, then run: {RunCommand(_options.OutputFile)}");
             }
             else {
                 _console.WriteOutput("Results", batch);
@@ -104,4 +105,40 @@ internal class MarkDeleteResultBatchFileProcessor : IMarkDeleteResultProcessor {
         }
         return Task.CompletedTask;
     }
+
+    private const UnixFileMode Executable =
+        UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute
+        | UnixFileMode.GroupRead | UnixFileMode.GroupExecute
+        | UnixFileMode.OtherRead | UnixFileMode.OtherExecute;
+
+    /// <summary>
+    /// Writes the script executable on Unix. A new file used to get 0666 minus the umask - 0644, never
+    /// executable - and an overwritten one kept whatever mode it had, so ./clean.sh worked only sometimes.
+    /// 0755 is still reduced by the umask. An existing file keeps its mode and gains the execute bits
+    /// where it has the read bits. On a Windows drive under WSL without the metadata mount option the
+    /// mode cannot change at all; every file shows as executable there anyway.
+    /// </summary>
+    internal static void WriteScript(string path, string content) {
+        if (OperatingSystem.IsWindows()) {
+            File.WriteAllText(path, content);
+            return;
+        }
+
+        var existed = File.Exists(path);
+        using (var stream = new FileStream(path, new FileStreamOptions { Mode = FileMode.Create, Access = FileAccess.Write, UnixCreateMode = Executable }))
+        using (var writer = new StreamWriter(stream)) {
+            writer.Write(content);
+        }
+        if (existed) {
+            var mode = File.GetUnixFileMode(path);
+            if (mode.HasFlag(UnixFileMode.UserRead)) mode |= UnixFileMode.UserExecute;
+            if (mode.HasFlag(UnixFileMode.GroupRead)) mode |= UnixFileMode.GroupExecute;
+            if (mode.HasFlag(UnixFileMode.OtherRead)) mode |= UnixFileMode.OtherExecute;
+            File.SetUnixFileMode(path, mode);
+        }
+    }
+
+    /// <summary>How to start the script from the current directory: a bare name needs ./ on Unix.</summary>
+    internal static string RunCommand(string path) =>
+        OperatingSystem.IsWindows() || Path.IsPathRooted(path) || path.Contains('/') ? path : "./" + path;
 }

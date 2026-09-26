@@ -99,4 +99,42 @@ public class OutdatedApplyTests {
             File.Delete(path);
         }
     }
+
+    /// <summary>
+    /// Regression: conditional PackageVersion entries were rewritten like any other, so a net48-only pin
+    /// was moved to the one version proposed for the whole package. Project files already skipped them.
+    /// </summary>
+    [Fact]
+    public async Task UpdatePropsFile_LeavesConditionalPackageVersionsAlone() {
+        var path = Path.Combine(Path.GetTempPath(), $"bld-props-{Guid.NewGuid():N}.props");
+        await File.WriteAllTextAsync(path,
+            "<Project>\n" +
+            "  <ItemGroup Condition=\"'$(TargetFramework)' == 'net48'\">\n" +
+            "    <PackageVersion Include=\"Lib\" Version=\"1.0.0\" />\n" +
+            "  </ItemGroup>\n" +
+            "  <ItemGroup>\n" +
+            "    <PackageVersion Include=\"Lib\" Version=\"1.5.0\" Condition=\"'$(TargetFramework)' != 'net48'\" />\n" +
+            "    <PackageVersion Include=\"Other\" Version=\"1.0.0\" />\n" +
+            "  </ItemGroup>\n</Project>\n");
+        try {
+            var console = new TestConsole();
+            var service = new OutdatedService(console, new CleaningOptions());
+            var updates = new Dictionary<string, (string target, string? current)>(StringComparer.OrdinalIgnoreCase) {
+                ["Lib"] = ("3.0.0", "1.5.0"),
+                ["Other"] = ("2.0.0", "1.0.0"),
+            };
+
+            var applied = await service.UpdatePropsFileAsync(path, updates, Array.Empty<string>(), default);
+
+            Assert.Equal(1, applied);
+            var text = await File.ReadAllTextAsync(path);
+            Assert.Contains("Include=\"Lib\" Version=\"1.0.0\"", text);
+            Assert.Contains("Include=\"Lib\" Version=\"1.5.0\"", text);
+            Assert.Contains("Include=\"Other\" Version=\"2.0.0\"", text);
+            Assert.Equal(2, console.Messages.Count(m => m.Level == "Warning" && m.Message.Contains("conditional Lib")));
+        }
+        finally {
+            File.Delete(path);
+        }
+    }
 }

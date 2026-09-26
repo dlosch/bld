@@ -142,12 +142,23 @@ internal class DockerfileParser {
         if (!string.IsNullOrWhiteSpace(pending)) yield return pending;
     }
 
+    /// <summary>
+    /// Dockerfile, Dockerfile.prod and api.Dockerfile, case-insensitively. The scan used to take only
+    /// the exact name, so the suffixed variants were silently skipped while passing one directly worked.
+    /// Dockerfile.dockerignore is the ignore file BuildKit pairs with a Dockerfile, not one itself.
+    /// </summary>
+    internal static bool IsDockerfileName(string fileName) =>
+        !fileName.EndsWith(".dockerignore", StringComparison.OrdinalIgnoreCase)
+        && (fileName.Equals("Dockerfile", StringComparison.OrdinalIgnoreCase)
+            || fileName.StartsWith("Dockerfile.", StringComparison.OrdinalIgnoreCase)
+            || fileName.EndsWith(".Dockerfile", StringComparison.OrdinalIgnoreCase));
+
     public static Task<List<string>> FindDockerfilesAsync(string rootPath, int maxDepth = 3, Action<string, Exception>? onError = null) {
         var dockerfiles = new List<string>();
 
         // A Dockerfile passed directly as the root used to yield nothing at all.
         if (File.Exists(rootPath)) {
-            if (Path.GetFileName(rootPath).StartsWith("Dockerfile", StringComparison.OrdinalIgnoreCase)) dockerfiles.Add(rootPath);
+            if (IsDockerfileName(Path.GetFileName(rootPath))) dockerfiles.Add(rootPath);
             return Task.FromResult(dockerfiles);
         }
 
@@ -166,9 +177,8 @@ internal class DockerfileParser {
         }
 
         try {
-            // Look for files named exactly "Dockerfile" (case-insensitive)
             var files = Directory.EnumerateFiles(currentPath, "*", SearchOption.TopDirectoryOnly)
-                .Where(f => Path.GetFileName(f).Equals("Dockerfile", StringComparison.OrdinalIgnoreCase));
+                .Where(f => IsDockerfileName(Path.GetFileName(f)));
             dockerfiles.AddRange(files);
 
             // Recurse into subdirectories

@@ -17,6 +17,25 @@ public class DockerfileParserTests {
         }
     }
 
+    /// <summary>Regression: the directory scan took only the exact name "Dockerfile".</summary>
+    [Fact]
+    public async Task FindDockerfiles_FindsSuffixedVariantsButNotTheirIgnoreFiles() {
+        var root = Path.Combine(Path.GetTempPath(), $"bld-docker-{Guid.NewGuid():N}");
+        var api = Path.Combine(root, "src", "Api");
+        Directory.CreateDirectory(api);
+        foreach (var name in new[] { "Dockerfile", "Dockerfile.prod", "api.Dockerfile", "Dockerfile.dockerignore", "Dockerfiles.md", "MyDockerfile" }) {
+            await File.WriteAllTextAsync(Path.Combine(api, name), "FROM scratch\n");
+        }
+        try {
+            var found = (await DockerfileParser.FindDockerfilesAsync(root, 3)).Select(Path.GetFileName).Order(StringComparer.Ordinal).ToList();
+
+            Assert.Equal(["Dockerfile", "Dockerfile.prod", "api.Dockerfile"], found);
+        }
+        finally {
+            Directory.Delete(root, true);
+        }
+    }
+
     [Fact]
     public async Task Parse_IgnoresFromFlagsAndKeepsStageName() {
         // Multi-arch Dockerfiles are the common case; --platform was reported as the base image

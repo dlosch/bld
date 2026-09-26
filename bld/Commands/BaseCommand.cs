@@ -95,11 +95,18 @@ internal abstract class BaseCommand : Command {
     protected BaseCommand(string name, string? description, IConsoleOutput console) : base(name, description) {
         Output = console;
 
-        Add(_markdownOption);
+        // --markdown is added by the commands that emit tables; added here, clean, cpm and
+        // `outdated undo` accepted it and silently ignored it.
 
         SetAction(async (parseResult, cancellationToken) => {
-            var exitCode = await ExecuteAsync(parseResult, cancellationToken);
-            return exitCode;
+            try {
+                return await ExecuteAsync(parseResult, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) {
+                // Ctrl+C: stop without a stack trace; 130 is what shells report for SIGINT.
+                Output.WriteWarning("Cancelled.");
+                return 130;
+            }
         });
     }
 

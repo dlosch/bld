@@ -57,6 +57,50 @@ public class MarkDeleteProcessorTests {
         }
     }
 
+    /// <summary>
+    /// Regression: an OutDir that is the configuration directory itself (legacy projects,
+    /// AppendTargetFrameworkToOutputPath=false) was marked as a whole even with --non-current, which
+    /// deleted the project's current output. Only a stale TFM directory below it may go.
+    /// </summary>
+    [Fact]
+    public async Task NonCurrent_KeepsAFlatConfigurationDirectory_AndMarksOnlyStaleTfmsBelowIt() {
+        var root = Path.Combine(Path.GetTempPath(), "bld_mdp_" + Guid.NewGuid().ToString("N"));
+        var projDir = Path.Combine(root, "Flat");
+        var cfgDir = Path.Combine(projDir, "bin", "Debug");
+        var stale = Path.Combine(cfgDir, "net6.0");
+        var current = Path.Combine(cfgDir, "net10.0");
+        Directory.CreateDirectory(stale);
+        Directory.CreateDirectory(current);
+        await File.WriteAllTextAsync(Path.Combine(cfgDir, "Flat.dll"), "");
+        var csproj = Path.Combine(projDir, "Flat.csproj");
+        await File.WriteAllTextAsync(csproj, "<Project Sdk=\"Microsoft.NET.Sdk\" />");
+
+        try {
+            var console = new TestConsole();
+            var errorSink = new ErrorSink(console);
+            var options = new CleaningOptions { CleanObjDirectory = false, CleanOnlyNonCurrentTfms = true };
+            var processor = new MarkDeleteProcessor(console, new FileSystem(console, errorSink), options, errorSink);
+
+            await processor.ProcessAsync(new ProjCfg(new Proj(csproj, null), "Debug"), new ProjectInfo {
+                ProjectPath = csproj,
+                ProjectName = "Flat",
+                TargetFramework = "net10.0",
+                Configuration = "Debug",
+                OutDir = cfgDir + Path.DirectorySeparatorChar,
+                BaseOutputPath = Path.Combine(projDir, "bin") + Path.DirectorySeparatorChar,
+            });
+            await processor.ProcessDirs();
+
+            var marked = processor.GetMarkedDirectories().Keys.ToList();
+            Assert.DoesNotContain(marked, k => SamePath(k, cfgDir));
+            Assert.DoesNotContain(marked, k => SamePath(k, current));
+            Assert.Contains(marked, k => SamePath(k, stale));
+        }
+        finally {
+            try { Directory.Delete(root, recursive: true); } catch { /* best effort cleanup */ }
+        }
+    }
+
     [Fact]
     public async Task TestResults_AreMarkedNextToTheProjectAndTheSolutionWithTheFlag() {
         var root = Path.Combine(Path.GetTempPath(), "bld_mdp_" + Guid.NewGuid().ToString("N"));

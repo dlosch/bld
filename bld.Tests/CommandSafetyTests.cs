@@ -118,6 +118,24 @@ public class CommandSafetyTests {
         Assert.NotEmpty(bad.Errors);
     }
 
+    /// <summary>
+    /// Regression: every command took --markdown, and clean, cpm and `outdated undo` silently ignored it.
+    /// An option a command offers has to do something there.
+    /// </summary>
+    [Fact]
+    public void Markdown_IsOfferedOnlyByTheCommandsThatEmitTables() {
+        var console = new TestConsole();
+        var outdated = new OutdatedCommand(console);
+        var commands = new System.CommandLine.Command[] {
+            new CleanCommand(console), new StatsCommand(console), new NugetCommand(console), new ContainerizeCommand(console),
+            new CpmCommand(console), outdated, outdated.Subcommands.Single(), new TfmCommand(console), new BuildPropsCommand(console),
+        };
+
+        var withMarkdown = commands.Where(c => c.Options.Any(o => o.Name == "--markdown")).Select(c => c.Name).Order().ToList();
+
+        Assert.Equal(["build-props", "containerize", "nuget", "outdated", "stats", "tfm"], withMarkdown);
+    }
+
     #endregion
 
     #region Clean Command Safety

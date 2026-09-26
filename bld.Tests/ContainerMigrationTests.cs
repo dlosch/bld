@@ -151,6 +151,50 @@ public class ContainerMigrationTests : IDisposable {
         Assert.Contains(plan.Notes, n => n.Contains("apt-get"));
     }
 
+    /// <summary>Regression: a relative WORKDIR replaced the one before it instead of resolving against it.</summary>
+    [Fact]
+    public async Task Plan_ResolvesARelativeWorkdirAgainstThePreviousOne() {
+        var project = Write("Svc/Svc.csproj", WebProject);
+        var dockerfile = Write("Svc/Dockerfile",
+            "FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS base\n" +
+            "WORKDIR /data\n" +
+            "FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build\n" +
+            "RUN dotnet publish Svc.csproj -o /out\n" +
+            "FROM base AS final\n" +
+            "WORKDIR bin\n" +
+            "COPY --from=build /out/ .\n" +
+            "ENTRYPOINT [\"dotnet\", \"/data/bin/Svc.dll\"]\n");
+
+        var plan = await PlanAsync(dockerfile, project);
+
+        Assert.Equal("/data/bin", Property(plan, "ContainerWorkingDirectory"));
+        Assert.DoesNotContain(plan.Notes, n => n.Contains("relative to the base image"));
+    }
+
+    [Theory]
+    [InlineData("/app/../lib", "/lib")]
+    [InlineData("/app/./bin/", "/app/bin")]
+    [InlineData("/../..", "/")]
+    [InlineData("/data", "/data")]
+    public void NormalizeUnixPath_ResolvesDotSegmentsLikeDocker(string path, string expected) =>
+        Assert.Equal(expected, bld.Services.ContainerMigrationService.NormalizeUnixPath(path));
+
+    [Fact]
+    public async Task Plan_NotesAFirstWorkdirThatIsRelativeToTheBaseImage() {
+        var project = Write("Svc/Svc.csproj", WebProject);
+        var dockerfile = Write("Svc/Dockerfile",
+            "FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build\n" +
+            "RUN dotnet publish Svc.csproj -o /out\n" +
+            "FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS final\n" +
+            "WORKDIR srv\n" +
+            "COPY --from=build /out/ .\n" +
+            "ENTRYPOINT [\"dotnet\", \"Svc.dll\"]\n");
+
+        var plan = await PlanAsync(dockerfile, project);
+
+        Assert.Contains(plan.Notes, n => n.Contains("WORKDIR srv is relative to the base image"));
+    }
+
     [Fact]
     public async Task Plan_InheritsUserWorkdirAndPortsFromParentStage() {
         var project = Write("Svc/Svc.csproj", WebProject);

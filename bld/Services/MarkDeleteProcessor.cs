@@ -290,7 +290,16 @@ internal sealed class MarkDeleteProcessor : IProjectProcessor {
                                 var binDir = dirInfo.Parent;
                                 var underBin = binDir is { } && (0 == string.Compare(binDir.Name, "bin", DefaultComparison)
                                     || dir.AbsProjPath.Any(kvp => kvp.Value is { } projectName && 0 == string.Compare(binDir.Name, projectName, DefaultComparison)));
-                                if (underBin) {
+                                if (underBin && HasCleanOnlyNoncurrentTfmsFlag()) {
+                                    // The configuration directory is this project's current output, so it
+                                    // stays; only TFM directories below it that nothing targets are stale.
+                                    var claimed = TfmsClaimedUnder(dirInfo);
+                                    claimed.UnionWith(dir.Tfms);
+                                    deleteCandidates = dirInfo.EnumerateDirectories()
+                                        .Where(tfmDir => NetUtil.Instance.IsTfmName(tfmDir.Name, DefaultComparison) && !claimed.Contains(tfmDir.Name))
+                                        .ToList();
+                                }
+                                else if (underBin) {
                                     deleteCandidates = new DirectoryInfo[] { dirInfo };
                                 }
                                 else {

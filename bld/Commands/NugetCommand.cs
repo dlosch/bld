@@ -28,6 +28,7 @@ internal sealed class NugetCommand : BaseCommand {
     };
 
     public NugetCommand(IConsoleOutput console) : base("nuget", "Analyze and categorize NuGet package references in projects.", console) {
+        Add(_markdownOption);
         Add(_rootOption);
         Add(_depthOption);
         Add(_logLevelOption);

@@ -33,6 +33,7 @@ internal sealed class StatsCommand : BaseCommand {
     };
 
     public StatsCommand(IConsoleOutput console) : base("stats", "Compute statistics.", console) {
+        Add(_markdownOption);
         Add(_rootOption);
         Add(_depthOption);
 

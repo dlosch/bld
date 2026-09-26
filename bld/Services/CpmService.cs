@@ -57,9 +57,7 @@ internal class CpmService {
             var allPackageReferences = new ConcurrentDictionary<string, string>(); // PackageId -> Version
             var projectFiles = new ConcurrentBag<string>();
             var solutionProjCfgs = new List<ProjCfg>();
-            // Packages declared inside a conditional ItemGroup anywhere in the solution; they cannot be
-            // safely centralized because the per-condition versions differ by design.
-            var conditionalPackages = new ConcurrentDictionary<string, byte>(StringComparer.OrdinalIgnoreCase);
+            var overrides = new ConcurrentBag<string>();
 
             await foreach (var projCfg in slnParser.ParseSolution(slnPath)) {
                 if (cache.Add(projCfg)) {
@@ -96,15 +94,22 @@ internal class CpmService {
 
                     var packageRefs = await ExtractPackageReferencesAsync(projectPath, cancellationToken);
                     foreach (var packageRef in packageRefs) {
-                        if (packageRef.IsConditional) {
-                            // Per-TFM pins collapse to one central version, so the framework that needed
-                            // the lower version silently starts resolving the higher one.
-                            _console.WriteWarning($"Skipping centralization for {packageRef.PackageId} in {Path.GetFileName(projectPath)}: it is declared inside a conditional ItemGroup.");
-                            conditionalPackages.TryAdd(packageRef.PackageId, 0);
-                            continue;
-                        }
                         if (packageRef.IsVersionOverride) {
                             _console.WriteVerbose($"Skipping centralization for {packageRef.PackageId} in {Path.GetFileName(projectPath)} because VersionOverride is project-specific.");
+                            continue;
+                        }
+                        if (KeepsItsVersion(packageRef.IsConditional, packageRef.Version)) {
+                            // Per-TFM pins would collapse to one central version, so the framework that needed
+                            // the lower version silently resolves the higher one; a property reference may
+                            // only be defined in the project; a range or floating version has no "highest".
+                            var why = packageRef.IsConditional
+                                ? "it is declared inside a conditional ItemGroup"
+                                : $"'{packageRef.Version}' is not a single version (property reference, range or floating version)";
+                            var floating = packageRef.Version.Contains('*')
+                                ? " Floating versions under Central Package Management also need CentralPackageFloatingVersionsEnabled=true."
+                                : "";
+                            _console.WriteWarning($"Keeping {packageRef.PackageId} in {Path.GetFileName(projectPath)} as VersionOverride: {why}.{floating}");
+                            overrides.Add(packageRef.PackageId);
                             continue;
                         }
 
@@ -129,7 +134,7 @@ internal class CpmService {
                 SolutionDirectory = solutionDir,
                 PackageReferences = allPackageReferences.ToDictionary(kvp => kvp.Key, kvp => kvp.Value, StringComparer.OrdinalIgnoreCase),
                 ProjectFiles = projectFiles.ToList(),
-                ConditionalPackages = new HashSet<string>(conditionalPackages.Keys, StringComparer.OrdinalIgnoreCase)
+                OverrideCount = overrides.Count,
             });
         }
 
@@ -160,11 +165,15 @@ internal class CpmService {
                 continue;
             }
 
-            var directoryPackagesPath = Path.Combine(solution.SolutionDirectory, "Directory.Packages.props");
+            var directoryPackagesPath = DirectoryPackagesPropsFor(solution.SolutionDirectory);
+            var exists = File.Exists(directoryPackagesPath);
+            var inherited = exists && !DirExt.PathComparer.Equals(Path.GetDirectoryName(directoryPackagesPath), Path.TrimEndingDirectorySeparator(Path.GetFullPath(solution.SolutionDirectory)));
 
             // Check if Directory.Packages.props already exists
-            if (File.Exists(directoryPackagesPath) && !overwrite) {
-                _console.WriteError($"Directory.Packages.props already exists at {directoryPackagesPath}. Use --overwrite to merge into it.");
+            if (exists && !overwrite) {
+                _console.WriteError(inherited
+                    ? $"The projects already import {directoryPackagesPath} from a parent directory. Use --overwrite to merge into it."
+                    : $"Directory.Packages.props already exists at {directoryPackagesPath}. Use --overwrite to merge into it.");
                 succeeded = false;
                 continue;
             }
@@ -176,7 +185,7 @@ internal class CpmService {
                 // Update all project files to remove versions
                 var updated = 0;
                 foreach (var projectPath in solution.ProjectFiles) {
-                    if (await UpdateProjectFileAsync(projectPath, solution.ConditionalPackages, cancellationToken)) {
+                    if (await UpdateProjectFileAsync(projectPath, cancellationToken)) {
                         updated++;
                         _console.WriteVerbose($"Updated project file: {Path.GetFileName(projectPath)}");
                     }
@@ -186,7 +195,11 @@ internal class CpmService {
             }
             else {
                 _console.WriteLine("Dry run - showing what would be created:");
-                _console.WriteLine($"Directory.Packages.props would be created at: {directoryPackagesPath}");
+                _console.WriteLine(!exists
+                    ? $"Directory.Packages.props would be created at: {directoryPackagesPath}"
+                    : inherited
+                        ? $"Package versions would be merged into: {directoryPackagesPath} (inherited from a parent directory: it applies to every project below it, not only this solution)"
+                        : $"Package versions would be merged into: {directoryPackagesPath}");
                 _console.WriteLine("Package versions that would be centralized:");
 
                 foreach (var (packageId, version) in solution.PackageReferences.OrderBy(x => x.Key)) {
@@ -194,6 +207,9 @@ internal class CpmService {
                 }
 
                 _console.WriteLine($"\n{solution.ProjectFiles.Count} project files would be updated to remove version attributes");
+                if (solution.OverrideCount > 0) {
+                    _console.WriteLine($"{solution.OverrideCount} reference(s) would keep their version as VersionOverride");
+                }
             }
         }
 
@@ -234,23 +250,41 @@ internal class CpmService {
         return packageReferences;
     }
 
-    internal static bool RemoveCentralizableVersionDeclarations(XDocument doc) =>
-        RemoveCentralizableVersionDeclarations(doc, skipPackageIds: null);
+    /// <summary>
+    /// A version that has to stay with its reference: one inside a conditional ItemGroup is a
+    /// per-framework pin, and a property reference, range or floating version is not a single version
+    /// the central file could hold.
+    /// </summary>
+    internal static bool KeepsItsVersion(bool isConditional, string version) =>
+        isConditional || !NuGetVersion.TryParse(version, out _);
 
     /// <summary>
-    /// Strips inline versions so the central ones apply. Packages in <paramref name="skipPackageIds"/>
-    /// keep theirs: a reference inside a conditional ItemGroup has a per-framework version on purpose,
-    /// and centralizing it would silently resolve one framework against another's version.
+    /// Rewrites a project for Central Package Management, where any inline Version is an error (NU1008).
+    /// A version the central file now holds is removed; one that has to stay with its reference
+    /// (<see cref="KeepsItsVersion"/>) becomes VersionOverride, which NuGet accepts with or without a
+    /// PackageVersion for the package. Leaving it as Version failed restore, and did so for every
+    /// project once the package was conditional in any one of them.
     /// </summary>
-    internal static bool RemoveCentralizableVersionDeclarations(XDocument doc, ISet<string>? skipPackageIds) {
+    internal static bool RemoveCentralizableVersionDeclarations(XDocument doc) {
         var modified = false;
 
         foreach (var element in doc.ElementsNamed("PackageReference")) {
-            var packageId = element.Attribute("Include")?.Value;
-            if (element.IsConditioned()) continue;
-            if (packageId is { } && skipPackageIds is { } && skipPackageIds.Contains(packageId)) continue;
+            if (element.Attribute("VersionOverride") is { } || element.ChildNamed("VersionOverride") is { }) continue;
 
             var versionAttr = element.Attribute("Version");
+            var versionValue = versionAttr?.Value ?? element.ChildNamed("Version")?.Value;
+            if (versionValue is { } && KeepsItsVersion(element.IsConditioned(), versionValue)) {
+                if (versionAttr is { }) {
+                    // Rebuilt in place so the attribute keeps its position.
+                    element.ReplaceAttributes(element.Attributes().Select(a => a == versionAttr ? new XAttribute("VersionOverride", a.Value) : new XAttribute(a)).ToList());
+                }
+                else {
+                    var child = element.ChildNamed("Version")!;
+                    child.Name = child.Name.Namespace + "VersionOverride";
+                }
+                modified = true;
+                continue;
+            }
             if (versionAttr != null) {
                 versionAttr.Remove();
                 modified = true;
@@ -269,6 +303,21 @@ internal class CpmService {
         }
 
         return modified;
+    }
+
+    /// <summary>
+    /// The Directory.Packages.props the solution's projects import: the nearest one at or above the solution
+    /// directory, because MSBuild imports only the nearest and they do not chain. Without one, the path to
+    /// create next to the solution. Creating that file while a parent one exists shadowed the parent, and
+    /// the packages it already managed - with no inline version left to collect - lost their version (NU1010).
+    /// </summary>
+    internal static string DirectoryPackagesPropsFor(string solutionDirectory) {
+        var start = Path.TrimEndingDirectorySeparator(Path.GetFullPath(solutionDirectory));
+        for (var dir = start; !string.IsNullOrEmpty(dir); dir = Path.GetDirectoryName(dir)) {
+            var candidate = Path.Combine(dir, "Directory.Packages.props");
+            if (File.Exists(candidate)) return candidate;
+        }
+        return Path.Combine(start, "Directory.Packages.props");
     }
 
     internal static IReadOnlyList<string> FindDirectoryPackagesPropsPaths(IEnumerable<string> projectFiles, string solutionDirectory) {
@@ -394,12 +443,9 @@ internal class CpmService {
         }
     }
 
-    internal Task<bool> UpdateProjectFileAsync(string projectPath, CancellationToken cancellationToken) =>
-        UpdateProjectFileAsync(projectPath, null, cancellationToken);
-
-    internal async Task<bool> UpdateProjectFileAsync(string projectPath, ISet<string>? skipPackageIds, CancellationToken cancellationToken) {
+    internal async Task<bool> UpdateProjectFileAsync(string projectPath, CancellationToken cancellationToken) {
         try {
-            return await XmlProjectFile.EditAsync(projectPath, doc => RemoveCentralizableVersionDeclarations(doc, skipPackageIds), cancellationToken);
+            return await XmlProjectFile.EditAsync(projectPath, RemoveCentralizableVersionDeclarations, cancellationToken);
         }
         catch (Exception ex) {
             _console.WriteError($"Failed to update project file {projectPath}: {ex.FormatMessage()}", ex);
@@ -426,7 +472,7 @@ internal class CpmService {
         public string SolutionDirectory { get; set; } = string.Empty;
         public Dictionary<string, string> PackageReferences { get; set; } = new();
         public List<string> ProjectFiles { get; set; } = new();
-        /// <summary>Packages declared under a Condition; their inline versions must be left in place.</summary>
-        public HashSet<string> ConditionalPackages { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+        /// <summary>References that keep their version as VersionOverride (see <see cref="KeepsItsVersion"/>).</summary>
+        public int OverrideCount { get; set; }
     }
 }

@@ -574,8 +574,11 @@ internal class OutdatedService {
         var evaluationFailures = 0;
         var metadataFailures = 0;
 
+        // The token has to reach the loops: their bodies get it as `ct`, and that is what the NuGet
+        // requests are sent with. Without it Ctrl+C was ignored until the lookups had finished.
         var parallelOptions = new ParallelOptions {
-            MaxDegreeOfParallelism = _options.MaxDegreeOfParallelism
+            MaxDegreeOfParallelism = _options.MaxDegreeOfParallelism,
+            CancellationToken = cancellationToken,
         };
 
         try {
@@ -703,7 +706,7 @@ internal class OutdatedService {
                                 list.Add(pkg);
                             }
                         }
-                        catch (Exception ex) {
+                        catch (Exception ex) when (ex is not OperationCanceledException) {
                             Interlocked.Increment(ref evaluationFailures);
                             errorSink.AddError("Failed to analyze project.", exception: ex, config: projCfg);
                             _console.WriteError($"Failed to analyze {projCfg.Path}: {ex.FormatMessage()}", ex);
@@ -718,7 +721,7 @@ internal class OutdatedService {
                 _console.WriteLine($"Evaluation from cache: {evaluationCache.Hits} of {evaluationCache.Hits + evaluationCache.Misses} project configuration(s).");
             }
         }
-        catch (Exception ex) {
+        catch (Exception ex) when (ex is not OperationCanceledException) {
             Interlocked.Increment(ref evaluationFailures);
             _console.WriteException(ex);
         }
@@ -759,7 +762,7 @@ internal class OutdatedService {
         // same number caps the requests in flight, whatever the number of feeds per package.
         // --concurrency 1 means sequential, and a rate-limited feed is one reason to ask for it.
         var concurrency = parallelOptions.MaxDegreeOfParallelism;
-        var metadataParallelism = new ParallelOptions { MaxDegreeOfParallelism = concurrency == 1 ? 1 : Math.Max(concurrency, 16) };
+        var metadataParallelism = new ParallelOptions { MaxDegreeOfParallelism = concurrency == 1 ? 1 : Math.Max(concurrency, 16), CancellationToken = cancellationToken };
         var options = new NugetMetadataOptions { MaxParallelRequests = metadataParallelism.MaxDegreeOfParallelism };
         using var client = NugetMetadataService.CreateHttpClient(options);
 
@@ -1659,6 +1662,13 @@ internal class OutdatedService {
                     }
 
                     if (updates.TryGetValue(include, out var newVersion)) {
+                        // Same rule as for PackageReference: a PackageVersion per framework is a pin the
+                        // single proposed version was not chosen for, e.g. a net48 entry that would be
+                        // moved to a version without net48 support.
+                        if (element.IsConditioned()) {
+                            _console.WriteWarning($"Skipping conditional {include} entry in {propsPath}; update it by hand.");
+                            continue;
+                        }
                         var versionAttr = element.Attribute("Version");
                         var versionElement = element.ChildNamed("Version");
                         var currentValue = versionAttr?.Value ?? versionElement?.Value;
