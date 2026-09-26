@@ -13,12 +13,13 @@ internal sealed class CleanCommand : BaseCommand {
     };
 
     private readonly Option<string> _outputFileOption = new Option<string>("--output-file", "-o") {
-        Description = "Path to the output file.",
+        Description = "Write a deletion script instead of deleting (clean.cmd or clean.sh when no path is given).",
+        Arity = ArgumentArity.ZeroOrOne,
         DefaultValueFactory = _ => (OperatingSystem.IsWindows() ? "clean.cmd" : "clean.sh")
     };
 
     private readonly Option<bool> _deleteOption = new Option<bool>("--delete") {
-        Description = "Actually delete files.",
+        Description = "Delete without the picker, asking per directory unless --force is given.",
         DefaultValueFactory = _ => false
     };
 
@@ -53,8 +54,8 @@ internal sealed class CleanCommand : BaseCommand {
     };
 
     private readonly Option<bool> _interactiveOption = new Option<bool>("--interactive", "-i") {
-        Description = "Pick the directories from a list grouped by project: b/o/p/g/t toggle bin, obj, publish, package and test results for every project on the top line or for one project on its line, space toggles a directory, enter confirms. --obj/--publish/--test-results only decide what starts out checked. Deletes what was picked after one confirmation; pass --output-file to write the script instead. Needs an interactive terminal.",
-        DefaultValueFactory = _ => false
+        Description = "Pick the directories from a list grouped by project: b/o/p/g/t toggle bin, obj, publish, package and test results for every project on the top line or for one project on its line, space toggles a directory, enter confirms. --obj/--publish/--test-results only decide what starts out checked. Deletes what was picked after one confirmation; pass --output-file to write the script instead. On by default unless --delete or --output-file is given; needs an interactive terminal.",
+        DefaultValueFactory = _ => true
     };
 
     public CleanCommand(IConsoleOutput console) : base("clean", "Cleans solution / project build output (bin/obj etc.)", console) {
@@ -85,15 +86,23 @@ internal sealed class CleanCommand : BaseCommand {
     }
 
     protected override async Task<int> ExecuteAsync(ParseResult parseResult, CancellationToken cancellationToken) {
+        // The script is only written when asked for, and asking for it or for a direct --delete is
+        // what turns the picker off, unless --interactive is given explicitly as well.
+        var writeScript = parseResult.GetResult(_outputFileOption) is { Implicit: false };
+        var delete = parseResult.GetValue(_deleteOption);
+        var interactive = parseResult.GetResult(_interactiveOption) is { Implicit: false }
+            ? parseResult.GetValue(_interactiveOption)
+            : !writeScript && !delete;
+
         var options = new CleaningOptions {
-            OutputFile = parseResult.GetValue(_outputFileOption),
-            Delete = parseResult.GetValue(_deleteOption),
+            OutputFile = writeScript ? parseResult.GetValue(_outputFileOption) : null,
+            Delete = delete,
             CleanOnlyNonCurrentTfms = parseResult.GetValue(_nonCurrentOption),
             CleanObjDirectory = parseResult.GetValue(_objOption),
             KeepRestoreArtifacts = parseResult.GetValue(_keepAssetsOption),
             CleanPublishDirectory = parseResult.GetValue(_publishOption),
             CleanTestResults = parseResult.GetValue(_testResultsOption),
-            Interactive = parseResult.GetValue(_interactiveOption),
+            Interactive = interactive,
             Force = parseResult.GetValue(_forceOption),
             LogLevel = parseResult.GetValue(_logLevelOption),
             Depth = parseResult.GetValue(_depthOption),
@@ -115,12 +124,22 @@ internal sealed class CleanCommand : BaseCommand {
         }
 
         if (options.Interactive && !Output.CanPrompt) {
-            Output.WriteError("--interactive needs an interactive terminal. Use --obj/--publish/--test-results without it instead.");
+            Output.WriteError("The directory picker needs an interactive terminal. Pass --delete to delete or --output-file to write a deletion script instead.");
+            return 1;
+        }
+        // A bare -o takes the next token as its path, so `clean -o <root>` would otherwise clean the
+        // current directory and try to write the script over the root.
+        if (writeScript && Directory.Exists(options.OutputFile)) {
+            Output.WriteError($"--output-file points at a directory: {options.OutputFile}. Put the root before -o or give the script a file name.");
+            return 1;
+        }
+        if (!options.Interactive && !options.Delete && !writeScript) {
+            Output.WriteError("Nothing to do without the picker. Pass --delete to delete or --output-file to write a deletion script.");
             return 1;
         }
         // Picking directories is a deletion flow: the picker chooses, one question confirms the
         // whole selection. Asking for an output file explicitly still writes the script instead.
-        if (options.Interactive && parseResult.GetResult(_outputFileOption)?.Implicit != false) {
+        if (options.Interactive && !writeScript) {
             options.Delete = true;
         }
         // The picker plus that one question are the confirmation, so nothing is asked per

@@ -2,6 +2,10 @@
 
 All notable changes to this project are documented in this file.
 
+## [Unreleased]
+
+- change `clean`: the picker is the default. `bld clean` now opens it and deletes what is checked after one confirmation; the deletion script is only written with `--output-file`/`-o`, whose path is now optional (a bare `-o` writes `clean.cmd`/`clean.sh`). An explicit `--delete` deletes without the picker as before, and an explicit `-i` brings the picker back next to `--delete` or `-o`. Without a terminal, `clean` fails and names `--delete` and `-o` instead of writing a script nobody asked for.
+
 ## [0.4.3] - 2026-09-22
 
 ### Changes

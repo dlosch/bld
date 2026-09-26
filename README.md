@@ -82,13 +82,13 @@ dotnet build bld.sln
 dotnet run --project bld -- clean --root <root-or-sln>
 ```
 
-Use `--delete` only after you have reviewed the generated script or statistics.
+`clean` opens a picker and deletes only what you check after one confirmation. Add `-o` to write a deletion script to review instead, and use `--delete` (no picker) only after you have reviewed that script or the statistics.
 
 ## Command Overview
 
 | Command | Stability | Purpose |
 | --- | --- | --- |
-| `clean` | Stable | Evaluate projects, report disk usage, and emit an OS-specific deletion script (dry-run by default). |
+| `clean` | Stable | Evaluate projects and pick build output to delete; `--output-file` emits an OS-specific deletion script instead. |
 | `stats` | Stable | Print cleaning statistics only; never writes scripts or deletes files. |
 | `nuget` | Beta | Inspect NuGet dependencies and optionally aggregate package usage. |
 | `tfm` | Beta | Migrate project target frameworks. |
@@ -115,7 +115,7 @@ All commands accept the following shared options unless stated otherwise:
 
 ### clean
 
-Purpose: enumerate build output, report what would be deleted, and either emit a deletion script (default) or delete the files.
+Purpose: enumerate build output, let you pick what to delete (default), or delete it directly or emit a deletion script.
 
 **Options**
 - `--non-current`, `--noncurrent`, `-nc` — Restrict deletion to target-framework-specific directories *not* listed in the project’s current TFMs. Default: `false`.
@@ -123,9 +123,9 @@ Purpose: enumerate build output, report what would be deleted, and either emit a
 - `--keep-assets` — When cleaning `obj`, preserve NuGet restore artifacts (`project.assets.json`, etc.) and only delete build-output subdirectories. Default: `false`.
 - `--publish` — Also clean publish output (`PublishDir`) and pack output (`PackageOutputPath`). Covers explicitly configured publish directories and, in the artifacts layout, `artifacts/publish/<project>/` and `artifacts/package/`. Default: `false`, because publish output is often kept on purpose for a deployment. A package output directory is never deleted as a whole: it is usually shared (a local feed, `artifacts/package/<config>/`), so only the project's own `<PackageId>.<version>.nupkg`/`.snupkg` files directly in it are deleted, and only for projects that pack (`IsPackable` not `false`). The file name only makes a file a candidate; the id in the package's own `.nuspec` decides, because a NuGet id may end in a numeric segment and `Foo.1.2.0.nupkg` is `Foo.1` version `2.0` as readily as `Foo` version `1.2.0`. A file that cannot be read as a package is left alone.
 - `--test-results` — Also clean `TestResults/` (what `dotnet test` writes: `.trx`, coverage) next to each project (`VSTestResultsDirectory` when the project sets it) and next to its solution. Default: `false`.
-- `--interactive`, `-i` — Pick the directories from a list grouped by project before anything is written or deleted. Every category is marked; `--obj`, `--publish` and `--test-results` only decide what starts out checked (bin always does). Keys: `b`/`o`/`p`/`g`/`t` toggle bin, obj, publish, package and test results for every project on the top line, or for one project on its line or one of its rows; `space` toggles a directory (a whole project or everything on a header line); `a`/`n` all or none; `enter` confirms; `esc` cancels. Each header shows its categories as `[X]`, `[ ]` or `[-]` for a partly checked one, with the selected and total size. Every directory row shows the fully qualified path that would be deleted — never a relative one — cut in the middle (`C:\...\MyApp\bin\Debug\net10.0`) when the terminal is too narrow for it. It deletes: after `enter` it asks once for the whole selection (`Delete 12 directories (340.2 MiB)?`, default no) and then removes it, without a question per directory unless `--confirm` is given explicitly; `--force` skips that question too. Passing `--output-file`/`-o` writes the deletion script for the selection instead of deleting it. Needs an interactive terminal.
-- `--output-file`, `-o` — Where to write the deletion script (`clean.cmd` or `clean.sh` by default depending on OS).
-- `--delete` — Execute deletions instead of just generating scripts. Default: `false` (dry-run).
+- `--interactive`, `-i` — Pick the directories from a list grouped by project before anything is written or deleted. Every category is marked; `--obj`, `--publish` and `--test-results` only decide what starts out checked (bin always does). Keys: `b`/`o`/`p`/`g`/`t` toggle bin, obj, publish, package and test results for every project on the top line, or for one project on its line or one of its rows; `space` toggles a directory (a whole project or everything on a header line); `a`/`n` all or none; `enter` confirms; `esc` cancels. Each header shows its categories as `[X]`, `[ ]` or `[-]` for a partly checked one, with the selected and total size. Every directory row shows the fully qualified path that would be deleted — never a relative one — cut in the middle (`C:\...\MyApp\bin\Debug\net10.0`) when the terminal is too narrow for it. It deletes: after `enter` it asks once for the whole selection (`Delete 12 directories (340.2 MiB)?`, default no) and then removes it, without a question per directory unless `--confirm` is given explicitly; `--force` skips that question too. Passing `--output-file`/`-o` writes the deletion script for the selection instead of deleting it. On by default; an explicit `--delete` or `--output-file` turns it off unless `-i` is given as well. Needs an interactive terminal: without one, pass `--delete` or `--output-file`.
+- `--output-file`, `-o` — Write a deletion script instead of deleting. The path is optional: a bare `-o` writes `clean.cmd` or `clean.sh` depending on OS. No script is written without it.
+- `--delete` — Delete without the picker, asking per directory. Default: `false`.
 - `--force` — Skip confirmation prompts (requires explicit `--root` to avoid accidental repo-wide deletes). In non-interactive contexts (CI / piped stdin) a missing confirmation is treated as "no" (skip), so `--force` is required to actually delete unattended.
 - `--confirm` — Intended confirmation granularity for `--delete` (`None`, `Sln`, `Project`, `Directory`; default `Directory`). *Note: not yet wired up — currently only `--force` affects prompting.*
 - Global options (`--root`, `--depth`, `--log`, `--concurrency`, `--vstoolspath`, `--novstoolspath`) apply.
@@ -136,14 +136,15 @@ Purpose: enumerate build output, report what would be deleted, and either emit a
 3. Marks candidate directories, honoring:
    - `--non-current` to only select TFM folders that are no longer referenced.
    - Safety checks that avoid touching project roots or nested solutions.
-4. Default dry-run writes an OS-specific script to `--output-file` (or prints to console) with sizes and file counts.
-5. With `--delete`, the tool prompts per directory (or skips prompts with `--force`) and removes directories immediately.
+4. By default the picker opens; what is checked is deleted after one confirmation.
+5. With `--output-file`, an OS-specific script is written (and printed) with sizes and file counts instead.
+6. With `--delete`, the tool prompts per directory (or skips prompts with `--force`) and removes directories immediately.
 
 **Example**
 
 ```powershell
-bld clean --root C:\src\MyRepo --depth 4 --obj
-bld clean --root C:\src\MyRepo -i --delete     # pick per project, then delete what is checked
+bld clean --root C:\src\MyRepo                 # pick per project, then delete what is checked
+bld clean --root C:\src\MyRepo --depth 4 --obj -o   # write clean.cmd / clean.sh instead
 ```
 
 ### stats
@@ -420,7 +421,7 @@ bld build-props --root C:\src\MyRepo --properties TargetFramework,LangVersion
 - **Marking logic**: `MarkDeleteProcessor` collects bin/obj candidates, deduplicates directories shared across configurations, and refuses to touch paths that look like project roots or nested solutions. When `--non-current` is set, TFM directories matching the project’s declared TFMs are skipped. Projects with `UseArtifactsOutput=true` are handled through `artifacts/bin/<project>/`, where every subdirectory named `<config>[_<tfm>][_<rid>]` is a candidate. With `--publish`, `PublishDir` and `PackageOutputPath` are added in a second pass and dropped when they already sit inside a marked build-output directory (the default case). An `OutDir` that matches none of the known layouts is reported as a warning instead of being skipped silently.
 - **Stats vs clean**:
   - `stats` hands results to `MarkDeleteResultStatsProcessor`, which enumerates files (depth-limited) to compute counts and KiB/MiB totals without creating any output files.
-  - `clean` hands results to either `MarkDeleteResultBatchFileProcessor` (default) or `MarkDeleteResultDeleteProcessor` when `--delete` is set. The batch processor writes platform-specific scripts (respecting `--output-file`) and prints a table. The delete processor prompts per directory unless `--force` is used.
+  - `clean` hands results to either `MarkDeleteResultDeleteProcessor` (the picker and `--delete`) or `MarkDeleteResultBatchFileProcessor` when only `--output-file` is set. The batch processor writes platform-specific scripts (respecting `--output-file`) and prints a table. The delete processor prompts per directory unless `--force` is used.
 - **Safety rails**: depth defaults to 3, `--force` requires an explicit `--root`, and the tool stops silently when nothing is marked. Errors are aggregated via `ErrorSink` and printed after processing.
 - **Other commands** reuse the same MSBuild initialization and scanning primitives, layering command-specific processors (NuGet analysis, TFM migration with NuGet metadata checks, CPM rewrite helpers, outdated package lookups, and Dockerfile/project scanners).
 
