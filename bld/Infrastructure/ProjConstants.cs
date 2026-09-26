@@ -37,6 +37,9 @@ static class ProjConstants {
         "ArtifactsPublishOutputName",
         "ArtifactsProjectName",
 
+        // where project.assets.json is, for --keep-private-packages
+        "MSBuildProjectExtensionsPath",
+
         // ContainerBaseImage
         // ContainerFamily
         // ContainerRuntimeIdentifier

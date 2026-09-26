@@ -25,6 +25,17 @@ internal static class ProjectAssetsReader {
         File.Exists(path) ? Parse(File.ReadAllText(path)) : null;
 
     /// <summary>
+    /// "packageFolders": the global packages folder restore extracted into (RestorePackagesPath when the
+    /// project sets it), then the fallback folders.
+    /// </summary>
+    public static IReadOnlyList<string> ParsePackageFolders(string json) {
+        using var document = JsonDocument.Parse(json);
+        return document.RootElement.TryGetProperty("packageFolders", out var folders) && folders.ValueKind == JsonValueKind.Object
+            ? folders.EnumerateObject().Select(f => f.Name).ToList()
+            : Array.Empty<string>();
+    }
+
+    /// <summary>
     /// "targets" holds one graph per framework (and per runtime identifier, which repeats the framework's
     /// packages); "project/frameworks" lists the direct dependencies per target alias. Project references
     /// appear with type "project" and are left out.

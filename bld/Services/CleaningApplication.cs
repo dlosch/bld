@@ -56,6 +56,7 @@ internal class CleaningApplication(IConsoleOutput _console, Func<IConsoleOutput,
             });
 
             var allProjCfgs = new ConcurrentBag<ProjCfg>();
+            var assetsFiles = new ConcurrentBag<string>();
             await Parallel.ForEachAsync(allSlns, parallelOptions, async (sln, ct) => {
                 await foreach (var projCfg in slnParser.ParseSolution(sln, fileSystem)) {
                     if (cache.Add(projCfg)) {
@@ -78,9 +79,19 @@ internal class CleaningApplication(IConsoleOutput _console, Func<IConsoleOutput,
                         return;
                     }
 
+                    if (options.PrivatePackagesDirectory is not null && properties.Properties.TryGetValue("MSBuildProjectExtensionsPath", out var extensionsPath) && !string.IsNullOrEmpty(extensionsPath)) {
+                        assetsFiles.Add(ProjectAssetsReader.GetPath(DirExt.EnsureRooted(extensionsPath, projCfg.ProjDir)));
+                    }
+
                     await markDeleteProcessor.ProcessAsync(projCfg, properties);
                 });
             });
+
+            // Before anything is deleted: project.assets.json lives in obj.
+            if (options.PrivatePackagesDirectory is not null && options.OfflineConfigPath is not null) {
+                var settings = NuGet.PackageSourceResolver.LoadSettings(Path.GetDirectoryName(options.OfflineConfigPath)!);
+                new NuGet.PrivatePackageBackup(_console).Run(assetsFiles, options.PrivatePackagesDirectory, options.OfflineConfigPath, settings);
+            }
 
             await markDeleteProcessor.ProcessDirs();
 

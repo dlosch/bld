@@ -1,6 +1,7 @@
 ﻿using bld.Infrastructure;
 using bld.Models;
 using bld.Services;
+using bld.Services.NuGet;
 using System.CommandLine;
 
 namespace bld.Commands;
@@ -58,6 +59,15 @@ internal sealed class CleanCommand : BaseCommand {
         DefaultValueFactory = _ => true
     };
 
+    private readonly Option<bool> _keepPrivatePackagesOption = new Option<bool>("--keep-private-packages") {
+        Description = $"Before cleaning, copy every package restored from a source other than nuget.org from the NuGet packages folder into a folder feed and write {PrivatePackageBackup.ConfigFileName} next to the root, pointing those sources at it. Keeps the repo restorable after the private feed is gone and the caches are cleared. Needs a prior restore.",
+        DefaultValueFactory = _ => false
+    };
+
+    private readonly Option<string> _privatePackagesDirOption = new Option<string>("--private-packages-dir") {
+        Description = $"Folder for --keep-private-packages (default: {PrivatePackageBackup.DefaultDirectoryName} in the root directory).",
+    };
+
     public CleanCommand(IConsoleOutput console) : base("clean", "Cleans solution / project build output (bin/obj etc.)", console) {
         Add(_rootOption);
         Add(_depthOption);
@@ -68,6 +78,8 @@ internal sealed class CleanCommand : BaseCommand {
         Add(_publishOption);
         Add(_testResultsOption);
         Add(_interactiveOption);
+        Add(_keepPrivatePackagesOption);
+        Add(_privatePackagesDirOption);
 
         Add(_logLevelOption);
 
@@ -94,6 +106,12 @@ internal sealed class CleanCommand : BaseCommand {
             ? parseResult.GetValue(_interactiveOption)
             : !writeScript && !delete;
 
+        // The config goes next to the root so relative feed paths and nuget.config lookup start there;
+        // a solution file as root means its directory.
+        var rootPath = GetRootPath(parseResult);
+        var rootDirectory = File.Exists(rootPath) ? Path.GetDirectoryName(rootPath)! : rootPath;
+        var keepPrivatePackages = parseResult.GetValue(_keepPrivatePackagesOption) || parseResult.GetValue(_privatePackagesDirOption) is not null;
+
         var options = new CleaningOptions {
             OutputFile = writeScript ? parseResult.GetValue(_outputFileOption) : null,
             Delete = delete,
@@ -103,6 +121,10 @@ internal sealed class CleanCommand : BaseCommand {
             CleanPublishDirectory = parseResult.GetValue(_publishOption),
             CleanTestResults = parseResult.GetValue(_testResultsOption),
             Interactive = interactive,
+            PrivatePackagesDirectory = keepPrivatePackages
+                ? Path.GetFullPath(parseResult.GetValue(_privatePackagesDirOption) ?? Path.Combine(rootDirectory, PrivatePackageBackup.DefaultDirectoryName))
+                : null,
+            OfflineConfigPath = keepPrivatePackages ? Path.Combine(rootDirectory, PrivatePackageBackup.ConfigFileName) : null,
             Force = parseResult.GetValue(_forceOption),
             LogLevel = parseResult.GetValue(_logLevelOption),
             Depth = parseResult.GetValue(_depthOption),
@@ -147,8 +169,6 @@ internal sealed class CleanCommand : BaseCommand {
         if (options.Interactive && parseResult.GetResult(_confirmLevelOption)?.Implicit != false) {
             options.ConfirmLevel = ConfirmLevel.None;
         }
-
-        var rootPath = GetRootPath(parseResult);
 
         var app = new CleaningApplication(base.Output
             , (a, b, c) => options.Delete

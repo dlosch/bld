@@ -18,6 +18,12 @@ internal record CleaningOptions {
     /// starts out checked.
     /// </summary>
     public bool Interactive { get; init; } = false;
+    /// <summary>
+    /// Copy the packages restored from a source other than nuget.org here, before anything is deleted, and
+    /// write <see cref="OfflineConfigPath"/> pointing at them. Null leaves packages alone.
+    /// </summary>
+    public string? PrivatePackagesDirectory { get; init; }
+    public string? OfflineConfigPath { get; init; }
     public bool Force { get; init; } = false;
     public LogLevel LogLevel { get; init; } = LogLevel.Warning;
     public int Depth { get; init; } = 4;
