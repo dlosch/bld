@@ -1,5 +1,6 @@
 using bld.Models;
 using bld.Services;
+using bld.Services.NuGet;
 using Microsoft.Build.Evaluation;
 using System.Collections.Concurrent;
 
@@ -13,6 +14,8 @@ internal sealed class NugetPackageExtractor {
     private readonly ErrorSink _errorSink;
     private readonly NugetPackageCategorizer _categorizer;
     private readonly ConcurrentDictionary<(string Path, string? Configuration), ProjectNugetAnalysis> _analysisCache = new();
+    // nuget.config is looked up from the project directory, as restore does; one locator per directory.
+    private readonly ConcurrentDictionary<string, Lazy<PackageSourceLocator>> _locators = new(DirExt.PathComparer);
 
     public NugetPackageExtractor(IConsoleOutput console, ErrorSink errorSink, NugetPackageCategorizer categorizer) {
         _console = console;
@@ -147,6 +150,7 @@ internal sealed class NugetPackageExtractor {
             if (includeTransitive) {
                 AddTransitivePackages(project, projCfg, projectName, packages);
             }
+            AddSources(project, projCfg, packages);
         }
         catch (Exception ex) {
             _errorSink.AddError($"Failed to extract package references from project.", exception: ex, config: projCfg);
@@ -178,9 +182,7 @@ internal sealed class NugetPackageExtractor {
     /// MSBuildProjectExtensionsPath (obj/ by default, artifacts/obj/&lt;project&gt;/ in the artifacts layout).
     /// </summary>
     private void AddTransitivePackages(Project project, ProjCfg projCfg, string projectName, List<NugetPackageInfo> packages) {
-        var extensionsPath = project.GetPropertyValue("MSBuildProjectExtensionsPath");
-        if (string.IsNullOrWhiteSpace(extensionsPath)) extensionsPath = "obj";
-        var assetsPath = ProjectAssetsReader.GetPath(DirExt.EnsureRooted(extensionsPath, projCfg.ProjDir));
+        var assetsPath = AssetsPath(project, projCfg);
 
         IReadOnlyList<ResolvedPackage>? resolved;
         try {
@@ -218,4 +220,71 @@ internal sealed class NugetPackageExtractor {
             });
         }
     }
+
+    private static string AssetsPath(Project project, ProjCfg projCfg) {
+        var extensionsPath = project.GetPropertyValue("MSBuildProjectExtensionsPath");
+        if (string.IsNullOrWhiteSpace(extensionsPath)) extensionsPath = "obj";
+        return ProjectAssetsReader.GetPath(DirExt.EnsureRooted(extensionsPath, projCfg.ProjDir));
+    }
+
+    /// <summary>
+    /// Sets each package's <see cref="NugetPackageInfo.Origin"/>. The packages folders and the versions
+    /// restore picked come from project.assets.json when there is one; before a restore the folders are
+    /// RestorePackagesPath and the configured ones, and the version is the one the project names.
+    /// </summary>
+    private void AddSources(Project project, ProjCfg projCfg, List<NugetPackageInfo> packages) {
+        PackageSourceLocator locator;
+        try {
+            locator = _locators.GetOrAdd(projCfg.ProjDir, dir => new Lazy<PackageSourceLocator>(() => new PackageSourceLocator(PackageSourceResolver.LoadSettings(dir)))).Value;
+        }
+        catch (Exception ex) {
+            _console.WriteWarning($"Could not read the NuGet configuration for {projCfg.Path}: {ex.FormatMessage()}. Its package sources are not listed.");
+            return;
+        }
+
+        IReadOnlyList<string> folders = Array.Empty<string>();
+        IReadOnlyList<ResolvedPackage> resolved = Array.Empty<ResolvedPackage>();
+        var assetsPath = AssetsPath(project, projCfg);
+        try {
+            if (File.Exists(assetsPath)) {
+                var json = File.ReadAllText(assetsPath);
+                folders = ProjectAssetsReader.ParsePackageFolders(json);
+                resolved = ProjectAssetsReader.Parse(json);
+            }
+        }
+        catch (Exception ex) {
+            _console.WriteDebug($"Could not read {assetsPath}: {ex.FormatMessage()}");
+        }
+        if (folders.Count == 0) {
+            var restorePackagesPath = project.GetPropertyValue("RestorePackagesPath");
+            folders = string.IsNullOrWhiteSpace(restorePackagesPath)
+                ? locator.DefaultPackageFolders
+                : [DirExt.EnsureRooted(restorePackagesPath, projCfg.ProjDir), .. locator.DefaultPackageFolders];
+        }
+
+        // RestoreSources replaces the nuget.config sources for this project, RestoreAdditionalProjectSources
+        // adds to them; both are ';'-separated and may be relative to the project.
+        var restoreSources = SourceList(project.GetPropertyValue("RestoreSources"), projCfg.ProjDir);
+        var additionalSources = SourceList(project.GetPropertyValue("RestoreAdditionalProjectSources"), projCfg.ProjDir);
+
+        for (var i = 0; i < packages.Count; i++) {
+            var package = packages[i];
+            // A transitive line is one exact resolved version. A direct reference may name a range or a
+            // floating version, so what restore picked for it (the assets file) is tried first.
+            var versions = package.IsTransitive
+                ? [package.Version]
+                : resolved
+                    .Where(r => string.Equals(r.Id, package.Name, StringComparison.OrdinalIgnoreCase))
+                    .Select(r => r.Version)
+                    .Append(package.Version);
+            packages[i] = package with { Origin = locator.Locate(package.Name, versions, folders, restoreSources, additionalSources) };
+        }
+    }
+
+    private static List<string> SourceList(string value, string projectDir) =>
+        value.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(s => s.StartsWith("http://", StringComparison.OrdinalIgnoreCase) || s.StartsWith("https://", StringComparison.OrdinalIgnoreCase)
+                ? s
+                : DirExt.EnsureRooted(s, projectDir))
+            .ToList();
 }

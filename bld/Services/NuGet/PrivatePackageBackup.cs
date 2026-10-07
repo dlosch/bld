@@ -231,7 +231,7 @@ internal sealed class PrivatePackageBackup(IConsoleOutput console) {
     }
 
     /// <summary>The .nupkg and the source restore recorded for it, from the first packages folder holding it.</summary>
-    private static (string Nupkg, string? Source)? Locate(IReadOnlyList<string> packageFolders, string id, NuGetVersion version) {
+    internal static (string Nupkg, string? Source)? Locate(IReadOnlyList<string> packageFolders, string id, NuGetVersion version) {
         foreach (var folder in packageFolders) {
             var resolver = new VersionFolderPathResolver(folder);
             var nupkg = resolver.GetPackageFilePath(id, version);
@@ -276,7 +276,7 @@ internal sealed class PrivatePackageBackup(IConsoleOutput console) {
         }
     }
 
-    private static bool IsNuGetOrg(string source) =>
+    internal static bool IsNuGetOrg(string source) =>
         Uri.TryCreate(source, UriKind.Absolute, out var uri)
         && (uri.Scheme == Uri.UriSchemeHttps || uri.Scheme == Uri.UriSchemeHttp)
         && (uri.Host.Equals("api.nuget.org", StringComparison.OrdinalIgnoreCase) || uri.Host.Equals("www.nuget.org", StringComparison.OrdinalIgnoreCase));
@@ -284,7 +284,7 @@ internal sealed class PrivatePackageBackup(IConsoleOutput console) {
     private static bool IsHttp(string source) =>
         source.StartsWith("http://", StringComparison.OrdinalIgnoreCase) || source.StartsWith("https://", StringComparison.OrdinalIgnoreCase);
 
-    private static bool SameSource(string a, string b) =>
+    internal static bool SameSource(string a, string b) =>
         IsHttp(a) || IsHttp(b)
             ? string.Equals(a.TrimEnd('/'), b.TrimEnd('/'), StringComparison.OrdinalIgnoreCase)
             : DirExt.PathComparer.Equals(Path.TrimEndingDirectorySeparator(Path.GetFullPath(a)), Path.TrimEndingDirectorySeparator(Path.GetFullPath(b)));

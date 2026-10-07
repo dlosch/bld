@@ -123,6 +123,7 @@ internal class NugetAnalysisApplication {
 
             if (markdownOutput) {
                 DisplayMarkdownResults(uniqueAnalyses, includeTransitive);
+                WriteSourceLegend(uniqueAnalyses);
             }
             else if (aggregate) {
                 DisplayAggregateResults(uniqueAnalyses, categorizer, showProjects);
@@ -175,6 +176,48 @@ internal class NugetAnalysisApplication {
         if (transitive.Count > 0) {
             _console.WriteLine($"Transitive packages: {transitive.Count} ({transitive.Select(p => p.Name).Distinct(StringComparer.OrdinalIgnoreCase).Count()} unique)");
         }
+        WriteSourceSummary(analyses);
+    }
+
+    /// <summary>
+    /// Once anything but nuget.org is involved, the names in the version parentheses need explaining:
+    /// they are nuget.config keys, so list the URL (or folder) each one stands for.
+    /// </summary>
+    private void WriteSourceLegend(List<ProjectNugetAnalysis> analyses) {
+        var origins = analyses.SelectMany(a => a.Packages).Select(p => p.Origin).OfType<PackageOrigin>().ToList();
+        var names = origins
+            .SelectMany(o => o.RestoredFrom is { } restored ? [restored] : o.Candidates)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (names.All(n => string.Equals(n, "nuget.org", StringComparison.OrdinalIgnoreCase))) return;
+
+        var urls = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var origin in origins) {
+            foreach (var (name, url) in origin.Urls) urls.TryAdd(name, url);
+        }
+
+        _console.WriteLine("Sources: the name next to a version is the nuget.config key of the source the package was restored from, or would be restored from if it is not restored yet. A host or path instead of a key means no configured source matches the one restore recorded.");
+        foreach (var name in names.OrderBy(n => n, StringComparer.OrdinalIgnoreCase)) {
+            _console.WriteLine(urls.TryGetValue(name, out var url) ? $"  {name} = {url}" : $"  {name}");
+        }
+    }
+
+    /// <summary>Unique packages (id and version) per source.</summary>
+    private void WriteSourceSummary(List<ProjectNugetAnalysis> analyses) {
+        WriteSourceLegend(analyses);
+        var bySource = analyses
+            .SelectMany(a => a.Packages)
+            .Where(p => p.Origin is not null)
+            .DistinctBy(p => (p.Name.ToLowerInvariant(), p.Version.ToLowerInvariant()))
+            .GroupBy(p => p.Origin!.Describe(), StringComparer.OrdinalIgnoreCase)
+            .OrderByDescending(g => g.Count())
+            .ThenBy(g => g.Key, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (bySource.Count == 0) return;
+        _console.WriteLine("Packages by source:");
+        foreach (var group in bySource) {
+            _console.WriteLine($"  {group.Count(),5}  {group.Key}");
+        }
     }
 
     private void DisplayProjectAnalysis(ProjectNugetAnalysis analysis, NugetPackageCategorizer categorizer) {
@@ -221,7 +264,8 @@ internal class NugetAnalysisApplication {
         content.Add($"[bold yellow]{Markup.Escape(categoryName)}:[/]");
 
         foreach (var package in packageList.OrderBy(p => p.Name)) {
-            var packageInfo = $"• {Markup.Escape(package.Name)} ({Markup.Escape(package.Version)}){KindSuffix(package.Kind)}";
+            var origin = package.Origin is { } o ? $", {o.Describe()}" : "";
+            var packageInfo = $"• {Markup.Escape(package.Name)} ({Markup.Escape(package.Version + origin)}){KindSuffix(package.Kind)}";
 
             // Add coloring and pattern information based on whitelist/blacklist/microsoft/trusted
             if (!string.IsNullOrWhiteSpace(package.BlacklistMatch)) {
@@ -274,6 +318,7 @@ internal class NugetAnalysisApplication {
                 Kind = g.First().Package.Kind,
                 IsTransitive = g.All(pa => pa.Package.IsTransitive),
                 RequestedBy = g.SelectMany(pa => pa.Package.RequestedBy).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(p => p, StringComparer.OrdinalIgnoreCase).ToList(),
+                Sources = g.Where(pa => pa.Package.Origin is not null).Select(pa => pa.Package.Origin!.Describe()).Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
                 Occurrences = g.Select(pa => new PackageOccurrence {
                     ProjectName = pa.Analysis.ProjectName ?? "Unknown",
                     ProjectPath = pa.Analysis.ProjectPath,
@@ -320,6 +365,7 @@ internal class NugetAnalysisApplication {
         if (transitiveUnique > 0) {
             _console.WriteLine($"Unique transitive packages: {transitiveUnique}");
         }
+        WriteSourceSummary(analyses);
     }
 
     private void AddAggregateCategorySection(List<string> content, string categoryName, List<AggregatedPackage> packages, bool showProjects) {
@@ -331,9 +377,10 @@ internal class NugetAnalysisApplication {
 
         foreach (var pkg in packages.OrderBy(p => p.Name)) {
             var versions = pkg.Occurrences.Select(o => o.Version).Distinct().ToList();
-            var versionInfo = versions.Count == 1 
-                ? $"({Markup.Escape(versions[0])})" 
-                : $"(multiple versions: {string.Join(", ", versions.Select(Markup.Escape))})";
+            var sources = pkg.Sources.Count > 0 ? $", {string.Join("; ", pkg.Sources)}" : "";
+            var versionInfo = versions.Count == 1
+                ? $"({Markup.Escape(versions[0] + sources)})"
+                : $"(multiple versions: {Markup.Escape(string.Join(", ", versions) + sources)})";
 
             var packageInfo = $"• {Markup.Escape(pkg.Name)} {versionInfo}{KindSuffix(pkg.Kind)}";
 
@@ -412,12 +459,17 @@ internal class NugetAnalysisApplication {
                     // "direct" as soon as one project references it itself.
                     row.Add(g.All(x => x.Package.IsTransitive) ? "transitive" : "direct");
                 }
+                row.Add(string.Join("<br>", g
+                    .Where(x => x.Package.Origin is not null)
+                    .Select(x => x.Package.Origin!.Describe())
+                    .Distinct(StringComparer.OrdinalIgnoreCase)));
                 return (IReadOnlyList<string?>)row;
             })
             .ToList();
 
         var headers = new List<string> { "Package name", "Package Version", "Trusted", "Projects" };
         if (includeTransitive) headers.Add("Direct/Transitive");
+        headers.Add("Source");
 
         MarkdownTableFormatter.Write(
             _console,

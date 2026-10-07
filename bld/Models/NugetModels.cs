@@ -31,6 +31,22 @@ internal record NugetPackageInfo {
     public IReadOnlyList<string> TargetFrameworks { get; init; } = Array.Empty<string>();
     /// <summary>Packages that pull this one in (immediate parents); empty for direct references.</summary>
     public IReadOnlyList<string> RequestedBy { get; init; } = Array.Empty<string>();
+    /// <summary>Where the package was or would be restored from; null when the NuGet configuration could not be read.</summary>
+    public PackageOrigin? Origin { get; init; }
+}
+
+/// <summary>
+/// The source a package was restored from (as restore recorded it), or, when it is not in a packages
+/// folder yet, the configured sources restore would take it from.
+/// </summary>
+internal sealed record PackageOrigin(string? RestoredFrom, IReadOnlyList<string> Candidates) {
+    /// <summary>The URL or path behind each source name used here, for the legend; empty when the name is the URL itself.</summary>
+    public IReadOnlyDictionary<string, string> Urls { get; init; } = new Dictionary<string, string>();
+
+    public string Describe() => RestoredFrom
+        ?? (Candidates.Count == 0
+            ? "not restored: no source mapped"
+            : $"not restored: {string.Join(" or ", Candidates)}");
 }
 
 /// <summary>
@@ -142,4 +158,6 @@ internal record AggregatedPackage {
     public bool IsTransitive { get; init; }
     public IReadOnlyList<string> RequestedBy { get; init; } = Array.Empty<string>();
     public PackageItemKind Kind { get; init; } = PackageItemKind.PackageReference;
+    /// <summary>Distinct <see cref="PackageOrigin.Describe"/> texts across the occurrences.</summary>
+    public IReadOnlyList<string> Sources { get; init; } = Array.Empty<string>();
 }

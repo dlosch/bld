@@ -173,6 +173,61 @@ public class ProjectAssetsReaderTests(ITestOutputHelper Console) {
         }
     }
 
+    /// <summary>
+    /// Each package line gets the source of its own version: a transitive package resolved at two versions
+    /// (one per TFM) must not show the first version's source on both lines, and a direct reference that
+    /// names a range is looked up at the version restore picked.
+    /// </summary>
+    [Fact]
+    public void Extractor_SourcesFollowTheResolvedVersionOfEachLine() {
+        var tempDir = Path.Combine(Path.GetTempPath(), $"bld-assets-{Guid.NewGuid():N}");
+        var packages = Path.Combine(tempDir, "packages");
+        Directory.CreateDirectory(Path.Combine(tempDir, "obj"));
+        try {
+            var projectPath = Path.Combine(tempDir, "Sample.csproj");
+            File.WriteAllText(projectPath, """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup><TargetFrameworks>net8.0;net9.0</TargetFrameworks></PropertyGroup>
+                  <ItemGroup><PackageReference Include="A" Version="[1.0.0,2.0.0)" /></ItemGroup>
+                </Project>
+                """);
+            Cache(packages, "A", "1.5.0", "https://a.test/v3/index.json");
+            Cache(packages, "B", "2.0.0", "https://old.test/v3/index.json");
+            Cache(packages, "B", "3.0.0", "https://new.test/v3/index.json");
+            var folder = (packages + Path.DirectorySeparatorChar).Replace("\\", "\\\\");
+            File.WriteAllText(Path.Combine(tempDir, "obj", "project.assets.json"), $$"""
+                {
+                  "version": 3,
+                  "targets": {
+                    "net8.0": { "A/1.5.0": { "type": "package", "dependencies": { "B": "2.0.0" } }, "B/2.0.0": { "type": "package" } },
+                    "net9.0": { "A/1.5.0": { "type": "package", "dependencies": { "B": "3.0.0" } }, "B/3.0.0": { "type": "package" } }
+                  },
+                  "packageFolders": { "{{folder}}": {} },
+                  "project": { "frameworks": {
+                    "net8.0": { "dependencies": { "A": { "target": "Package", "version": "[1.0.0, 2.0.0)" } } },
+                    "net9.0": { "dependencies": { "A": { "target": "Package", "version": "[1.0.0, 2.0.0)" } } }
+                  } }
+                }
+                """);
+
+            var analysis = Analyze(new TestConsole(Console), projectPath, includeTransitive: true);
+
+            Assert.Equal("a.test", analysis.Packages.Single(p => p.Name == "A").Origin!.RestoredFrom);
+            Assert.Equal("old.test", analysis.Packages.Single(p => p.Name == "B" && p.Version == "2.0.0").Origin!.RestoredFrom);
+            Assert.Equal("new.test", analysis.Packages.Single(p => p.Name == "B" && p.Version == "3.0.0").Origin!.RestoredFrom);
+        }
+        finally {
+            Directory.Delete(tempDir, recursive: true);
+        }
+    }
+
+    private static void Cache(string packagesFolder, string id, string version, string source) {
+        var directory = Path.Combine(packagesFolder, id.ToLowerInvariant(), version);
+        Directory.CreateDirectory(directory);
+        File.WriteAllText(Path.Combine(directory, $"{id.ToLowerInvariant()}.{version}.nupkg"), "");
+        File.WriteAllText(Path.Combine(directory, ".nupkg.metadata"), $$"""{ "version": 2, "contentHash": "x", "source": "{{source}}" }""");
+    }
+
     private static string WriteProject(string dir) {
         var projectPath = Path.Combine(dir, "Sample.csproj");
         File.WriteAllText(projectPath, """

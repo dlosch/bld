@@ -226,6 +226,8 @@ Helpful when your favorite agent creates your shiny new project targeting a old 
 - `--show-projects`, `--sp` — When aggregating, list referencing projects. Default: `true`.
 - `--transitive` — Also list the packages restore resolved through other packages, read from each project's `project.assets.json` (under `MSBuildProjectExtensionsPath`, i.e. `obj/`). Requires a prior `dotnet restore`; a project without the file is reported with a warning and listed with its direct references only. Transitive packages are categorized and matched against the whitelist/blacklist like direct ones and show which packages pull them in. Default: `false`.
 
+Every package shows its source next to its version, e.g. `Serilog (4.0.0, nuget.org)`. A restored package shows the source restore recorded in its `.nupkg.metadata` in the packages folder, by its `nuget.config` key. A package that is not restored yet shows the sources it would come from, e.g. `(1.2.0, not restored: nuget.org or Contoso)`: the ones `packageSourceMapping` assigns to it, or every enabled source. A package pulled into the shared packages folder by another repo may show a source no `nuget.config` here names; it appears by its host (or folder path). When any source other than nuget.org is involved, the output ends with a legend mapping each name to its URL or folder. The summary counts packages per source, and `--markdown` adds a `Source` column. nuget.config is read from the project directory; a project's `RestoreSources` replaces those sources and `RestoreAdditionalProjectSources` adds to them, as in restore. Sources passed to `dotnet restore --source` are not known to bld.
+
 Example:
 
 ```powershell
