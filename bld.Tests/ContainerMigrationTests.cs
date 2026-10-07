@@ -21,7 +21,9 @@ public class ContainerMigrationTests : IDisposable {
         "</Project>\n";
 
     private string Write(string relativePath, string content, Encoding? encoding = null) {
-        var path = Path.Combine(_root, relativePath);
+        // GetFullPath turns the '/' in "Other/Other.csproj" into the platform separator, as the paths
+        // the service finds by enumerating directories have it; the test compares the two.
+        var path = Path.GetFullPath(Path.Combine(_root, relativePath));
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         File.WriteAllText(path, content, encoding ?? new UTF8Encoding(false));
         return path;

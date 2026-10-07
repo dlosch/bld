@@ -358,8 +358,10 @@ internal static class CleanPickerRenderer {
         if (max <= gap.Length) return path[^max..];
 
         var root = System.IO.Path.GetPathRoot(path) ?? string.Empty;
-        // No room for root + gap + something of the tail: drop the root and keep the tail.
-        if (root.Length + gap.Length >= max) return gap + path[^(max - gap.Length)..];
+        var leaf = System.IO.Path.GetFileName(System.IO.Path.TrimEndingDirectorySeparator(path));
+        // No room for root + gap + at least the leaf: drop the root and keep the tail. The leaf is
+        // what tells the rows apart, so it goes last; a "C:\" root at a tiny width used to cut it.
+        if (root.Length + gap.Length + leaf.Length > max) return gap + path[^(max - gap.Length)..];
         return root + gap + path[^(max - root.Length - gap.Length)..];
     }
 
