@@ -150,7 +150,14 @@ internal sealed class NugetPackageExtractor {
             if (includeTransitive) {
                 AddTransitivePackages(project, projCfg, projectName, packages);
             }
-            AddSources(project, projCfg, packages);
+            // The sources are a decoration on a list that is complete by now; a failure here must not
+            // turn the project into a failed one.
+            try {
+                AddSources(project, projCfg, packages);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException) {
+                _console.WriteWarning($"Could not determine the package sources for {projCfg.Path}: {ex.FormatMessage()}");
+            }
         }
         catch (Exception ex) {
             _errorSink.AddError($"Failed to extract package references from project.", exception: ex, config: projCfg);
