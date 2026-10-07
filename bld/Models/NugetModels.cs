@@ -1,3 +1,5 @@
+using NuGet.Versioning;
+
 namespace bld.Models;
 
 /// <summary>The MSBuild item a package comes from.</summary>
@@ -49,13 +51,16 @@ internal record PackagePattern {
 /// </summary>
 internal record VersionConstraint {
     public VersionOperator Operator { get; init; }
-    public Version Version { get; init; } = new Version();
+    // NuGet's own ordering: a prerelease sorts below its release (2.0.0-beta &lt; 2.0.0), four-part and
+    // three-part forms compare as NuGet compares them. System.Version with a hand-rolled prerelease
+    // decrement put 2.0.0-beta somewhere in 1.x.
+    public NuGetVersion Version { get; init; } = new NuGetVersion(0, 0, 0);
 
     /// <summary>
     /// Check if a version satisfies this constraint
     /// </summary>
-    public bool IsSatisfiedBy(Version version) {
-        var comparison = version.CompareTo(Version);
+    public bool IsSatisfiedBy(NuGetVersion version) {
+        var comparison = VersionComparer.VersionRelease.Compare(version, Version);
         return Operator switch {
             VersionOperator.Equal => comparison == 0,
             VersionOperator.GreaterThanOrEqual => comparison >= 0,
@@ -81,7 +86,8 @@ internal enum NugetPackageCategory {
     MicrosoftOfficial,      // Official .NET packages (System.*, Microsoft.Extensions.*, etc.)
     MicrosoftNonOfficial,   // Microsoft packages that are not official .NET
     TrustedThirdParty,      // Known trusted packages (high download count or whitelisted)
-    Other                   // Everything else
+    Other,                  // Everything else
+    Blacklisted             // Matched by the rules file's blacklist (and not by its whitelist), whatever the prefix
 }
 
 /// <summary>
@@ -107,6 +113,9 @@ internal record ProjectNugetAnalysis {
 
     public IEnumerable<NugetPackageInfo> OtherPackages =>
         DirectPackages.Where(p => p.Category == NugetPackageCategory.Other);
+
+    public IEnumerable<NugetPackageInfo> BlacklistedPackages =>
+        DirectPackages.Where(p => p.Category == NugetPackageCategory.Blacklisted);
 }
 
 /// <summary>

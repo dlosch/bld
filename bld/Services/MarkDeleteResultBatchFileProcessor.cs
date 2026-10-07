@@ -8,26 +8,16 @@ internal class MarkDeleteResultBatchFileProcessor : IMarkDeleteResultProcessor {
     private readonly IConsoleOutput _console;
     private readonly ErrorSink _errorSink;
     private readonly CleaningOptions _options;
-    private readonly EnumerationOptions _enumerateFiles;
 
     public MarkDeleteResultBatchFileProcessor(IConsoleOutput console, ErrorSink errorSink, CleaningOptions options) {
         _console = console;
         _errorSink = errorSink;
         _options = options;
-
-        _enumerateFiles = new EnumerationOptions { MatchType = MatchType.Simple, RecurseSubdirectories = true, ReturnSpecialDirectories = false, IgnoreInaccessible = true };
     }
 
     public Task ProcessAsync(MarkDeleteResult result) {
 
         var writer = BatchFileWriterFactory.Create();
-
-        (long Bytes, int Count) GetSize(DirectoryInfo dirInfo) {
-            var affectedFiles = dirInfo.EnumerateFiles("*", _enumerateFiles);
-            // Materialize to avoid double enumeration
-            var files = affectedFiles.ToArray();
-            return (files.Sum(a => a.Length), files.Length);
-        }
 
         if (result.IsEmpty) {
             _console.WriteLine("No directories marked for deletion.");
@@ -42,17 +32,23 @@ internal class MarkDeleteResultBatchFileProcessor : IMarkDeleteResultProcessor {
 
         long totalBytes = 0L;
         int totalFiles = 0;
+        // bin/Debug is left empty once its only TFM folder is removed; the script sweeps those parents
+        // up to (not including) the bin/obj or artifacts root. Collected deepest first across the whole
+        // run so every child removal is written before the rmdir that depends on it, and a shared parent
+        // (two selected TFMs under one bin/Debug) is emitted once.
+        var emptyParents = new List<string>();
 
         foreach (var kvp in result.Directories.OrderBy(k => k.Directory.FullName)) {
             var path = kvp.Directory;
             if (path is null) continue;
 
             if (!path.Exists) continue;
-            var (bytes, count) = GetSize(path);
+            var (bytes, count) = path.MeasureTree();
             totalBytes += bytes;
             totalFiles += count;
 
             writer.Append(path.FullName);
+            emptyParents.AddRange(DirExt.EmptyParentCandidates(path.FullName, kvp.References.SelectMany(r => r.AbsParentPath)));
             table.AddRow(
                 count.ToString(),
                 (bytes / 1024d).ToString("N0"),
@@ -76,6 +72,13 @@ internal class MarkDeleteResultBatchFileProcessor : IMarkDeleteResultProcessor {
                 (file.Length / 1024d / 1024d).ToString("N2"),
                 Markup.Escape(file.FullName)
                 );
+        }
+
+        // Deepest first and once each, so a parent's rmdir follows every removal below it. The lines
+        // remove a directory only while it is empty and stay silent otherwise, so a parent still
+        // holding an unselected sibling is simply left standing.
+        foreach (var parent in emptyParents.Distinct(DirExt.PathComparer).OrderByDescending(Depth).ThenByDescending(p => p, DirExt.PathComparer)) {
+            writer.AppendEmptyParent(parent);
         }
 
         if (totalFiles == 0 && totalBytes == 0) {
@@ -137,6 +140,9 @@ internal class MarkDeleteResultBatchFileProcessor : IMarkDeleteResultProcessor {
             File.SetUnixFileMode(path, mode);
         }
     }
+
+    /// <summary>Separator count, so a child directory sorts before the parent it would leave empty.</summary>
+    private static int Depth(string path) => path.Count(c => c == Path.DirectorySeparatorChar || c == Path.AltDirectorySeparatorChar);
 
     /// <summary>How to start the script from the current directory: a bare name needs ./ on Unix.</summary>
     internal static string RunCommand(string path) =>

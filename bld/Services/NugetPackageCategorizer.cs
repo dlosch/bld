@@ -75,6 +75,14 @@ internal class NugetPackageCategorizer {
 
         // First check configuration file overrides
         if (_whitelistBlacklistRules != null) {
+            // A blacklisted package is its own category, so it does not hide in "Microsoft Official"
+            // because of its prefix; the lists used to only color the row. The whitelist wins a tie,
+            // as in GetAllMatches.
+            if (WhitelistBlacklistParser.FindMatchingPattern(packageName, packageVersion, _whitelistBlacklistRules.BlacklistPatterns) != null
+                && WhitelistBlacklistParser.FindMatchingPattern(packageName, packageVersion, _whitelistBlacklistRules.WhitelistPatterns) == null) {
+                return NugetPackageCategory.Blacklisted;
+            }
+
             // Check if package is explicitly categorized as Microsoft Non-Official
             if (WhitelistBlacklistParser.FindMatchingPattern(packageName, packageVersion, _whitelistBlacklistRules.MicrosoftPatterns) != null) {
                 return NugetPackageCategory.MicrosoftNonOfficial;

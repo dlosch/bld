@@ -39,6 +39,54 @@ internal static class DirExt {
     internal static bool IsEmpty(this DirectoryInfo dirInfo) => !dirInfo.IsNotEmpty();
     internal static bool IsNotEmpty(this DirectoryInfo dirInfo) => dirInfo.EnumerateFiles().Any() || dirInfo.EnumerateDirectories().Any();
 
+    /// <summary>
+    /// Size and file count of a directory tree: the one measurement the stats table, the script preview
+    /// and the picker all read, so their totals cannot drift apart. Symlinks and junctions are not
+    /// followed (AttributesToSkip = ReparsePoint) - a junction out of bin/ onto a network share would
+    /// otherwise have its target counted and could recurse without end, while the deletion only removes
+    /// the link itself. An unreadable entry is skipped instead of throwing: the picker used to swallow
+    /// that and return zero where the other two threw, so a locked directory gave three different answers.
+    /// </summary>
+    internal static (long Bytes, int Count) MeasureTree(this DirectoryInfo dirInfo) {
+        try {
+            var files = dirInfo.EnumerateFiles("*", new EnumerationOptions {
+                RecurseSubdirectories = true,
+                AttributesToSkip = FileAttributes.ReparsePoint,
+                IgnoreInaccessible = true,
+            }).ToArray();
+            return (files.Sum(f => f.Length), files.Length);
+        }
+        catch (Exception) {
+            return (0, 0);
+        }
+    }
+
+    private static bool IsOutputRootName(string name) =>
+        string.Equals(name, "bin", PathComparison) || string.Equals(name, "obj", PathComparison);
+
+    /// <summary>
+    /// The parent directories a marked directory leaves behind when it is deleted - bin/Debug once its
+    /// last TFM folder is gone - ordered deepest first. The walk stays below the bin/obj output root and
+    /// the artifacts/&lt;kind&gt;/&lt;project&gt; root (both are kept, even when empty) and never reaches a
+    /// project directory, so a caller can remove each as far as it is empty without ever touching a
+    /// boundary. Lexical only: nothing here looks at the filesystem, the caller decides emptiness.
+    /// </summary>
+    internal static IReadOnlyList<string> EmptyParentCandidates(string markedDir, IEnumerable<string> projectDirs) {
+        var projects = projectDirs
+            .Where(p => !string.IsNullOrWhiteSpace(p))
+            .Select(p => TrimTrailingSeparators(EnsureRooted(p, markedDir)))
+            .ToList();
+        var result = new List<string>();
+        for (var parent = Directory.GetParent(TrimTrailingSeparators(markedDir)); parent is { }; parent = parent.Parent) {
+            // bin/obj is the output root and artifacts/<kind>/<project> is not below any project
+            // directory, so both stop the walk; so does anything at or above a project directory.
+            if (IsOutputRootName(parent.Name)) break;
+            if (!projects.Any(p => IsNestedBelow(parent.FullName, p))) break;
+            result.Add(parent.FullName);
+        }
+        return result;
+    }
+
     static readonly char[] _invalidPathChars = Path.GetInvalidPathChars();
 
     // todo doesnt filter alternate data streams and all sorts of device prefixes

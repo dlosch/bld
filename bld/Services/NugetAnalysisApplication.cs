@@ -105,7 +105,11 @@ internal class NugetAnalysisApplication {
                             allProjectAnalyses.Add(analysis);
                         }
                     }
-                    catch (Exception ex) {
+                    catch (Exception ex) when (ex is not OperationCanceledException) {
+                        // The extractor records its own evaluation failures; this catches what escapes
+                        // it (categorizer, assets reader) and must reach the sink too, or the run would
+                        // print the error and still exit 0.
+                        errorSink.AddError($"Failed to analyze project.", exception: ex, config: projCfg);
                         _console.WriteError($"Failed to analyze project {projCfg.Path}: {ex.FormatMessage()}");
                     }
                 });
@@ -184,6 +188,7 @@ internal class NugetAnalysisApplication {
         content.Add("");
 
         // Display packages by category
+        AddCategorySection(content, "Blacklisted Packages", analysis.BlacklistedPackages);
         AddCategorySection(content, "Microsoft Official .NET Packages", analysis.MicrosoftOfficialPackages);
         AddCategorySection(content, "Microsoft Non-Official Packages", analysis.MicrosoftNonOfficialPackages);
         AddCategorySection(content, "Known Trusted Packages", analysis.TrustedThirdPartyPackages);
@@ -192,6 +197,7 @@ internal class NugetAnalysisApplication {
         if (transitive.Count > 0) {
             content.Add("[bold]Transitive Packages[/]");
             content.Add("");
+            AddCategorySection(content, "Blacklisted Packages", transitive.Where(p => p.Category == NugetPackageCategory.Blacklisted));
             AddCategorySection(content, "Microsoft Official .NET Packages", transitive.Where(p => p.Category == NugetPackageCategory.MicrosoftOfficial));
             AddCategorySection(content, "Microsoft Non-Official Packages", transitive.Where(p => p.Category == NugetPackageCategory.MicrosoftNonOfficial));
             AddCategorySection(content, "Known Trusted Packages", transitive.Where(p => p.Category == NugetPackageCategory.TrustedThirdParty));
@@ -285,10 +291,12 @@ internal class NugetAnalysisApplication {
         var microsoftNonOfficialPackages = packageGroups.Where(p => p.Category == NugetPackageCategory.MicrosoftNonOfficial).ToList();
         var trustedPackages = packageGroups.Where(p => p.Category == NugetPackageCategory.TrustedThirdParty).ToList();
         var otherPackages = packageGroups.Where(p => p.Category == NugetPackageCategory.Other).ToList();
+        var blacklistedPackages = packageGroups.Where(p => p.Category == NugetPackageCategory.Blacklisted).ToList();
 
         var content = new List<string>();
 
         // Display each category
+        AddAggregateCategorySection(content, "Blacklisted Packages", blacklistedPackages, showProjects);
         AddAggregateCategorySection(content, "Microsoft Official .NET Packages", microsoftOfficialPackages, showProjects);
         AddAggregateCategorySection(content, "Microsoft Non-Official Packages", microsoftNonOfficialPackages, showProjects);
         AddAggregateCategorySection(content, "Known Trusted Packages", trustedPackages, showProjects);

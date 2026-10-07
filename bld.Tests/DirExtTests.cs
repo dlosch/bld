@@ -47,4 +47,63 @@ public class DirExtTests {
             Assert.False(DirExt.IsNestedBelow(target, Abs("src", "app")));
         }
     }
+
+    // ----- EmptyParentCandidates (A1.4) ----------------------------------------------------------
+
+    [Fact]
+    public void EmptyParentCandidates_WalksUpToButNotIncludingTheBinRoot() {
+        var proj = Abs("repo", "App");
+        var marked = Abs("repo", "App", "bin", "Debug", "net8.0");
+        var parents = DirExt.EmptyParentCandidates(marked, new[] { proj });
+        Assert.Equal(new[] { Abs("repo", "App", "bin", "Debug") }, parents);
+    }
+
+    [Fact]
+    public void EmptyParentCandidates_StopsAtTheObjRoot() {
+        var proj = Abs("repo", "App");
+        var marked = Abs("repo", "App", "obj", "Debug", "net8.0");
+        var parents = DirExt.EmptyParentCandidates(marked, new[] { proj });
+        Assert.Equal(new[] { Abs("repo", "App", "obj", "Debug") }, parents);
+    }
+
+    [Fact]
+    public void EmptyParentCandidates_StopsAtTheConfigurationDirectory() {
+        // The whole bin/Debug is the marked directory, so bin (the root) is all that is above it.
+        var proj = Abs("repo", "App");
+        var marked = Abs("repo", "App", "bin", "Debug");
+        Assert.Empty(DirExt.EmptyParentCandidates(marked, new[] { proj }));
+    }
+
+    [Fact]
+    public void EmptyParentCandidates_DoesNotClimbIntoAnArtifactsRootOrAboveTheProject() {
+        // The artifacts pivot sits at artifacts/bin/App/Debug_net8.0; its parent is the artifacts root,
+        // which is not below the project directory, so nothing is offered for removal.
+        var proj = Abs("repo", "src", "App");
+        var marked = Abs("repo", "artifacts", "bin", "App", "Debug_net8.0");
+        Assert.Empty(DirExt.EmptyParentCandidates(marked, new[] { proj }));
+    }
+
+    // ----- MeasureTree (A1.5) --------------------------------------------------------------------
+
+    [Fact]
+    public void MeasureTree_DoesNotFollowASymlinkOutOfTheTree() {
+        if (OperatingSystem.IsWindows()) return; // junctions need elevation; the Linux link is enough.
+        var root = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), "bld_measure_" + Guid.NewGuid().ToString("N"))).FullName;
+        try {
+            var outside = Directory.CreateDirectory(Path.Combine(root, "outside")).FullName;
+            File.WriteAllBytes(Path.Combine(outside, "big.bin"), new byte[4096]);
+
+            var bin = Directory.CreateDirectory(Path.Combine(root, "bin")).FullName;
+            File.WriteAllBytes(Path.Combine(bin, "app.dll"), new byte[10]);
+            Directory.CreateSymbolicLink(Path.Combine(bin, "link"), outside);
+
+            var (bytes, count) = new DirectoryInfo(bin).MeasureTree();
+            // Only app.dll is counted; the symlinked tree (big.bin) is skipped.
+            Assert.Equal(10, bytes);
+            Assert.Equal(1, count);
+        }
+        finally {
+            Directory.Delete(root, recursive: true);
+        }
+    }
 }

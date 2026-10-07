@@ -27,11 +27,12 @@ public class ContainerMigrationTests : IDisposable {
         return path;
     }
 
+    // willWrite: true matches a --apply/-i run, where the no-USER "keep root?" question is asked.
     private async Task<ContainerMigrationService.MigrationPlan> PlanAsync(string dockerfile, params string[] projects) =>
-        await new ContainerMigrationService(_console).PlanAsync(dockerfile, projects, default);
+        await new ContainerMigrationService(_console, willWrite: true).PlanAsync(dockerfile, projects, default);
 
     private async Task<ContainerMigrationService.MigrationPlan> PlanAsync(bool? runAsRoot, string dockerfile, params string[] projects) =>
-        await new ContainerMigrationService(_console, runAsRoot).PlanAsync(dockerfile, projects, default);
+        await new ContainerMigrationService(_console, runAsRoot, willWrite: true).PlanAsync(dockerfile, projects, default);
 
     private static XElement Group(ContainerMigrationService.MigrationPlan plan, string name) =>
         Assert.Single(plan.Elements, e => e.Name.LocalName == name);
@@ -216,13 +217,15 @@ public class ContainerMigrationTests : IDisposable {
         // The alpine variant of the SDK's own image: ContainerFamily keeps the variant without pinning the version.
         Assert.Null(Property(plan, "ContainerBaseImage"));
         Assert.Equal("alpine", Property(plan, "ContainerFamily"));
-        Assert.Equal("$APP_UID", Property(plan, "ContainerUser"));
+        // USER $APP_UID is the SDK's default user, not a user to pin, and not an unresolved build arg.
+        Assert.Null(Property(plan, "ContainerUser"));
         Assert.Equal("/data", Property(plan, "ContainerWorkingDirectory"));
 
         var ports = Items(plan, "ContainerPort");
         Assert.Equal("udp", ports[0].Attribute("Type")?.Value);
         Assert.Equal("9090", ports[1].Attribute("Include")?.Value);
-        Assert.Contains(plan.Notes, n => n.Contains("APP_UID"));
+        Assert.Contains(plan.Notes, n => n.Contains("USER $APP_UID is the SDK's default user"));
+        Assert.DoesNotContain(plan.Notes, n => n.Contains("build args without a default"));
     }
 
     // ContainerEntrypoint is deprecated since .NET 8: a custom ENTRYPOINT is the app command with the
@@ -282,6 +285,52 @@ public class ContainerMigrationTests : IDisposable {
         _console.CanPrompt = true;
         plan = await PlanAsync(runAsRoot: true, withUser, project);
         Assert.Equal("app", Property(plan, "ContainerUser"));
+    }
+
+    // The standard Visual Studio / `dotnet new` template line since .NET 8. APP_UID is an ENV of the
+    // Microsoft base images, never defined in the Dockerfile; it must not become a ContainerUser.
+    [Theory]
+    [InlineData("USER $APP_UID\n")]
+    [InlineData("USER ${APP_UID}\n")]
+    public async Task Plan_UserAppUid_IsTheSdkDefaultAndNotWritten(string userLine) {
+        var project = Write("Api/Api.csproj", WebProject);
+        var dockerfile = Write("Api/Dockerfile",
+            "FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS base\n" +
+            "WORKDIR /app\n" +
+            "EXPOSE 8080\n" +
+            userLine +
+            "\n" +
+            "FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build\n" +
+            "RUN dotnet publish \"Api.csproj\" -c Release -o /app/publish\n" +
+            "\n" +
+            "FROM base AS final\n" +
+            "WORKDIR /app\n" +
+            "COPY --from=build /app/publish .\n" +
+            "ENTRYPOINT [\"dotnet\", \"Api.dll\"]\n");
+
+        var plan = await PlanAsync(dockerfile, project);
+
+        Assert.Null(plan.SkipReason);
+        Assert.Null(Property(plan, "ContainerUser"));
+        Assert.Contains(plan.Notes, n => n.Contains("USER $APP_UID is the SDK's default user"));
+        // Not listed as an unresolved build arg, and not asked about as a no-USER image.
+        Assert.DoesNotContain(plan.Notes, n => n.Contains("build args without a default"));
+        Assert.DoesNotContain(plan.Notes, n => n.Contains("no USER"));
+        Assert.Empty(_console.ConfirmPrompts);
+    }
+
+    /// <summary>A4.2: a plain dry run writes nothing, so it must not ask "keep running as root?".</summary>
+    [Fact]
+    public async Task Plan_DryRun_NoUser_DoesNotPromptAndDefersToApply() {
+        var project = Write("App/App.csproj", WebProject);
+        var dockerfile = Write("App/Dockerfile", "FROM mcr.microsoft.com/dotnet/aspnet:8.0\nENTRYPOINT [\"dotnet\", \"App.dll\"]\n");
+
+        // willWrite: false is the dry run; CanPrompt stays true to prove the mode, not the terminal, decides.
+        var plan = await new ContainerMigrationService(_console, willWrite: false).PlanAsync(dockerfile, [project], default);
+
+        Assert.Empty(_console.ConfirmPrompts);
+        Assert.Null(Property(plan, "ContainerUser"));
+        Assert.Contains(plan.Notes, n => n == "no USER: --apply asks whether to keep root; --run-as-root answers yes");
     }
 
     [Theory]

@@ -68,7 +68,7 @@ internal sealed record CleanPickerModel(IReadOnlyList<CleanPickerGroup> Groups, 
             list.Add(new CleanPickerRow(path, category, bytes, files));
         }
         foreach (var entry in result.Directories) {
-            var (bytes, files) = Measure(entry.Directory);
+            var (bytes, files) = entry.Directory.MeasureTree();
             Add(entry.Directory.FullName, entry.References, entry.Category, bytes, files);
         }
         // A package file is its own row: only that file goes, not the directory around it.
@@ -89,16 +89,6 @@ internal sealed record CleanPickerModel(IReadOnlyList<CleanPickerGroup> Groups, 
         }
         if (options.CleanTestResults) preselected.Add(CleanCategory.TestResults);
         return new CleanPickerModel(groups, preselected);
-    }
-
-    private static (long Bytes, int Files) Measure(DirectoryInfo directory) {
-        try {
-            var files = directory.EnumerateFiles("*", new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = true, ReturnSpecialDirectories = false, MatchType = MatchType.Simple }).ToList();
-            return (files.Sum(f => f.Length), files.Count);
-        }
-        catch (Exception) {
-            return (0, 0);
-        }
     }
 
 }

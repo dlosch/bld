@@ -181,6 +181,32 @@ public class ContainerValidationTests : IDisposable {
         Assert.Contains("ContainerDefaultArgs", finding.Message);
     }
 
+    // A4.4: Docker-legal names Docker allows and the pattern used to reject.
+    [Theory]
+    [InlineData("my__app")]
+    [InlineData("my--app")]
+    [InlineData("registry:5000/team/my-app")]
+    [InlineData("team/sub__component/my-app")]
+    public async Task Validate_RepositoryAcceptsDockerLegalNames(string repository) {
+        var project = Write("App/App.csproj", Project("Microsoft.NET.Sdk.Web", "net8.0",
+            $"    <ContainerRepository>{repository}</ContainerRepository>\n"));
+
+        var report = await ValidateAsync(project);
+
+        Assert.DoesNotContain(report!.Findings, f => f.Setting == "ContainerRepository");
+    }
+
+    // Uppercase stays rejected; only the registry host may carry it, not a bare repository.
+    [Fact]
+    public async Task Validate_RepositoryStillRejectsUppercase() {
+        var project = Write("App/App.csproj", Project("Microsoft.NET.Sdk.Web", "net8.0",
+            "    <ContainerRepository>My.App</ContainerRepository>\n"));
+
+        var report = await ValidateAsync(project);
+
+        Assert.Contains("not a valid image name", Single(report, "ContainerRepository").Message);
+    }
+
     [Fact]
     public async Task Validate_ConditionedSettings_AreReportedButNotRewritten() {
         var project = Write("App/App.csproj",

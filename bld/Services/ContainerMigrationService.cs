@@ -15,14 +15,20 @@ namespace bld.Services;
 internal sealed class ContainerMigrationService {
     private readonly IConsoleOutput _console;
     private readonly bool? _runAsRoot;
+    private readonly bool _willWrite;
 
     /// <param name="runAsRoot">
     /// What to write for a Dockerfile without USER: true writes ContainerUser=root, false leaves the SDK
     /// default, null asks (and leaves the default when it cannot ask).
     /// </param>
-    public ContainerMigrationService(IConsoleOutput console, bool? runAsRoot = null) {
+    /// <param name="willWrite">
+    /// Whether the run will write (apply or interactive). Only a writing run asks "keep running as root?";
+    /// a plain dry run defers the question and notes that --apply would ask it.
+    /// </param>
+    public ContainerMigrationService(IConsoleOutput console, bool? runAsRoot = null, bool willWrite = false) {
         _console = console;
         _runAsRoot = runAsRoot;
+        _willWrite = willWrite;
     }
 
     internal sealed class MigrationPlan {
@@ -99,6 +105,8 @@ internal sealed class ContainerMigrationService {
         var labels = new List<(string Key, string Value)>();
         var ports = new List<(string Port, string Type)>();
         string? workDir = null, user = null;
+        // USER $APP_UID (the .NET 8+ template line) is the SDK's own default user, not a user to pin.
+        var appUidUser = false;
         List<string>? entrypoint = null, cmd = null;
 
         foreach (var stage in chain) {
@@ -158,9 +166,22 @@ internal sealed class ContainerMigrationService {
                         }
                         break;
                     }
-                    case "USER":
-                        user = DockerfileSubstitution.Substitute(DockerfileSubstitution.Unquote(args), values, unresolved);
+                    case "USER": {
+                        // APP_UID is an ENV of the Microsoft base images, never defined in the Dockerfile,
+                        // so it would stay unresolved and write a user that does not exist. The line is the
+                        // SDK's default user; recognise it instead of substituting (so it is not reported
+                        // as an unresolved build arg either).
+                        var raw = DockerfileSubstitution.Unquote(args);
+                        if (raw is "$APP_UID" or "${APP_UID}") {
+                            user = null;
+                            appUidUser = true;
+                        }
+                        else {
+                            user = DockerfileSubstitution.Substitute(raw, values, unresolved);
+                            appUidUser = false;
+                        }
                         break;
+                    }
                     case "ENTRYPOINT":
                         entrypoint = DockerfileSubstitution.ParseCommand(args);
                         if (!cmdSetInStage) cmd = null;
@@ -226,15 +247,25 @@ internal sealed class ContainerMigrationService {
         if (user is { }) {
             properties.Add(new XElement("ContainerUser", EscapeProperty(user)));
         }
+        else if (appUidUser) {
+            plan.Notes.Add("USER $APP_UID is the SDK's default user (`app` on .NET 8+ Microsoft images); not written");
+        }
         else {
             // Without USER the Dockerfile's image ran as root; the SDK runs .NET 8+ Microsoft images as
-            // the non-root `app` user instead. That is the better default, but not a silent one.
-            var root = _runAsRoot ?? (_console.CanPrompt && _console.Confirm($"{dockerfilePath} has no USER instruction, so its image ran as root. Keep running as root?", defaultValue: false));
-            if (root) {
+            // the non-root `app` user instead. That is the better default, but not a silent one. Only a
+            // run that writes asks; a dry run would write nothing, so it defers the question to --apply.
+            bool? root = _runAsRoot;
+            if (root is null && _willWrite) {
+                root = _console.CanPrompt && _console.Confirm($"{dockerfilePath} has no USER instruction, so its image ran as root. Keep running as root?", defaultValue: false);
+            }
+            if (root == true) {
                 properties.Add(new XElement("ContainerUser", "root"));
             }
-            else {
+            else if (root == false) {
                 plan.Notes.Add("no USER in the Dockerfile: the SDK's default user applies (non-root `app` on .NET 8+ Microsoft images); set ContainerUser=root to keep running as root");
+            }
+            else {
+                plan.Notes.Add("no USER: --apply asks whether to keep root; --run-as-root answers yes");
             }
         }
 

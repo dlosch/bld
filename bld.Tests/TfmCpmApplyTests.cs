@@ -154,6 +154,95 @@ public class TfmCpmApplyTests {
     }
 
     [Fact]
+    public async Task CreateDirectoryPackagesProps_AddsToAnUnconditionedItemGroup() {
+        var dir = Path.Combine(Path.GetTempPath(), $"bld-cpm-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        var props = Path.Combine(dir, "Directory.Packages.props");
+        await File.WriteAllTextAsync(props,
+            "<Project>\n" +
+            "  <ItemGroup Condition=\"'$(TargetFramework)'=='net48'\">\n    <PackageVersion Include=\"Pinned\" Version=\"1.0.0\" />\n  </ItemGroup>\n" +
+            "  <ItemGroup>\n    <PackageVersion Include=\"Existing\" Version=\"1.0.0\" />\n  </ItemGroup>\n</Project>\n");
+        try {
+            var service = new CpmService(new TestConsole(), new CleaningOptions());
+            var method = typeof(CpmService).GetMethod("CreateDirectoryPackagesPropsAsync",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+            await (Task)method.Invoke(service, [props, new Dictionary<string, string> { ["Added"] = "2.0.0" }, CancellationToken.None])!;
+
+            var doc = XDocument.Load(props);
+            var added = doc.Descendants("PackageVersion").Single(e => (string?)e.Attribute("Include") == "Added");
+
+            // The first group with PackageVersion items is the per-framework block; an entry placed
+            // there would only exist for net48 and leave every other project without a version.
+            Assert.Null(added.Parent!.Attribute("Condition"));
+        }
+        finally {
+            Directory.Delete(dir, true);
+        }
+    }
+
+    [Fact]
+    public void NotMigratableReason_FlagsFrameworksBldCannotRewrite() {
+        var dir = Path.Combine(Path.GetTempPath(), $"bld-tfm-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        try {
+            var inline = Path.Combine(dir, "Inline.csproj");
+            File.WriteAllText(inline, "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>");
+            var imported = Path.Combine(dir, "Imported.csproj");
+            File.WriteAllText(imported, "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><Nullable>enable</Nullable></PropertyGroup></Project>");
+            var conditional = Path.Combine(dir, "Conditional.csproj");
+            File.WriteAllText(conditional, "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup Condition=\"'$(OS)'=='Windows_NT'\"><TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>");
+            var reference = Path.Combine(dir, "Reference.csproj");
+            File.WriteAllText(reference, "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFrameworks>$(Tfms)</TargetFrameworks></PropertyGroup></Project>");
+
+            var service = NewTfmService();
+
+            Assert.Null(service.NotMigratableReason(inline, usesTargetFrameworks: false, "net8.0"));
+            // The dry run listed these as migrations; --apply then failed each with "No unambiguous
+            // <TargetFramework>" and exit 1.
+            Assert.Contains("Directory.Build.props", service.NotMigratableReason(imported, usesTargetFrameworks: false, "net8.0"));
+            Assert.Contains("Condition", service.NotMigratableReason(conditional, usesTargetFrameworks: false, "net8.0"));
+            Assert.Contains("property reference", service.NotMigratableReason(reference, usesTargetFrameworks: true, "net8.0;net9.0"));
+        }
+        finally {
+            Directory.Delete(dir, true);
+        }
+    }
+
+    [Fact]
+    public async Task ResolveEolTfms_FallsBackToTheEmbeddedListOffline() {
+        var console = new TestConsole();
+        var service = new TfmService(console, new CleaningOptions());
+
+        var offline = await service.ResolveEolTfmsAsync(_ => throw new HttpRequestException("no network"), CancellationToken.None);
+
+        // Offline used to yield an empty set, so nothing was ever flagged and the run looked clean.
+        Assert.Contains("net6.0", offline);
+        Assert.Equal(TfmService.EolFallbackTfms(DateOnly.FromDateTime(DateTime.UtcNow)).Order(), offline.Order());
+        Assert.Contains(console.Messages, m => m.Level == "Warning" && m.Message.Contains(TfmService.EolFallbackAsOf.ToString("yyyy-MM-dd")));
+
+        var live = await service.ResolveEolTfmsAsync(_ => Task.FromResult<TfmService.ReleasesIndex?>(new TfmService.ReleasesIndex([
+            new TfmService.ReleaseChannel("8.0", "eol", null),
+            new TfmService.ReleaseChannel("10.0", "active", null),
+        ])), CancellationToken.None);
+
+        Assert.Equal(["net8.0"], live.ToList());
+    }
+
+    [Fact]
+    public void EolFallbackTfms_FollowsTheEndOfSupportDates() {
+        // net8.0 (LTS) and net9.0 (STS, extended to 24 months) both end on 2026-11-10.
+        var before = TfmService.EolFallbackTfms(new DateOnly(2026, 11, 9));
+        Assert.Contains("net7.0", before);
+        Assert.DoesNotContain("net8.0", before);
+        Assert.DoesNotContain("net9.0", before);
+
+        var after = TfmService.EolFallbackTfms(new DateOnly(2026, 11, 10));
+        Assert.Contains("net8.0", after);
+        Assert.Contains("net9.0", after);
+        Assert.DoesNotContain("net10.0", after);
+    }
+
+    [Fact]
     public async Task CreateDirectoryPackagesProps_MergesInsteadOfReplacing() {
         var dir = Path.Combine(Path.GetTempPath(), $"bld-cpm-{Guid.NewGuid():N}");
         Directory.CreateDirectory(dir);

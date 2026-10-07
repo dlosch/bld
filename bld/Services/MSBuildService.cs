@@ -38,28 +38,11 @@ internal class MSBuildService : IMSBuildService, IDisposable {
             if (!_isRegistered) {
                 try {
                     if (MSBuildLocator.CanRegister) {
-                        if (cleaningOptions.UseVSInstance) {
-                            console?.WriteDebug($"Query VS instances ...");
-                            var loc = new VSService()
-                                .GetLocations()
-                                .FirstOrDefault();
-                            if (loc is { }) {
-                                console?.WriteWarning($"Registering MSBuild instance: {loc.Name} {loc.MSBuildPath} {Path.Exists(loc.MSBuildPath)} {loc.Version}");
-                                NuGetAssemblyResolver.MSBuildDirectory = loc.MSBuildPath;
-                                MSBuildLocator.RegisterInstance(loc);
-                                // Fall through to set _isRegistered: returning here left IsRegistered
-                                // reporting false after a successful registration.
-                                _isRegistered = true;
-                                return;
-                            }
-                        }
-
                         // On .NET, MSBuildLocator only discovers .NET SDK instances: VisualStudioSetup
-                        // and DeveloperConsole discovery live behind #if NET46 in the locator, so the
-                        // former "prefer the newest non-SDK instance" query here could never match and
-                        // always fell through. RegisterDefaults resolves through hostfxr, which honours
-                        // a global.json in the current working directory - use --use-vs (VSService) to
-                        // host a Visual Studio MSBuild instead.
+                        // and DeveloperConsole discovery live behind #if NET46 in the locator, so a
+                        // "prefer the newest non-SDK instance" query can never match. RegisterDefaults
+                        // resolves through hostfxr, which honours a global.json in the current working
+                        // directory. Visual Studio only contributes its .targets, through VSToolsPath.
                         var instance = MSBuildLocator.RegisterDefaults();
                         NuGetAssemblyResolver.MSBuildDirectory = instance.MSBuildPath;
                         console?.WriteDebug($"Registered MSBuild instance: {instance.Name} {instance.Version} ({instance.MSBuildPath})");

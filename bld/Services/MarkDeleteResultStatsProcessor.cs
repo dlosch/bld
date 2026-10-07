@@ -8,24 +8,14 @@ internal class MarkDeleteResultStatsProcessor : IMarkDeleteResultProcessor {
     private readonly IConsoleOutput _console;
     private readonly ErrorSink _errorSink;
     private readonly CleaningOptions _options;
-    private readonly EnumerationOptions _enumerateFiles;
 
     public MarkDeleteResultStatsProcessor(IConsoleOutput console, ErrorSink errorSink, CleaningOptions options) {
         _console = console;
         _errorSink = errorSink;
         _options = options;
-
-        _enumerateFiles = new EnumerationOptions { MatchType = MatchType.Simple, RecurseSubdirectories = true, ReturnSpecialDirectories = false, IgnoreInaccessible = true };
     }
 
     public Task ProcessAsync(MarkDeleteResult result) {
-
-        (long Bytes, int Count) GetSize(DirectoryInfo dirInfo) {
-            var affectedFiles = dirInfo.EnumerateFiles("*", _enumerateFiles);
-            // Materialize to avoid double enumeration
-            var files = affectedFiles.ToArray();
-            return (files.Sum(a => a.Length), files.Length);
-        }
 
         if (result.IsEmpty) {
             _console.WriteLine("No directories marked for deletion.");
@@ -48,7 +38,7 @@ internal class MarkDeleteResultStatsProcessor : IMarkDeleteResultProcessor {
             if (path is null) continue;
 
             if (!path.Exists) continue;
-            var (bytes, count) = GetSize(path);
+            var (bytes, count) = path.MeasureTree();
             totalBytes += bytes;
             totalFiles += count;
 

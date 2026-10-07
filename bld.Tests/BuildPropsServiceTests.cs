@@ -6,6 +6,21 @@ namespace bld.Tests;
 
 public class BuildPropsServiceTests {
     [Fact]
+    public void ImportChain_NestsByDirectoryAncestry_NotPathLength() {
+        var repo = Path.Combine(Path.GetTempPath(), "repo", "Directory.Build.props");
+        var src = Path.Combine(Path.GetTempPath(), "repo", "src", "Directory.Build.props");
+        // Shorter path than src, but not an ancestor of anything here.
+        var other = Path.Combine(Path.GetTempPath(), "x", "Directory.Build.props");
+
+        var chain = BuildPropsService.ImportChain([src, other, repo]);
+
+        Assert.Equal(repo, chain.Single(e => e.File == src).Parent);
+        Assert.Null(chain.Single(e => e.File == repo).Parent);
+        Assert.Null(chain.Single(e => e.File == other).Parent);
+        Assert.True(chain.FindIndex(e => e.File == repo) < chain.FindIndex(e => e.File == src));
+    }
+
+    [Fact]
     public void BuildPropertyRows_DeduplicatesIdenticalOverridesAcrossProjects() {
         var overrideA = CreateOverride(
             projectPath: "/repo/src/A/A.csproj",

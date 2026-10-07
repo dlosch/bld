@@ -1,7 +1,8 @@
-﻿using bld.Infrastructure;
+using bld.Infrastructure;
 using NuGet.Frameworks;
 using NuGet.Versioning;
 using System.Net.Http.Json;
+using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Text.Json.Serialization;
 
@@ -18,24 +19,64 @@ public static class NugetMetadataService {
         };
 
         // MaxConnectionsPerServer does not bound HTTP/2 streams, so the cap sits in front of the handler.
-        var client = new HttpClient(new ThrottlingHandler(options.MaxParallelRequests) { InnerHandler = clientHandler });
-        client.Timeout = options.HttpTimeout;
+        // The per-request timeout is applied inside the handler, after a throttle slot is acquired, so
+        // the wait for a slot does not eat into it; HttpClient.Timeout therefore has to be switched off.
+        var client = new HttpClient(new ThrottlingHandler(options.MaxParallelRequests, options.HttpTimeout) { InnerHandler = clientHandler });
+        client.Timeout = Timeout.InfiniteTimeSpan;
         if (!client.DefaultRequestHeaders.Contains("User-Agent")) {
-            client.DefaultRequestHeaders.Add("User-Agent", "NugetMetadata/1.0.0");
+            client.DefaultRequestHeaders.Add("User-Agent", UserAgent);
         }
         client.DefaultRequestVersion = new Version(2, 0);
         client.DefaultVersionPolicy = HttpVersionPolicy.RequestVersionOrLower;
         return client;
     }
 
-    /// <summary>Lets at most <see cref="NugetMetadataOptions.MaxParallelRequests"/> requests be in flight at once.</summary>
-    private sealed class ThrottlingHandler(int maxParallelRequests) : DelegatingHandler {
+    // Identifies the tool to the feeds with the build's informational version, e.g. "bld/0.5.0".
+    private static readonly string UserAgent = BuildUserAgent();
+
+    private static string BuildUserAgent() {
+        var assembly = typeof(NugetMetadataService).Assembly;
+        var version = assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
+            ?? assembly.GetName().Version?.ToString()
+            ?? "unknown";
+        return $"bld/{version}";
+    }
+
+    /// <summary>
+    /// Lets at most <see cref="NugetMetadataOptions.MaxParallelRequests"/> requests be in flight at
+    /// once. Each request's timeout starts only once it holds a slot: the wait for a slot must not
+    /// count against it, or a long queue in front of a slow feed would time requests out before they
+    /// were even sent.
+    /// </summary>
+    private sealed class ThrottlingHandler(int maxParallelRequests, TimeSpan timeout) : DelegatingHandler {
         private readonly SemaphoreSlim _gate = new(Math.Max(1, maxParallelRequests));
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) {
             await _gate.WaitAsync(cancellationToken);
             try {
-                return await base.SendAsync(request, cancellationToken);
+                using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                timeoutCts.CancelAfter(timeout);
+                try {
+                    var response = await base.SendAsync(request, timeoutCts.Token);
+                    // HttpClient.Timeout is off, so the body has to be read under this timeout too:
+                    // otherwise a feed that sends headers and then stalls would hang the run for good.
+                    try {
+                        await response.Content.LoadIntoBufferAsync(timeoutCts.Token);
+                    }
+                    catch {
+                        response.Dispose();
+                        throw;
+                    }
+                    return response;
+                }
+                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested) {
+                    // The per-request timeout fired rather than the caller cancelling: surface it as
+                    // the same TaskCanceledException-wrapping-TimeoutException that HttpClient.Timeout
+                    // used to throw, so nothing downstream has to change.
+                    throw new TaskCanceledException(
+                        $"The request was canceled due to the configured timeout of {timeout.TotalSeconds}s elapsing.",
+                        new TimeoutException());
+                }
             }
             finally {
                 _gate.Release();
@@ -136,9 +177,6 @@ public static class NugetMetadataService {
             var allowPrerelease = request.AllowPrerelease;
             // Whether the feed lists any stable version at all, independent of framework matching.
             var sawListedStable = false;
-            // Newest listed version rejected by VersionFilter, reported so the caller can tell the
-            // user that an update exists outside the window they asked for.
-            string? newestOutsideFilter = null;
             VersionCandidate? patchCandidate = null, minorCandidate = null, majorCandidate = null, currentCandidate = null;
 retry:
             patchCandidate = minorCandidate = majorCandidate = currentCandidate = null;
@@ -172,19 +210,6 @@ retry:
                     if (!isPrerelease) sawListedStable = true;
                     if (!allowPrerelease && isPrerelease)
                         continue;
-
-                    // Version window (e.g. --max-bump minor). Applied before the framework check so a
-                    // capped run does not pay for TFM matching on versions it can never propose.
-                    // sawListedStable deliberately counts versions above the cap: the prerelease retry
-                    // asks "does this package have any stable release at all", not "within the window".
-                    if (request.VersionFilter is { } versionFilter) {
-                        if (nugetVersion is null) continue;
-                        if (!versionFilter(nugetVersion)) {
-                            // Pages are walked newest-first, so the first rejection is the newest one.
-                            newestOutsideFilter ??= versionItem.CatalogEntry.Version;
-                            continue;
-                        }
-                    }
 
                     // Anything below the pin is not a target. The baseline itself stays a candidate,
                     // so a package that is already current still reports a version rather than
@@ -274,8 +299,6 @@ retry:
                                 PackageId = request.PackageId,
                                 TargetFrameworkVersions = supportedFrameworks,
                                 IsPrerelease = isPrerelease,
-                                NewestOutsideFilter = newestOutsideFilter,
-
                                 Dependencies = dependencyGroups
                             };
                         }
@@ -312,7 +335,6 @@ done:
                 // be looked at again before we call it unknown.
                 if (majorCandidate is null && !allowPrerelease && !request.AllowPrerelease && !sawListedStable) {
                     allowPrerelease = true;
-                    newestOutsideFilter = null;
                     goto retry;
                 }
                 if (majorCandidate is null) {
@@ -323,7 +345,6 @@ done:
                     return new PackageVersionResult {
                         PackageId = request.PackageId,
                         TargetFrameworkVersions = new Dictionary<NuGetFramework, string>(),
-                        NewestOutsideFilter = newestOutsideFilter,
                         Candidates = new PackageVersionCandidates { Current = currentCandidate }
                     };
                 }
@@ -347,23 +368,7 @@ done:
             // mismatch - so a stable-only feed could still yield a prerelease that --apply then pinned.
             if (!allowPrerelease && !request.AllowPrerelease && !sawListedStable) {
                 allowPrerelease = true;
-                // The second pass sees a different candidate set, so anything recorded in the first
-                // pass is not necessarily the newest rejected version any more.
-                newestOutsideFilter = null;
                 goto retry;
-            }
-
-            // A version window that excluded every candidate is a result, not a lookup failure. The
-            // caller counts null as a feed outage and exits non-zero, which would turn "pinned at a
-            // prerelease major with no stable release in that major" into a CI failure.
-            if (newestOutsideFilter is not null) {
-                logger?.WriteDebug($"No version within the requested window for {request.PackageId}; newest outside it is {newestOutsideFilter}");
-                return new PackageVersionResult {
-                    PackageId = request.PackageId,
-                    TargetFrameworkVersions = new Dictionary<NuGetFramework, string>(),
-                    NewestOutsideFilter = newestOutsideFilter,
-                    NoVersionWithinFilter = true
-                };
             }
 
             logger?.WriteDebug($"No matching version found for {request.PackageId} with any of the requested frameworks");
@@ -393,33 +398,15 @@ done:
     }
 
     /// <summary>
-    /// Merges the per-feed answers for one package: the highest version wins, "nothing inside the
-    /// --max-bump window" only counts when no feed had a candidate, and the held-back version is the
-    /// newest any feed rejected. Null when no feed knows the package.
+    /// Merges the per-feed answers for one package: the highest version wins. Null when no feed knows
+    /// the package.
     /// </summary>
     internal static PackageVersionResult? PickNewest(IEnumerable<PackageVersionResult?> results) {
         PackageVersionResult? best = null;
         NuGetVersion? bestVersion = null;
-        string? newestOutside = null;
-        NuGetVersion? newestOutsideVersion = null;
-        var sawWindowMiss = false;
-        string? packageId = null;
         var all = results.Where(r => r is not null).Select(r => r!).ToList();
 
         foreach (var result in all) {
-            packageId ??= result.PackageId;
-
-            if (result.NewestOutsideFilter is { } outside && NuGetVersion.TryParse(outside, out var outsideVersion)
-                && (newestOutsideVersion is null || outsideVersion > newestOutsideVersion)) {
-                newestOutside = outside;
-                newestOutsideVersion = outsideVersion;
-            }
-
-            if (result.NoVersionWithinFilter) {
-                sawWindowMiss = true;
-                continue;
-            }
-
             var versionText = result.TargetFrameworkVersions.Values.FirstOrDefault();
             if (!NuGetVersion.TryParse(versionText, out var version)) continue;
             if (bestVersion is null || version > bestVersion) {
@@ -442,21 +429,12 @@ done:
                     }
                 };
             }
-            return newestOutside is null ? best : best with { NewestOutsideFilter = newestOutside };
-        }
-        if (sawWindowMiss) {
-            return new PackageVersionResult {
-                PackageId = packageId ?? string.Empty,
-                TargetFrameworkVersions = new Dictionary<NuGetFramework, string>(),
-                NewestOutsideFilter = newestOutside,
-                NoVersionWithinFilter = true,
-            };
+            return best;
         }
         // Every feed that knows the package found nothing compatible: pass that on as empty
         // candidates, so the caller reports it instead of counting a failed lookup.
         if (all.FirstOrDefault(r => r.Candidates is { IsEmpty: true }) is { } known) {
             return known with {
-                NewestOutsideFilter = newestOutside,
                 Candidates = new PackageVersionCandidates { Current = all.Select(r => r.Candidates?.Current).FirstOrDefault(c => c is not null) }
             };
         }
@@ -595,7 +573,6 @@ public record NugetMetadataOptions {
     public string RegistrationBaseUrl { get; init; } = "https://api.nuget.org/v3/registration5-gz-semver2/";
     public string SearchQueryUrl { get; init; } = "https://azuresearch-usnc.nuget.org/query";
     public string PackageVersionsUrl { get; init; } = "https://api.nuget.org/v3-flatcontainer/";
-    public TimeSpan CacheExpiration { get; init; } = TimeSpan.FromMinutes(30);
     public TimeSpan HttpTimeout { get; init; } = TimeSpan.FromSeconds(30);
     public int MaxParallelRequests { get; init; } = 10;
 }
@@ -604,12 +581,6 @@ public record PackageVersionRequest {
     public required string PackageId { get; init; }
     public bool AllowPrerelease { get; init; }
     public bool IsPrivateAssets { get; init; } = false;
-
-    /// <summary>
-    /// Optional upper bound on the versions that may be proposed, e.g. "same major as the current
-    /// pin" for <c>--max-bump minor</c>. Null means every listed version is a candidate.
-    /// </summary>
-    public Func<NuGetVersion, bool>? VersionFilter { get; init; }
 
     /// <summary>
     /// The version the package is pinned at now. When set, the walk does not stop at the newest
@@ -635,20 +606,6 @@ public record PackageVersionResult {
     public required string PackageId { get; init; }
     public required Dictionary<NuGetFramework, string> TargetFrameworkVersions { get; init; }
     public bool IsPrerelease { get; init; }
-
-    /// <summary>
-    /// Newest listed version that <see cref="PackageVersionRequest.VersionFilter"/> rejected, or null
-    /// when no filter was set or nothing was rejected. Informational only - it has not been checked
-    /// for target framework compatibility.
-    /// </summary>
-    public string? NewestOutsideFilter { get; init; }
-
-    /// <summary>
-    /// True when <see cref="PackageVersionRequest.VersionFilter"/> excluded every candidate, so
-    /// <see cref="TargetFrameworkVersions"/> is empty by design. Distinguishes "nothing to propose
-    /// inside the window" from a failed lookup, which the caller must not treat the same way.
-    /// </summary>
-    public bool NoVersionWithinFilter { get; init; }
 
     /// <summary>
     /// Highest compatible version per bump class relative to

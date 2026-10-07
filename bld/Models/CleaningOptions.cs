@@ -4,10 +4,10 @@ internal record CleaningOptions {
 
     internal string Filter => "*.sln?";
 
-    public bool UseVSInstance { get; init; } = false;
-
+    // The record defaults mirror the command-line defaults in BaseCommand/CleanCommand, so code that
+    // builds options without a ParseResult (tests, helpers) behaves like a bare command line.
     public bool CleanOnlyNonCurrentTfms { get; init; } = false;
-    public bool CleanObjDirectory { get; init; } = true;
+    public bool CleanObjDirectory { get; init; } = false;
     public bool KeepRestoreArtifacts { get; init; } = false;
     /// <summary>Also mark PublishDir and PackageOutputPath (and artifacts/publish, artifacts/package).</summary>
     public bool CleanPublishDirectory { get; init; } = false;
@@ -26,7 +26,7 @@ internal record CleaningOptions {
     public string? OfflineConfigPath { get; init; }
     public bool Force { get; init; } = false;
     public LogLevel LogLevel { get; init; } = LogLevel.Warning;
-    public int Depth { get; init; } = 4;
+    public int Depth { get; init; } = 3;
     public bool Delete { get; internal set; }
 
 

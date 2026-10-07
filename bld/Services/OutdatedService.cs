@@ -43,21 +43,6 @@ internal class OutdatedService {
         skipTfmCheck ? Array.Empty<string>() : packageReferences.Tfms.ToList();
 
     /// <summary>
-    /// Whether <paramref name="candidate"/> is inside the update window allowed by
-    /// <paramref name="bump"/>, relative to the currently pinned <paramref name="current"/>.
-    /// </summary>
-    /// <remarks>
-    /// Compares version components rather than testing against an upper bound, because a prerelease
-    /// sorts *below* its release: "candidate &lt; 9.0.0" would let 9.0.0-preview.1 through under
-    /// <c>--max-bump minor --pre</c>, which is exactly the major bump the caller ruled out.
-    /// </remarks>
-    internal static bool WithinBump(NuGetVersion current, NuGetVersion candidate, MaxBump bump) => bump switch {
-        MaxBump.Minor => candidate.Major == current.Major,
-        MaxBump.Patch => candidate.Major == current.Major && candidate.Minor == current.Minor,
-        _ => true
-    };
-
-    /// <summary>
     /// Applies the <c>--package</c> / <c>--exclude</c> wildcard patterns. An empty include list means
     /// "everything"; exclude is applied afterwards and wins.
     /// </summary>
@@ -119,28 +104,22 @@ internal class OutdatedService {
         return overrides;
     }
 
-    /// <summary>
-    /// The cap that applies to one package: the most specific matching <c>--max-bump-for</c>
-    /// pattern, or <paramref name="global"/> when none matches. Specificity is the number of
-    /// non-wildcard characters, so "Microsoft.Extensions.*" beats "Microsoft.*"; ties go to the
-    /// pattern given last.
-    /// </summary>
-    internal static MaxBump EffectiveBump(string id, MaxBump global, IReadOnlyList<(string Pattern, MaxBump Level)> overrides) =>
-        ResolveBump(id, global, overrides, Array.Empty<PolicyRule>()).Level;
-
     internal enum BumpSource { Global, Override, Policy }
 
     /// <summary>
     /// The cap that applies to one package and where it comes from: a <c>--max-bump-for</c> pattern
-    /// beats a policy rule, which beats <c>--max-bump</c>. A policy is the more specific statement,
-    /// so a global <c>--max-bump major</c> does not lift it; only an override or
-    /// <c>--ignore-policy</c> does.
+    /// wins outright. A policy rule may only <em>tighten</em> this run's <c>--max-bump</c>, never
+    /// loosen it - a saved "never past minor" must not turn a <c>--max-bump patch</c> run into a
+    /// minor one - so the more restrictive of the rule and the global cap binds. The source is
+    /// <see cref="BumpSource.Policy"/> when the rule is the binding one, <see cref="BumpSource.Global"/>
+    /// when the global cap is stricter. <c>--max-bump-for</c> is the only way to lift a policy.
     /// </summary>
     internal static (MaxBump Level, BumpSource Source, PolicyRule? Rule) ResolveBump(string id, MaxBump global, IReadOnlyList<(string Pattern, MaxBump Level)> overrides, IReadOnlyList<PolicyRule> policies) {
         var overriding = PolicyService.Find(id, overrides.Select(o => new PolicyRule(o.Pattern, o.Level, null, null)).ToList());
         if (overriding is not null) return (overriding.MaxBump, BumpSource.Override, null);
         var rule = PolicyService.Find(id, policies);
-        if (rule is not null) return (rule.MaxBump, BumpSource.Policy, rule);
+        // MaxBump is ordered Major < Minor < Patch, so the larger value is the more restrictive cap.
+        if (rule is not null && rule.MaxBump >= global) return (rule.MaxBump, BumpSource.Policy, rule);
         return (global, BumpSource.Global, null);
     }
 
@@ -422,6 +401,26 @@ internal class OutdatedService {
             row.Latest > row.CurrentMin || row.Held is null || !NuGetVersion.TryParse(row.Held, out var held)
                 ? row.Latest
                 : held;
+    }
+
+    /// <summary>
+    /// The current cell for one package's report row. A non-CPM repo can pin the same id at several
+    /// versions across projects; the lookup uses the lowest as its baseline, so the higher pins were
+    /// invisible in a report that only showed that baseline. This names every distinct pin, newest
+    /// first, with how many projects hold it ("9.0.0 (1), 8.0.1 (3)"). A single pin renders as just
+    /// itself, so the common case is unchanged.
+    /// </summary>
+    internal static string FormatCurrentVersions(IEnumerable<string?> currentVersions) {
+        var counts = currentVersions
+            .Where(v => !string.IsNullOrWhiteSpace(v))
+            .GroupBy(v => v!, StringComparer.OrdinalIgnoreCase)
+            .Select(g => (Version: g.Key, Count: g.Count(), Parsed: NuGetVersion.TryParse(g.Key, out var p) ? p : null))
+            .OrderByDescending(x => x.Parsed)
+            .ThenBy(x => x.Version, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (counts.Count == 0) return string.Empty;
+        if (counts.Count == 1) return counts[0].Version;
+        return string.Join(", ", counts.Select(c => $"{c.Version} ({c.Count})"));
     }
 
     /// <summary>
@@ -1213,6 +1212,20 @@ internal class OutdatedService {
                 ? BuildReportGroups(reportRows, grouping)
                 : null;
             var rowsById = reportRows.ToDictionary(row => row.Id, StringComparer.OrdinalIgnoreCase);
+
+            // Current cell per package: every distinct pin across projects, not just the baseline the
+            // lookup used. Single-pin rows keep the old formatted/padded cell so their output does not
+            // change; mixed-pin rows show the plain "9.0.0 (1), 8.0.1 (3)" list instead.
+            string CurrentCells(string? id) => id is not null && allPackageReferences.TryGetValue(id, out var usages)
+                ? FormatCurrentVersions(usages.Select(u => u.Item.EffectiveVersion))
+                : string.Empty;
+            bool HasMixedCurrents(string? id) =>
+                id is not null && allPackageReferences.TryGetValue(id, out var usages)
+                && usages.Select(u => u.Item.EffectiveVersion)
+                    .Where(v => !string.IsNullOrWhiteSpace(v))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .Count() > 1;
+
             var rendered = reportGroups is null
                 ? reportRows.Select(row => (Group: (string?)null, Row: row)).ToList()
                 : reportGroups.SelectMany(g => g.Ids.Select(id => (Group: (string?)g.Name, Row: rowsById[id]))).ToList();
@@ -1228,13 +1241,13 @@ internal class OutdatedService {
                     .Select(entry => (IReadOnlyList<string?>)(reportGroups is null
                         ? new[] {
                             entry.Row.Id,
-                            PlainVersion(entry.Row.CurrentMin),
+                            HasMixedCurrents(entry.Row.Id) ? CurrentCells(entry.Row.Id) : PlainVersion(entry.Row.CurrentMin),
                             PlainVersion(entry.Row.Latest),
                             entry.Row.Held ?? string.Empty
                         }
                         : new[] {
                             entry.Row.Id,
-                            PlainVersion(entry.Row.CurrentMin),
+                            HasMixedCurrents(entry.Row.Id) ? CurrentCells(entry.Row.Id) : PlainVersion(entry.Row.CurrentMin),
                             PlainVersion(entry.Row.Latest),
                             entry.Row.Held ?? string.Empty,
                             entry.Group ?? string.Empty
@@ -1257,7 +1270,7 @@ internal class OutdatedService {
                     }
                     table.AddRow(
                         Markup.Escape(entry.Row.Id ?? ""),
-                        FormatVersion(entry.Row.CurrentMin, maxMajorLength),
+                        HasMixedCurrents(entry.Row.Id) ? Markup.Escape(CurrentCells(entry.Row.Id)) : FormatVersion(entry.Row.CurrentMin, maxMajorLength),
                         GetFormattedVersion(entry.Row.CurrentMin, entry.Row.Latest, maxMajorLength),
                         entry.Row.Held is null ? "" : Markup.Escape(entry.Row.Held)
                     );
@@ -1690,7 +1703,7 @@ internal class OutdatedService {
             }, cancellationToken);
             Journaled(pending);
         }
-        catch (Exception ex) {
+        catch (Exception ex) when (ex is not OperationCanceledException) {
             _errorSink?.AddError($"Failed to update {propsPath}.", exception: ex);
             _console.WriteError($"Failed to update {propsPath}: {ex.FormatMessage()}", ex);
             return 0;
@@ -1773,7 +1786,7 @@ internal class OutdatedService {
             if (written) Journaled(pending);
             return written;
         }
-        catch (Exception ex) {
+        catch (Exception ex) when (ex is not OperationCanceledException) {
             _errorSink?.AddError($"Failed to update {projectPath}.", exception: ex);
             _console.WriteError($"Failed to update {projectPath}: {ex.FormatMessage()}", ex);
             return false;
@@ -1831,7 +1844,7 @@ internal class OutdatedService {
             if (written) Journaled(pending);
             return written;
         }
-        catch (Exception ex) {
+        catch (Exception ex) when (ex is not OperationCanceledException) {
             _errorSink?.AddError($"Failed to update {projectPath}.", exception: ex);
             _console.WriteError($"Failed to update {projectPath}: {ex.FormatMessage()}", ex);
             return false;

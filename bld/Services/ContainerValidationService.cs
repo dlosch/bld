@@ -63,7 +63,11 @@ internal sealed class ContainerValidationService {
     private static readonly string[] ImageFormats = ["Docker", "OCI"];
     private static readonly string[] LocalRegistries = ["Docker", "Podman", "Wslc", "MacOSContainer"];
     private static readonly Regex TagPattern = new(@"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$", RegexOptions.Compiled);
-    private static readonly Regex RepositoryPattern = new(@"^[a-z0-9]+([._-][a-z0-9]+)*(/[a-z0-9]+([._-][a-z0-9]+)*)*$", RegexOptions.Compiled);
+    // Docker's name grammar: path components [a-z0-9]+((._|__|-+)[a-z0-9]+)* separated by '/', with an
+    // optional registry host (and port) in front. `__` and repeated `-` are legal separators.
+    private static readonly Regex RepositoryPattern = new(
+        @"^(?:[a-zA-Z0-9]+(?:[.-][a-zA-Z0-9]+)*(?::[0-9]+)?/)?[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?:/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*$",
+        RegexOptions.Compiled);
 
     /// <summary>Null when the project has no SDK container setting at all.</summary>
     public async Task<Report?> ValidateAsync(string projectPath, CancellationToken cancellationToken) {

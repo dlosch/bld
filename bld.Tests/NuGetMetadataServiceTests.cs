@@ -190,7 +190,7 @@ public class NuGetMetadataServiceTests {
         """;
 
     [Fact]
-    public async Task GetLatestVersionWithFrameworkCheckAsync_WithoutVersionFilter_TakesTheNewestVersion() {
+    public async Task GetLatestVersionWithFrameworkCheckAsync_TakesTheNewestVersion() {
         using var client = new HttpClient(new StaticResponseHandler(CapIndexJson, CapPageJson));
         var request = new PackageVersionRequest {
             PackageId = "My.Package",
@@ -202,46 +202,6 @@ public class NuGetMetadataServiceTests {
 
         Assert.NotNull(result);
         Assert.Contains("9.0.0", result!.TargetFrameworkVersions.Values);
-        Assert.Null(result.NewestOutsideFilter);
-    }
-
-    [Fact]
-    public async Task GetLatestVersionWithFrameworkCheckAsync_VersionFilterCapsTheResultAndReportsWhatItSkipped() {
-        using var client = new HttpClient(new StaticResponseHandler(CapIndexJson, CapPageJson));
-        var request = new PackageVersionRequest {
-            PackageId = "My.Package",
-            AllowPrerelease = false,
-            CompatibleTargetFrameworks = ["net8.0"],
-            VersionFilter = v => v.Major == 8
-        };
-
-        var result = await NugetMetadataService.GetLatestVersionWithFrameworkCheckAsync(client, new NugetMetadataOptions(), logger: null, request);
-
-        Assert.NotNull(result);
-        Assert.Contains("8.4.0", result!.TargetFrameworkVersions.Values);
-        Assert.DoesNotContain("9.0.0", result.TargetFrameworkVersions.Values);
-        Assert.Equal("9.0.0", result.NewestOutsideFilter);
-        Assert.False(result.NoVersionWithinFilter);
-    }
-
-    [Fact]
-    public async Task GetLatestVersionWithFrameworkCheckAsync_EmptyVersionWindowIsAResultNotALookupFailure() {
-        // Nothing in the feed satisfies the window. Returning null here would be read as a feed
-        // outage by the caller, which counts it as a failure and exits non-zero.
-        using var client = new HttpClient(new StaticResponseHandler(CapIndexJson, CapPageJson));
-        var request = new PackageVersionRequest {
-            PackageId = "My.Package",
-            AllowPrerelease = false,
-            CompatibleTargetFrameworks = ["net8.0"],
-            VersionFilter = v => v.Major == 42
-        };
-
-        var result = await NugetMetadataService.GetLatestVersionWithFrameworkCheckAsync(client, new NugetMetadataOptions(), logger: null, request);
-
-        Assert.NotNull(result);
-        Assert.True(result!.NoVersionWithinFilter);
-        Assert.Equal("9.0.0", result.NewestOutsideFilter);
-        Assert.Empty(result.TargetFrameworkVersions);
     }
 
     [Fact]
@@ -542,5 +502,51 @@ public class NuGetMetadataServiceTests {
 
         Assert.Equal("2.0.0", merged!.Candidates!.Major?.Version);
         Assert.Equal("1.2.3", merged.Candidates.Current?.Version);
+    }
+
+    [Fact]
+    public void CreateHttpClient_LeavesTheClientTimeoutInfiniteSoTheThrottleWaitDoesNotCountAgainstIt() {
+        // A2.4: the per-request timeout is applied inside the throttling handler, after a slot is
+        // acquired. If HttpClient.Timeout were set, the wait for a slot would eat into it and queued
+        // requests could expire before being sent.
+        using var client = NugetMetadataService.CreateHttpClient(new NugetMetadataOptions { HttpTimeout = TimeSpan.FromSeconds(5) });
+
+        Assert.Equal(Timeout.InfiniteTimeSpan, client.Timeout);
+    }
+
+    [Fact]
+    public async Task CreateHttpClient_TimesOutAFeedThatStallsAfterTheHeaders() {
+        // With HttpClient.Timeout off, the handler's timeout must also cover the body; it used to end
+        // when the headers arrived, so a feed stalling mid-body hung the run.
+        var listener = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        var server = Task.Run(async () => {
+            using var socket = await listener.AcceptTcpClientAsync();
+            var stream = socket.GetStream();
+            _ = await stream.ReadAsync(new byte[4096]);
+            await stream.WriteAsync(Encoding.ASCII.GetBytes("HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n{"));
+            await Task.Delay(TimeSpan.FromSeconds(10));
+        });
+
+        try {
+            using var client = NugetMetadataService.CreateHttpClient(new NugetMetadataOptions { HttpTimeout = TimeSpan.FromMilliseconds(500) });
+            using var request = new HttpRequestMessage(HttpMethod.Get, $"http://127.0.0.1:{port}/") { Version = HttpVersion.Version11, VersionPolicy = HttpVersionPolicy.RequestVersionExact };
+
+            var ex = await Assert.ThrowsAsync<TaskCanceledException>(() => client.SendAsync(request).WaitAsync(TimeSpan.FromSeconds(5)));
+            Assert.IsType<TimeoutException>(ex.InnerException);
+        }
+        finally {
+            listener.Stop();
+        }
+    }
+
+    [Fact]
+    public void CreateHttpClient_IdentifiesTheToolInTheUserAgent() {
+        using var client = NugetMetadataService.CreateHttpClient(new NugetMetadataOptions());
+
+        var userAgent = Assert.Single(client.DefaultRequestHeaders.GetValues("User-Agent"));
+        Assert.StartsWith("bld/", userAgent);
+        Assert.DoesNotContain("NugetMetadata", userAgent);
     }
 }

@@ -105,7 +105,7 @@ internal sealed class TfmCommand : BaseCommand {
         // Auto-detect --from if not specified
         List<string> fromTfms;
         if (string.IsNullOrEmpty(from)) {
-            from = await DetectSourceFrameworksAsync(rootPath);
+            from = await DetectSourceFrameworksAsync(rootPath, options);
             if (string.IsNullOrEmpty(from)) {
                 Output.WriteError("Could not auto-detect source framework. Projects have multiple TargetFrameworks or no consistent TargetFramework. Please specify --from parameter.");
                 return 1;
@@ -205,10 +205,11 @@ internal sealed class TfmCommand : BaseCommand {
         }
     }
 
-    private async Task<string?> DetectSourceFrameworksAsync(string rootPath) {
+    private async Task<string?> DetectSourceFrameworksAsync(string rootPath, CleaningOptions tempOptions) {
         try {
-            // Initialize MSBuild first for SlnScanner/SlnParser
-            var tempOptions = new CleaningOptions();
+            // Initialize MSBuild first for SlnScanner/SlnParser. The parsed options carry --depth and
+            // the VSToolsPath; a fresh CleaningOptions here searched with the record's default depth
+            // and ignored what the user passed.
             MSBuildInitializer.Initialize(Output, tempOptions);
 
             var errorSink = new ErrorSink(Output);

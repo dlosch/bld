@@ -137,4 +137,37 @@ public class OutdatedApplyTests {
             File.Delete(path);
         }
     }
+
+    /// <summary>
+    /// A2.2 regression: in a non-CPM solution two projects can pin the same package at different
+    /// versions. Each project's own pin, not a shared baseline, decides what it moves to, so both are
+    /// taken to the target rather than the one pinned higher being silently skipped.
+    /// </summary>
+    [Fact]
+    public async Task UpdatePackageVersion_MovesEachProjectFromItsOwnPinToTheTarget() {
+        var dir = Path.Combine(Path.GetTempPath(), $"bld-mixed-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        var projLow = Path.Combine(dir, "Low.csproj");
+        var projHigh = Path.Combine(dir, "High.csproj");
+        await File.WriteAllTextAsync(projLow,
+            "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <ItemGroup>\n" +
+            "    <PackageReference Include=\"Lib\" Version=\"8.0.1\" />\n  </ItemGroup>\n</Project>\n");
+        await File.WriteAllTextAsync(projHigh,
+            "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <ItemGroup>\n" +
+            "    <PackageReference Include=\"Lib\" Version=\"8.0.3\" />\n  </ItemGroup>\n</Project>\n");
+        try {
+            var service = new OutdatedService(new TestConsole(), new CleaningOptions());
+
+            var lowWritten = await service.UpdatePackageVersionAsync(projLow, "Lib", ("8.0.9", "8.0.1", VersionReason.PackageReferenceProj), default);
+            var highWritten = await service.UpdatePackageVersionAsync(projHigh, "Lib", ("8.0.9", "8.0.3", VersionReason.PackageReferenceProj), default);
+
+            Assert.True(lowWritten);
+            Assert.True(highWritten);
+            Assert.Contains("Include=\"Lib\" Version=\"8.0.9\"", await File.ReadAllTextAsync(projLow));
+            Assert.Contains("Include=\"Lib\" Version=\"8.0.9\"", await File.ReadAllTextAsync(projHigh));
+        }
+        finally {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
 }

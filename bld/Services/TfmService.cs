@@ -109,10 +109,28 @@ internal class TfmService {
 
         // A project appears once per evaluated configuration; collapse to one entry per file
         // so it is reported, written, and counted exactly once across preview and apply.
-        var distinctProjects = projectsToMigrate
+        var candidates = projectsToMigrate
             .GroupBy(p => p.ProjectPath)
             .Select(g => g.First())
             .ToList();
+
+        // The writer only edits an unconditioned <TargetFramework(s)> in the project file itself. A
+        // framework evaluated from Directory.Build.props or a conditional PropertyGroup has nothing
+        // bld can rewrite; those projects are listed with the reason instead of being counted as
+        // migrations the dry run promises and --apply then fails one by one.
+        var blocked = new List<(ProjectMigrationInfo Project, string Reason)>();
+        var distinctProjects = new List<ProjectMigrationInfo>();
+        foreach (var project in candidates) {
+            var reason = NotMigratableReason(project.ProjectPath, project.UsesTargetFrameworks, project.CurrentTfm);
+            if (reason is null) distinctProjects.Add(project);
+            else blocked.Add((project, reason));
+        }
+
+        if (distinctProjects.Count == 0) {
+            _console.WriteWarning($"None of the {blocked.Count} project(s) targeting {fromTfmsDisplay} can be migrated by bld:");
+            WriteBlocked(blocked);
+            return 1;
+        }
 
         _console.WriteLine($"Found {distinctProjects.Count} projects to migrate from {fromTfmsDisplay} to {toTfm}");
 
@@ -136,6 +154,8 @@ internal class TfmService {
                     _console.WriteWarning($"{Path.GetFileName(project.ProjectPath)} was not migrated.");
                 }
             }
+
+            WriteBlocked(blocked);
 
             if (notMigrated > 0) {
                 _console.WriteWarning($"Migration finished: {migrated} project(s) updated to {toTfm}, {notMigrated} left unchanged.");
@@ -177,6 +197,7 @@ internal class TfmService {
 
             if (actualMigrated.Count == 0) {
                 _console.WriteLine("Dry run - no projects require target framework changes.");
+                WriteBlocked(blocked);
                 return 0;
             }
 
@@ -247,6 +268,7 @@ internal class TfmService {
 
                 _console.WriteTable(table);
             }
+            WriteBlocked(blocked);
             _console.WriteLine("\nUse --apply to perform the migration.");
             if (updatePackages) {
                 // Checking packages now would test them against the frameworks the projects still
@@ -426,6 +448,38 @@ internal class TfmService {
         }
     }
 
+    private void WriteBlocked(List<(ProjectMigrationInfo Project, string Reason)> blocked) {
+        if (blocked.Count == 0) return;
+        _console.WriteWarning($"Not migratable by bld ({blocked.Count}):");
+        foreach (var (project, reason) in blocked.OrderBy(b => Path.GetFileName(b.Project.ProjectPath), StringComparer.OrdinalIgnoreCase)) {
+            _console.WriteWarning($"  {Path.GetFileName(project.ProjectPath)} ({project.CurrentTfm}): {reason}");
+        }
+    }
+
+    /// <summary>
+    /// Why the project's framework property cannot be rewritten, or null when it can. Mirrors what
+    /// the writers below require, so the dry run and --apply agree about every project.
+    /// </summary>
+    internal string? NotMigratableReason(string projectPath, bool usesTargetFrameworks, string currentValue) {
+        var localName = usesTargetFrameworks ? "TargetFrameworks" : "TargetFramework";
+        XDocument doc;
+        try {
+            doc = XDocument.Load(projectPath);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or XmlException) {
+            return $"the project file could not be read: {ex.Message}";
+        }
+
+        var element = FindTargetFrameworkProperty(doc, localName, currentValue);
+        if (element is null) {
+            return $"<{localName}> is not an unconditioned property of the project file; it is set under a Condition or in an imported file such as Directory.Build.props. Edit it there.";
+        }
+        if (usesTargetFrameworks && element.Value.Contains("$(")) {
+            return $"<TargetFrameworks> contains a property reference ({element.Value.Trim()}).";
+        }
+        return null;
+    }
+
     /// <summary>
     /// Whether a single-target project is actually eligible. The dry run used only "current != target"
     /// while the writer additionally required this, so the preview listed migrations that --apply then
@@ -578,40 +632,79 @@ internal class TfmService {
         return foundComparable;
     }
 
-    private async Task<HashSet<string>> GetEolTfmsAsync(CancellationToken cancellationToken) {
-        const string releasesIndexUrl = "https://dotnetcli.blob.core.windows.net/dotnet/release-metadata/releases-index.json";
-        try {
+    private const string ReleasesIndexUrl = "https://dotnetcli.blob.core.windows.net/dotnet/release-metadata/releases-index.json";
+
+    /// <summary>
+    /// End-of-support dates known at the time this build was cut, used when the live release index
+    /// cannot be fetched. Offline the fetch used to return nothing, so no TFM was ever flagged EOL and
+    /// the run looked clean. Dates rather than a fixed list, so net8.0 (LTS) and net9.0 (STS, extended
+    /// to 24 months) turn EOL on 2026-11-10 without a new build.
+    /// </summary>
+    internal static readonly DateOnly EolFallbackAsOf = new(2026, 10, 2);
+    private static readonly (string Tfm, DateOnly EolDate)[] EolFallbackList = {
+        ("netcoreapp1.0", new(2019, 6, 27)), ("netcoreapp1.1", new(2019, 6, 27)),
+        ("netcoreapp2.0", new(2018, 10, 1)), ("netcoreapp2.1", new(2021, 8, 21)),
+        ("netcoreapp2.2", new(2019, 12, 23)), ("netcoreapp3.0", new(2020, 3, 3)),
+        ("netcoreapp3.1", new(2022, 12, 13)), ("net5.0", new(2022, 5, 10)),
+        ("net6.0", new(2024, 11, 12)), ("net7.0", new(2024, 5, 14)),
+        ("net8.0", new(2026, 11, 10)), ("net9.0", new(2026, 11, 10)),
+        ("net10.0", new(2028, 11, 14)),
+    };
+
+    internal static HashSet<string> EolFallbackTfms(DateOnly today) =>
+        new(EolFallbackList.Where(e => e.EolDate <= today).Select(e => e.Tfm), StringComparer.OrdinalIgnoreCase);
+
+    private async Task<HashSet<string>> GetEolTfmsAsync(CancellationToken cancellationToken) =>
+        await ResolveEolTfmsAsync(async ct => {
             using var client = new HttpClient();
-            var index = await client.GetFromJsonAsync<ReleasesIndex>(releasesIndexUrl, cancellationToken);
+            return await client.GetFromJsonAsync<ReleasesIndex>(ReleasesIndexUrl, ct);
+        }, cancellationToken);
 
-            if (index?.Channels is null) return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    /// <summary>
+    /// Resolves the EOL set from the live release index when <paramref name="fetch"/> succeeds; online
+    /// data always wins. When the fetch fails or returns nothing usable, falls back to the embedded list
+    /// and warns with its as-of date so the result is never silently empty offline.
+    /// </summary>
+    internal async Task<HashSet<string>> ResolveEolTfmsAsync(Func<CancellationToken, Task<ReleasesIndex?>> fetch, CancellationToken cancellationToken) {
+        try {
+            var index = await fetch(cancellationToken);
+            if (index?.Channels is null) return EolFallback();
 
-            var eolTfms = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            var today = DateTime.UtcNow.Date;
-
-            foreach (var channel in index.Channels) {
-                if (string.IsNullOrWhiteSpace(channel.ChannelVersion)) continue;
-
-                var isEol = string.Equals(channel.SupportPhase, "eol", StringComparison.OrdinalIgnoreCase)
-                    || (channel.EolDate.HasValue && channel.EolDate.Value.Date <= today);
-
-                if (!isEol) continue;
-
-                // Map channel version to TFM (net5+ => netX.Y, netcoreapp for <5)
-                if (Version.TryParse(channel.ChannelVersion, out var version)) {
-                    var tfm = version.Major >= 5
-                        ? $"net{version.Major}.{version.Minor}"
-                        : $"netcoreapp{version.Major}.{version.Minor}";
-                    eolTfms.Add(tfm.ToLowerInvariant());
-                }
-            }
-
-            return eolTfms;
+            return ParseEolTfms(index);
         }
         catch (Exception ex) {
             _console.WriteWarning($"Failed to load .NET release metadata: {ex.FormatMessage()}");
-            return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            return EolFallback();
         }
+    }
+
+    private HashSet<string> EolFallback() {
+        _console.WriteWarning($"Using the built-in end-of-life framework list as of {EolFallbackAsOf:yyyy-MM-dd} (the live .NET release index could not be fetched); EOL results may be out of date.");
+        return EolFallbackTfms(DateOnly.FromDateTime(DateTime.UtcNow));
+    }
+
+    internal static HashSet<string> ParseEolTfms(ReleasesIndex index) {
+        var eolTfms = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var today = DateTime.UtcNow.Date;
+
+        foreach (var channel in index.Channels) {
+            if (string.IsNullOrWhiteSpace(channel.ChannelVersion)) continue;
+
+            var isEol = string.Equals(channel.SupportPhase, "eol", StringComparison.OrdinalIgnoreCase)
+                || (channel.EolDate.HasValue && channel.EolDate.Value.Date <= today);
+
+            if (!isEol) continue;
+
+            // Map channel version to TFM (net5+ => netX.Y, netcoreapp for <5)
+            if (Version.TryParse(channel.ChannelVersion, out var version)) {
+                var tfm = version.Major >= 5
+                    ? $"net{version.Major}.{version.Minor}"
+                    : $"netcoreapp{version.Major}.{version.Minor}";
+                eolTfms.Add(tfm.ToLowerInvariant());
+            }
+        }
+
+        return eolTfms;
     }
 
     private bool IsDirectPredecessor(string currentTfm, string targetTfm) {
@@ -760,11 +853,11 @@ internal class TfmService {
         DotNet
     }
 
-    private sealed record ReleasesIndex(
+    internal sealed record ReleasesIndex(
         [property: JsonPropertyName("releases-index")] List<ReleaseChannel> Channels
     );
 
-    private sealed record ReleaseChannel(
+    internal sealed record ReleaseChannel(
         [property: JsonPropertyName("channel-version")] string ChannelVersion,
         [property: JsonPropertyName("support-phase")] string? SupportPhase,
         [property: JsonPropertyName("eol-date")] DateTime? EolDate

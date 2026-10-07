@@ -101,7 +101,7 @@ Commands marked **Beta** may change behavior, arguments, or output formatting.
 
 ## Global Options
 
-All commands accept the following shared options unless stated otherwise:
+All commands accept the following shared options unless stated otherwise. `outdated undo` only takes `--root` and `--log`: it reads bld's own record of a run, not the projects.
 
 - `--root`, `-r`, or trailing argument — Directory, `.sln`/`.slnx`/`.slnf`, or project file to scan. Defaults to the current working directory.
 - `--depth`, `-d` — Directory recursion depth when `--root` is a folder. Default: `3` (max `32`).
@@ -111,6 +111,20 @@ All commands accept the following shared options unless stated otherwise:
 - `--vstoolspath`, `-vs` — Explicit `VSToolsPath` for MSBuild evaluation.
 - `--novstoolspath`, `-novs` — Skip automatic `VSToolsPath` resolution.
 
+### Dry run, `--apply`, `--interactive`
+
+The commands that change files share one model. Without a flag they report what they would do: `tfm`, `cpm`, `outdated`, `containerize --migrate` and `containerize --validate` write nothing. `--apply` writes it. `--interactive`/`-i` shows the plan as a list to pick from and then writes the selection, so it implies `--apply`; it needs an interactive terminal and fails with a hint when stdin is redirected. `clean` is the exception because deleting build output is what it is for: its picker is on by default and deletes what is checked after one question, `--delete` deletes without the picker, and `--output-file` writes a script instead of deleting; `stats` is the dry run with the same options. Where a command asks a question, a missing terminal counts as "no"; `--force` (`clean`) and `--yes` (`outdated undo`) answer yes unattended.
+
+### Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| `0` | The command did what was asked. A dry run that found work to do, a held-back package, or a validation finding is still `0`. |
+| `1` | Something failed: a solution or project could not be loaded or evaluated, a package lookup or a file write failed, a guard refused the command line (`--force` without an explicit root, `--interactive` without a terminal), or `--verify-restore` reported NuGet errors. |
+| `130` | Cancelled with Ctrl+C; nothing after the cancellation point was written. |
+
+Argument errors are reported by the command-line parser with its own non-zero code. No command returns `2`; the exit code does not say whether there was anything to update or delete.
+
 ## Stable Commands (Clean & Stats Focus)
 
 ### clean
@@ -118,7 +132,7 @@ All commands accept the following shared options unless stated otherwise:
 Purpose: enumerate build output, let you pick what to delete (default), or delete it directly or emit a deletion script.
 
 **Options**
-- `--non-current`, `--noncurrent`, `-nc` — Restrict deletion to target-framework-specific directories *not* listed in the project’s current TFMs. Default: `false`.
+- `--non-current`, `--noncurrent`, `-nc` — Restrict deletion to target-framework-specific directories *not* listed in the project’s current TFMs. Applies to `bin` and, with `--obj`, to `obj/<Configuration>/<tfm>` the same way; the current output and the restore artifacts are kept, so it implies `--keep-assets`. Publish, package and `TestResults` have no TFM to be stale by and are left alone under this flag. Default: `false`.
 - `--obj`, `-obj` — Include `obj` / `BaseIntermediateOutputPath` directories. Default: `false` (bin-only).
 - `--keep-assets` — When cleaning `obj`, preserve NuGet restore artifacts (`project.assets.json`, etc.) and only delete build-output subdirectories. Default: `false`.
 - `--publish` — Also clean publish output (`PublishDir`) and pack output (`PackageOutputPath`). Covers explicitly configured publish directories and, in the artifacts layout, `artifacts/publish/<project>/` and `artifacts/package/`. Default: `false`, because publish output is often kept on purpose for a deployment. A package output directory is never deleted as a whole: it is usually shared (a local feed, `artifacts/package/<config>/`), so only the project's own `<PackageId>.<version>.nupkg`/`.snupkg` files directly in it are deleted, and only for projects that pack (`IsPackable` not `false`). The file name only makes a file a candidate; the id in the package's own `.nuspec` decides, because a NuGet id may end in a numeric segment and `Foo.1.2.0.nupkg` is `Foo.1` version `2.0` as readily as `Foo` version `1.2.0`. A file that cannot be read as a package is left alone.
@@ -126,10 +140,10 @@ Purpose: enumerate build output, let you pick what to delete (default), or delet
 - `--interactive`, `-i` — Pick the directories from a list grouped by project before anything is written or deleted. Every category is marked; `--obj`, `--publish` and `--test-results` only decide what starts out checked (bin always does). Keys: `b`/`o`/`p`/`g`/`t` toggle bin, obj, publish, package and test results for every project on the top line, or for one project on its line or one of its rows; `space` toggles a directory (a whole project or everything on a header line); `a`/`n` all or none; `enter` confirms; `esc` cancels. Each header shows its categories as `[X]`, `[ ]` or `[-]` for a partly checked one, with the selected and total size. Every directory row shows the fully qualified path that would be deleted — never a relative one — cut in the middle (`C:\...\MyApp\bin\Debug\net10.0`) when the terminal is too narrow for it. It deletes: after `enter` it asks once for the whole selection (`Delete 12 directories (340.2 MiB)?`, default no) and then removes it, without a question per directory unless `--confirm` is given explicitly; `--force` skips that question too. Passing `--output-file`/`-o` writes the deletion script for the selection instead of deleting it. On by default; an explicit `--delete` or `--output-file` turns it off unless `-i` is given as well. Needs an interactive terminal: without one, pass `--delete` or `--output-file`.
 - `--keep-private-packages` — Before anything is cleaned, keep the packages the repo restored from a source other than nuget.org, so it still restores after the private feed is gone and `dotnet nuget locals all --clear` has emptied the caches. For every package in each project's `project.assets.json` (transitive ones included), the source restore recorded in the package's `.nupkg.metadata` decides: anything but nuget.org and the folders the SDK and Visual Studio ship packages in is copied as `.nupkg` from the packages folder into `.nuget-private/<source key>/` in the root directory. `nuget.offline.config` is written next to it: a cleared source list with nuget.org as configured and each private source's key pointing at its folder (relative path), credentials left out, and package source mapping carried over, with each kept package mapped to its folder. The existing `nuget.config` is not touched; restore with `dotnet restore --configfile nuget.offline.config`. Needs a prior restore; projects without `project.assets.json` and packages missing from the packages folder or restored by a NuGet too old to record the source are reported, not kept. A package restored through a company mirror of nuget.org (Artifactory remote, Azure Artifacts upstream) is not kept when the file carries nuget.org's repository signature: nuget.org signs every package it serves and a mirror passes the file through unchanged, so that exact file stays restorable from nuget.org. This needs no network. A package a feed republished under a nuget.org id and version is a different file without that signature, and is kept. Running it again after restoring from the folder feed keeps what is there.
 - `--private-packages-dir` — Folder for `--keep-private-packages` instead of `.nuget-private` in the root directory; implies `--keep-private-packages`.
-- `--output-file`, `-o` — Write a deletion script instead of deleting. The path is optional: a bare `-o` writes `clean.cmd` or `clean.sh` depending on OS. No script is written without it. `clean.sh` is created executable, starts with `#!/bin/sh`, removes everything it can even when one `rm` fails (a locked or root-owned directory) and then exits non-zero, and quotes every path so the shell cannot expand it; `clean.cmd` escapes `%` the same way. Run it with `./clean.sh` or `clean.cmd` after reviewing it.
-- `--delete` — Delete without the picker, asking per directory. Default: `false`.
-- `--force` — Skip confirmation prompts (requires explicit `--root` to avoid accidental repo-wide deletes). In non-interactive contexts (CI / piped stdin) a missing confirmation is treated as "no" (skip), so `--force` is required to actually delete unattended.
-- `--confirm` — Intended confirmation granularity for `--delete` (`None`, `Sln`, `Project`, `Directory`; default `Directory`). *Note: not yet wired up — currently only `--force` affects prompting.*
+- `--output-file`, `-o` — Write a deletion script instead of deleting. The path is optional: a bare `-o` writes `clean.cmd` or `clean.sh` depending on OS. No script is written without it. Cannot be combined with `--delete`, which deletes immediately; `-i --delete -o` is fine, the picker then writes the script. `clean.sh` is created executable, starts with `#!/bin/sh`, removes everything it can even when one `rm` fails (a locked or root-owned directory) and then exits non-zero, and quotes every path so the shell cannot expand it; `clean.cmd` escapes `%` the same way. After the removals the script sweeps the parents the deletion emptied (`bin/Debug`, up to but not including `bin`/`obj`) with a `rmdir` that only removes an empty directory. Run it with `./clean.sh` or `clean.cmd` after reviewing it.
+- `--delete` — Delete without the picker, asking per directory. Cannot be combined with `--output-file` unless `-i` is given as well. Default: `false`.
+- `--force`, `--yes`, `-y` — Skip confirmation prompts (requires explicit `--root` to avoid accidental repo-wide deletes). In non-interactive contexts (CI / piped stdin) a missing confirmation is treated as "no" (skip), so `--force` is required to actually delete unattended.
+- `--confirm` — Confirmation granularity for `--delete` (`None`, `Sln`, `Project`, `Directory`; default `Directory`). `Sln` and `Project` ask once per solution or project, `Directory` once per directory (and per package file), `None` not at all. `--force` skips every question regardless of the level.
 - Global options (`--root`, `--depth`, `--log`, `--concurrency`, `--vstoolspath`, `--novstoolspath`) apply.
 
 **Behavior**
@@ -154,7 +168,7 @@ bld clean --root C:\src\MyRepo --depth 4 --obj -o   # write clean.cmd / clean.sh
 Purpose: compute what *would* be cleaned and show totals without generating scripts or deleting anything.
 
 **Options**
-- `--non-current`, `--noncurrent`, `-nc` — Only report TFM directories that no longer match current project TFMs. Default: `false`.
+- `--non-current`, `--noncurrent`, `-nc` — Only report TFM directories that no longer match current project TFMs, in `bin` and (with `--obj`) in `obj`; publish, package and `TestResults` are not reported under this flag. Default: `false`.
 - `--obj`, `-obj` — Include `obj` directories in the statistics. Default: `false`.
 - `--keep-assets` — With `--obj`, preserve NuGet restore artifacts and only count build-output subdirectories. Default: `false`.
 - `--publish` — Include publish output (`PublishDir`) and pack output (`PackageOutputPath`) in the statistics. Default: `false`.
@@ -207,7 +221,7 @@ Helpful when your favorite agent creates your shiny new project targeting a old 
 
 ### nuget (BETA)
 
-- `--whitelist-blacklist-file`, `--wbf` — Path to categorization rules.
+- `--whitelist-blacklist-file`, `--wbf` — Path to categorization rules (format below).
 - `--aggregate`, `--agg` — Collapse results across projects (aggregate view). Default: `true`. Pass `--aggregate false` for the per-project view.
 - `--show-projects`, `--sp` — When aggregating, list referencing projects. Default: `true`.
 - `--transitive` — Also list the packages restore resolved through other packages, read from each project's `project.assets.json` (under `MSBuildProjectExtensionsPath`, i.e. `obj/`). Requires a prior `dotnet restore`; a project without the file is reported with a warning and listed with its direct references only. Transitive packages are categorized and matched against the whitelist/blacklist like direct ones and show which packages pull them in. Default: `false`.
@@ -219,6 +233,25 @@ bld nuget --root C:\src\MyRepo --aggregate false
 bld nuget --root C:\src\MyRepo --transitive --wbf packages.rules
 ```
 
+**Rules file.** A plain text file with four optional sections, each opened by a header line; anything else starting with `#` is a comment. One pattern per line: a package id, or a prefix with `*` (`Serilog.*`), optionally followed by a comma and a version constraint using NuGet version ordering (`>=`, `<=` or `=`; a prerelease sorts below its release, so `>=2.0.0` does not admit `2.0.0-beta`).
+
+```text
+# blacklist
+System.Data.SqlClient
+Newtonsoft.*,<=12.0.3
+
+# whitelist
+Newtonsoft.Json
+
+# microsoft
+Microsoft.Identity.*
+
+# trusted
+Dapper,>=2.1.0
+```
+
+`# blacklist` makes a package its own category, **Blacklisted**, shown first in every view (and `Not trusted (blacklisted)` in `--markdown`), whatever its prefix; `# whitelist` wins over the blacklist for the same package and marks it trusted. `# microsoft` and `# trusted` move packages the built-in prefix rules would misfile into "Microsoft Non-Official" and "Known Trusted Packages". The most specific pattern wins (`Newtonsoft.Json` over `Newtonsoft.*`); a pattern with a version constraint only matches when the package's version is known and satisfies it.
+
 ### tfm (BETA)
 
 - `--from` — Comma-separated source TFMs (auto-detected when possible).
@@ -227,6 +260,10 @@ bld nuget --root C:\src\MyRepo --transitive --wbf packages.rules
 - `--update-packages` — With `--apply`, run `outdated --apply` on the same input once the frameworks are written. That gives the migration everything `outdated` does: versions are checked for compatibility with the new target framework, capped by `--max-bump` and the saved package policies, checked for dependency conflicts, and written to `Directory.Packages.props` under central package management. Sources come from the `nuget.config` hierarchy. As in `outdated`, only the Release configuration is evaluated and references under a `Condition` are left alone. Without `--apply` the packages are not checked, because they would be tested against the frameworks the projects still have.
 - `--max-bump <major|minor|patch>` — With `--update-packages`: the largest version step to propose, as in `outdated --max-bump`. Default: `major`.
 - `--update-global-json` — With `--apply`, set `sdk.version` in the governing `global.json` to the highest installed SDK of the target's major (prereleases only when `allowPrerelease` is set). Without `--apply`, report what would change. Only the version line is rewritten; indentation, line endings and BOM are kept.
+
+**End-of-life frameworks.** The command fetches the .NET release index and marks every framework whose channel is out of support with `(EOL)` in the table. An EOL framework is migrated even when it is not in `--from`, and in a `TargetFrameworks` list it is dropped (`net6.0;net8.0` with `--to net10.0` becomes `net8.0;net10.0`), never leaving the list empty. Without network the list built into this release is used (end-of-life as of 2026-10-02: .NET Core 1.0 to 3.1, .NET 5, 6, 7 and 9; .NET 8 is in support until 2026-11-10) and a warning names that date, so an offline run no longer looks as if nothing were out of support.
+
+**What bld can rewrite.** Only an unconditioned `<TargetFramework>` or `<TargetFrameworks>` in the project file itself. A framework that comes from `Directory.Build.props`, an import or a conditional `PropertyGroup`, or a `TargetFrameworks` list that holds a property reference (`$(Tfms)`), is listed under *Not migratable by bld* with the reason, in the dry run and with `--apply` alike, and is not counted as a migration; edit it where it is defined. The exit code is 1 only when a project bld could rewrite was not written, or when none of the matching projects can be rewritten at all.
 
 **global.json.** The command always looks for the `global.json` that governs the input (walking up from its directory, like the SDK does) and warns when its pin cannot build the target framework: a pinned major below the target with any `rollForward` other than `latestMajor` blocks the build, and `major` only rolls forward when the pinned SDK is not installed. Nothing is written without `--update-global-json`.
 
@@ -260,7 +297,7 @@ bld cpm --root MySolution.sln --apply --overwrite
 - `--comment-orphans` — With `--apply`, comment out outdated orphan entries. Only honored for solution input (`.sln`/`.slnx`/`.slnf`), since a single project can't see all CPM consumers. Implies `--orphaned`.
 - `--interactive`, `-i` — Pick the packages to update from a grouped list before applying, and pick the target version per package; surfaces dependency version conflicts when you skip a needed package. Implies `--apply`. Requires an interactive terminal — with redirected input the command fails instead of prompting into the void.
 
-  Keys: **up/down** move, **space** toggles the row (or the whole family on a group line), **left/right** move the package between the versions the feeds offer for it — highest patch, highest minor, highest major — or, on a group line, cap the whole family at a bump class (the line shows the class and the arrows that still do something; a package with nothing at or below that class is unchecked, and checked again once the cap admits it), **a**/**n** select all or none, **p** sets or clears a persistent "no major" policy for the package (or the family's pattern on a prefix group line, see *Package policies* below), **enter** confirms, **esc** cancels without writing anything. `--max-bump` only decides where each row *starts*; anything the cap held back is in the list too, unchecked, one keypress away.
+  Keys: **up/down** move, **space** toggles the row (or the whole family on a group line), **left/right** move the package between the versions the feeds offer for it — highest patch, highest minor, highest major — or, on a group line, cap the whole family at a bump class (the line shows the class and the arrows that still do something; a package with nothing at or below that class is unchecked, and checked again once the cap admits it), **a**/**n** select all or none, **p** sets or clears a persistent "no major" policy for the package (or the family's pattern on a prefix group line, see *Package policies* below), **enter** confirms, **esc** (or **q**, or Ctrl+C) cancels without writing anything. **k**/**j**/**h**/**l** work like the arrow keys. `--max-bump` only decides where each row *starts*; anything the cap held back is in the list too, unchecked, one keypress away.
 - `--group-by <prefix|bump|none>` — How `--interactive` groups the list: `prefix` (longest common package id prefix, the default), `bump` (patch/minor/major) or `none` (one flat list). Toggling a group line takes its packages with it, so a patch day is one keystroke per family. Passing the option explicitly also groups the report table (and adds a `Group` column to `--markdown`); without it the report is unchanged.
 - `--group-depth <n>` — Maximum prefix length in dot-separated segments for `--group-by prefix`. Default: `2`, so `Microsoft.Extensions.*` is a group but `Microsoft.Extensions.Logging.*` is not.
 - `--group-min <n>` — Smallest number of packages a prefix group must have. Default: `2`. Packages left over land in `(other)`.
@@ -288,14 +325,14 @@ bld cpm --root MySolution.sln --apply --overwrite
 }
 ```
 
-`Match` uses the `--package` wildcard syntax; the most specific rule wins, ties go to the later one. Precedence is `--max-bump-for` over policy over `--max-bump`, so a global `--max-bump major` does not lift a policy; `--max-bump-for "MassTransit*=major"` or `--ignore-policy` does. In `--interactive`, **p** on a package row saves a "no major" rule for that package id and moves the row down to its highest minor or patch (a package with nothing below its major leaves the selection); on a prefix group line the rule is the family's pattern, so it also covers members that are not outdated today. **p** on a row that already has a rule removes that rule, including from every other row the same pattern covered. The file is written as soon as the picker is confirmed. Held versions are reported with their source (`2 by --max-bump minor, 1 by policy`), and `-v Info` names the rule and reason per package. Rules for packages that are not outdated right now can be removed by editing the file.
+`Match` uses the `--package` wildcard syntax; the most specific rule wins, ties go to the later one. A policy can only tighten a run, never loosen it: the effective cap is the more restrictive of the rule and `--max-bump`, so a saved "MassTransit* at most minor" still holds under `--max-bump major` but cannot lift a `--max-bump patch` run back to minor. `--max-bump-for` overrides both; `--max-bump-for "MassTransit*=major"` or `--ignore-policy` is the only way to loosen a policy. In `--interactive`, **p** on a package row saves a "no major" rule for that package id and moves the row down to its highest minor or patch (a package with nothing below its major leaves the selection); on a prefix group line the rule is the family's pattern, so it also covers members that are not outdated today. **p** on a row that already has a rule removes that rule, including from every other row the same pattern covered. The file is written as soon as the picker is confirmed. Held versions are reported with their source (`2 by --max-bump minor, 1 by policy`), and `-v Info` names the rule and reason per package. Rules for packages that are not outdated right now can be removed by editing the file.
 
 **Undoing a run.** Every `--apply` (and `--interactive`, and `tfm --update-packages`) that changes a file records what it wrote — file, package, value before and after, one entry per element — under `$BLD_HOME/history/<hash of the input>/`, newest 20 runs per input. `bld outdated undo [<root>]` takes the newest run back: it prints a table of what it would revert, asks once, writes, and drops the reverted edits from the record so a second `undo` pops the run before it. A value that no longer reads as the run left it — changed by hand, or by a later run — is skipped and named, never overwritten; when a later recorded run wrote it, the message says which one to undo first. Only bld's own edits are covered: policies, the target framework change from `tfm`, and anything you changed yourself are out of scope, and there is no redo.
 
 - `--list` — Show the recorded runs for this input, newest first, and exit.
 - `--run <n>` — Revert run `n` from `--list` instead of the newest.
 - `--package <pattern>`, `-p` / `--exclude <pattern>` — Revert only part of a run; same syntax as on `outdated`. What is not reverted stays recorded.
-- `--interactive`, `-i` — Pick from a grouped list like the update picker: one row per package showing `now -> back to`, **space** toggles, **a**/**n** all or none, **enter** reverts, **esc** cancels. Packages that changed since are shown greyed and cannot be picked. Prints the `-p ... --yes` line that repeats the choice.
+- `--interactive`, `-i` — Pick from a grouped list like the update picker: one row per package showing `now -> back to`, **space** toggles, **a**/**n** all or none, **enter** reverts, **esc** cancels. Packages that changed since are shown greyed and cannot be picked. Prints the `--yes` line that repeats the choice, with `-p` for each package when only part of the run was picked.
 - `--yes`, `-y` — Skip the confirmation; required without an interactive terminal.
 - `--verify-restore` — Run `dotnet restore` after reverting and fail on NuGet errors.
 
@@ -329,15 +366,15 @@ Before writing, the command checks the packages it is about to update in both di
 ### containerize (BETA)
 
 - `--list`, `-l` — Show file paths only. Default: `false`.
-- `--projects`, `-p` — Scan for SDK-style container projects. Default: `false`.
+- `--projects` — Scan for SDK-style container projects. Default: `false`.
 - `--all`, `-a` — Scan Dockerfiles and container projects together.
 - `--migrate`, `-m` — Migrate each Dockerfile to SDK container properties on the project it builds. Prints the `PropertyGroup`/`ItemGroup` it would add per Dockerfile; nothing is written without `--apply`. Needs no MSBuild evaluation.
 - `--apply` — With `--migrate`, write the properties into the project files. The file's indentation, line endings and BOM are kept; the new groups are appended before `</Project>` under a comment naming the Dockerfile.
 - `--delete-dockerfile` — With `--migrate --apply`, delete the migrated Dockerfile and strip the Visual Studio container-tools leftovers from the project: the `Docker*` properties (`DockerDefaultTargetOS`, `DockerfileContext`, ...), the `Microsoft.VisualStudio.Azure.Containers.Tools.Targets` package reference and a `<None Include="Dockerfile" />` item. Without it the Dockerfile stays and those settings are only reported.
-- `--force` — With `--migrate`, migrate a Dockerfile whose runtime image has instructions the SDK cannot express (see below). They are listed and dropped.
+- `--allow-unsupported` (old name: `--force`, still accepted) — With `--migrate`, migrate a Dockerfile whose runtime image has instructions the SDK cannot express (see below). They are listed and dropped.
 - `--run-as-root` — With `--migrate`, write `ContainerUser=root` for every Dockerfile without `USER` instead of asking (see the `USER` row below).
 - `--validate` — Check the SDK container settings every project under the root carries (projects without any are not listed) and, with `--apply`, rewrite the findings that have an exact equivalent. See **Validation** below.
-- `--interactive`, `-i` — With `--migrate` or `--validate`, ask instead of `--apply`: each Dockerfile's plan is shown, then whether to migrate it anyway when it has instructions the SDK cannot express (default no), whether to write the settings (default yes) and whether to delete the Dockerfile and the Visual Studio container-tools settings (default no; `--delete-dockerfile` answers yes for all). Each fixable validation finding is asked for (default yes). Answers are written immediately; a non-interactive terminal is an error.
+- `--interactive`, `-i` — With `--migrate` or `--validate`, ask instead of `--apply`: each Dockerfile's plan is shown, then whether to migrate it anyway when it has instructions the SDK cannot express (default no), whether to write the settings (default yes) and whether to delete the Dockerfile and the Visual Studio container-tools settings (default no; `--delete-dockerfile` answers yes for all). Each fixable validation finding is asked for (default yes). Answers are written immediately; a non-interactive terminal is an error, and so is combining it with `--markdown`. `--apply`, `--delete-dockerfile`, `--allow-unsupported` and `--run-as-root` given without `--migrate` (or `--validate` for `--apply`) warn that they have no effect.
 
 Examples:
 
@@ -373,12 +410,14 @@ bld containerize --validate -i
 | `ENV`, `LABEL`, `MAINTAINER` | `ContainerEnvironmentVariable`, `ContainerLabel` |
 | `WORKDIR` | `ContainerWorkingDirectory` — omitted for the SDK default `/app` |
 | `USER` | `ContainerUser` |
-| no `USER` | the image ran as root, while the SDK runs .NET 8+ Microsoft images as the non-root `app` user. The command asks per Dockerfile whether to keep root (default no) and writes `ContainerUser=root` on yes; `--run-as-root` answers yes for all, and without a terminal the SDK default is kept and noted |
+| `USER $APP_UID` | nothing: `APP_UID` is an environment variable of the Microsoft base images, never set in the Dockerfile, and names the SDK's default non-root `app` user; a note says so |
+| no `USER` | the image ran as root, while the SDK runs .NET 8+ Microsoft images as the non-root `app` user. A run that writes (`--apply`, `-i`) asks per Dockerfile whether to keep root (default no) and writes `ContainerUser=root` on yes; `--run-as-root` answers yes for all, and without a terminal the SDK default is kept and noted. A dry run asks nothing and notes that `--apply` would ask |
+| `RUN`/`COPY`/`ADD` with a heredoc (`<<EOF`, `<<-EOF`, `<<"EOF"`) | the body up to the terminator is skipped, so nothing in it is read as an instruction; the instruction itself is treated as usual (a `RUN` heredoc is **not migrated**) |
 | `ENTRYPOINT ["dotnet", "App.dll"]` or `["./App"]` | nothing: that is the SDK's default app command |
 | other `ENTRYPOINT` | `ContainerAppCommand` items (shell form becomes `/bin/sh -c ...`) with `ContainerAppCommandInstruction=Entrypoint`, and `CMD` as `ContainerDefaultArgs`: the SDK makes the app command the `ENTRYPOINT` and the default args the `CMD`. The deprecated `ContainerEntrypoint` items are not written |
 | `CMD` without `ENTRYPOINT` | `ContainerDefaultArgs` with `ContainerAppCommandInstruction=None`, unless it is the default app command: the image has no `ENTRYPOINT` and `CMD` stays overridable |
 | `COPY --from=<build stage> <publish output> .` | nothing: the SDK publishes into the image itself |
-| `RUN`, `ADD`, `VOLUME`, `HEALTHCHECK`, `SHELL`, `STOPSIGNAL`, `ONBUILD` in the runtime image, `COPY` from the build context, `COPY --from` of anything but a stage's `dotnet publish`/`build` output | **not migrated**: listed per Dockerfile and blocks it unless `--force` |
+| `RUN`, `ADD`, `VOLUME`, `HEALTHCHECK`, `SHELL`, `STOPSIGNAL`, `ONBUILD` in the runtime image, `COPY` from the build context, `COPY --from` of anything but a stage's `dotnet publish`/`build` output | **not migrated**: listed per Dockerfile and blocks it unless `--allow-unsupported` |
 
 `EnableSdkContainerSupport=true` is always written (console projects on older SDKs need it). Extra `dotnet publish` arguments in the Dockerfile (`-r linux-musl-x64`, `/p:...`) and build-stage `RUN` lines that install tooling are reported as notes, since the SDK now builds on the host. Two Dockerfiles for one project migrate the first (alphabetically) and skip the second. The exit code is 1 only when a project file could not be written.
 
@@ -422,7 +461,7 @@ bld build-props --root C:\src\MyRepo --properties TargetFramework,LangVersion
 ## Detailed internals (clean & stats)
 
 - **Discovery pipeline**: `SlnScanner` finds solutions under `--root`/`--depth`, `SlnParser` enumerates project configs, and `ProjParser` evaluates MSBuild properties (OutDir, BaseIntermediateOutputPath, TFMs). `VSToolsPath` is resolved automatically unless `--novstoolspath` is specified.
-- **Marking logic**: `MarkDeleteProcessor` collects bin/obj candidates, deduplicates directories shared across configurations, and refuses to touch paths that look like project roots or nested solutions. When `--non-current` is set, TFM directories matching the project’s declared TFMs are skipped. Projects with `UseArtifactsOutput=true` are handled through `artifacts/bin/<project>/`, where every subdirectory named `<config>[_<tfm>][_<rid>]` is a candidate. With `--publish`, `PublishDir` and `PackageOutputPath` are added in a second pass and dropped when they already sit inside a marked build-output directory (the default case). An `OutDir` that matches none of the known layouts is reported as a warning instead of being skipped silently.
+- **Marking logic**: `MarkDeleteProcessor` collects bin/obj candidates, deduplicates directories shared across configurations, and refuses to touch paths that look like project roots or nested solutions. When `--non-current` is set, TFM directories matching the project’s declared TFMs are skipped, in `obj/<Configuration>/<tfm>` as well as `bin`, and publish, package and `TestResults` are not marked at all. A project built with `AppendTargetFrameworkToOutputPath=false` and a `RuntimeIdentifier` (`bin/<Configuration>/<rid>/`) is recognized as a RID directory under a configuration directory. After a marked directory is deleted, the parents it emptied are removed up to, not including, the `bin`/`obj` or `artifacts/<kind>/<project>` root; the project directory is never touched. Sizes are measured once, shared by the picker, the script preview and the stats table, and never follow symlinks or junctions. Projects with `UseArtifactsOutput=true` are handled through `artifacts/bin/<project>/`, where every subdirectory named `<config>[_<tfm>][_<rid>]` is a candidate. With `--publish`, `PublishDir` and `PackageOutputPath` are added in a second pass and dropped when they already sit inside a marked build-output directory (the default case). An `OutDir` that matches none of the known layouts is reported as a warning instead of being skipped silently.
 - **Stats vs clean**:
   - `stats` hands results to `MarkDeleteResultStatsProcessor`, which enumerates files (depth-limited) to compute counts and KiB/MiB totals without creating any output files.
   - `clean` hands results to either `MarkDeleteResultDeleteProcessor` (the picker and `--delete`) or `MarkDeleteResultBatchFileProcessor` when only `--output-file` is set. The batch processor writes platform-specific scripts (respecting `--output-file`) and prints a table. The delete processor prompts per directory unless `--force` is used.

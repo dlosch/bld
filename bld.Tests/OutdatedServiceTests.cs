@@ -41,21 +41,6 @@ public class OutdatedServiceTests {
         Assert.Equal(expected, OutdatedService.IsSolutionFile(path));
     }
 
-    [Theory]
-    [InlineData("8.4.0", "8.9.1", "Minor", true)]
-    [InlineData("8.4.0", "9.0.0", "Minor", false)]
-    // A prerelease sorts below its release, so an upper-bound test would wrongly let this through.
-    [InlineData("8.4.0", "9.0.0-preview.1", "Minor", false)]
-    [InlineData("8.4.0", "8.5.0", "Patch", false)]
-    [InlineData("8.4.0", "8.4.7", "Patch", true)]
-    [InlineData("8.4.0", "10.0.0", "Major", true)]
-    [InlineData("8.4.0", "9.0.0-preview.1", "Major", true)]
-    [InlineData("0.2.0", "0.9.0", "Minor", true)]
-    public void WithinBump_CapsByVersionComponent(string current, string candidate, string bump, bool expected) {
-        var parsedBump = Enum.Parse<MaxBump>(bump);
-        Assert.Equal(expected, OutdatedService.WithinBump(NuGetVersion.Parse(current), NuGetVersion.Parse(candidate), parsedBump));
-    }
-
     [Fact]
     public void SelectByFilter_IncludePatternsMatchWithWildcards() {
         var ids = new[] { "Serilog", "Serilog.Sinks.File", "Microsoft.Extensions.Logging" };
@@ -122,26 +107,58 @@ public class OutdatedServiceTests {
         Assert.Throws<FormatException>(() => OutdatedService.ParseBumpOverrides(new[] { raw }));
     }
 
+    private static MaxBump EffectiveBump(string id, MaxBump global, IReadOnlyList<(string Pattern, MaxBump Level)> overrides) =>
+        OutdatedService.ResolveBump(id, global, overrides, Array.Empty<PolicyRule>()).Level;
+
     [Fact]
-    public void EffectiveBump_FallsBackToTheGlobalCapWithoutAMatch() {
+    public void ResolveBump_FallsBackToTheGlobalCapWithoutAMatch() {
         var overrides = OutdatedService.ParseBumpOverrides(new[] { "Serilog.*=patch" });
 
-        Assert.Equal(MaxBump.Minor, OutdatedService.EffectiveBump("Polly", MaxBump.Minor, overrides));
+        Assert.Equal(MaxBump.Minor, EffectiveBump("Polly", MaxBump.Minor, overrides));
     }
 
     [Fact]
-    public void EffectiveBump_MostSpecificPatternWins() {
+    public void ResolveBump_MostSpecificOverridePatternWins() {
         var overrides = OutdatedService.ParseBumpOverrides(new[] { "Microsoft.*=patch", "Microsoft.Extensions.*=minor" });
 
-        Assert.Equal(MaxBump.Minor, OutdatedService.EffectiveBump("Microsoft.Extensions.Hosting", MaxBump.Major, overrides));
-        Assert.Equal(MaxBump.Patch, OutdatedService.EffectiveBump("Microsoft.Data.SqlClient", MaxBump.Major, overrides));
+        Assert.Equal(MaxBump.Minor, EffectiveBump("Microsoft.Extensions.Hosting", MaxBump.Major, overrides));
+        Assert.Equal(MaxBump.Patch, EffectiveBump("Microsoft.Data.SqlClient", MaxBump.Major, overrides));
     }
 
     [Fact]
-    public void EffectiveBump_EquallySpecificPatterns_LastOneWins() {
+    public void ResolveBump_EquallySpecificOverridePatterns_LastOneWins() {
         var overrides = OutdatedService.ParseBumpOverrides(new[] { "Serilog.*=patch", "Serilog.*=major" });
 
-        Assert.Equal(MaxBump.Major, OutdatedService.EffectiveBump("Serilog.Sinks.File", MaxBump.Minor, overrides));
+        Assert.Equal(MaxBump.Major, EffectiveBump("Serilog.Sinks.File", MaxBump.Minor, overrides));
+    }
+
+    [Fact]
+    public void ResolveBump_PolicyMayTightenButNeverLoosenTheRunsCap() {
+        var noOverrides = Array.Empty<(string, MaxBump)>();
+        var policies = new List<PolicyRule> { new("MassTransit*", MaxBump.Minor, "v9 changes license", null) };
+
+        // --max-bump patch (stricter) with a "never past minor" policy: the policy must not lift the
+        // run back up to minor. The global cap binds, and it is reported as the source.
+        var stricterGlobal = OutdatedService.ResolveBump("MassTransit", MaxBump.Patch, noOverrides, policies);
+        Assert.Equal((MaxBump.Patch, OutdatedService.BumpSource.Global), (stricterGlobal.Level, stricterGlobal.Source));
+        Assert.Null(stricterGlobal.Rule);
+
+        // --max-bump major (looser): here the policy is the tighter statement and binds as before.
+        var policyTightens = OutdatedService.ResolveBump("MassTransit", MaxBump.Major, noOverrides, policies);
+        Assert.Equal((MaxBump.Minor, OutdatedService.BumpSource.Policy), (policyTightens.Level, policyTightens.Source));
+        Assert.Equal("MassTransit*", policyTightens.Rule?.Match);
+
+        // Equal caps: the policy is the binding one.
+        var equal = OutdatedService.ResolveBump("MassTransit", MaxBump.Minor, noOverrides, policies);
+        Assert.Equal((MaxBump.Minor, OutdatedService.BumpSource.Policy), (equal.Level, equal.Source));
+    }
+
+    [Fact]
+    public void FormatCurrentVersions_OnePinRendersAsItself_MixedPinsAreListedNewestFirstWithCounts() {
+        Assert.Equal("8.0.1", OutdatedService.FormatCurrentVersions(new[] { "8.0.1", "8.0.1" }));
+        Assert.Equal("9.0.0 (1), 8.0.1 (3)",
+            OutdatedService.FormatCurrentVersions(new[] { "8.0.1", "9.0.0", "8.0.1", "8.0.1" }));
+        Assert.Equal(string.Empty, OutdatedService.FormatCurrentVersions(new string?[] { null, "" }));
     }
 
     [Fact]

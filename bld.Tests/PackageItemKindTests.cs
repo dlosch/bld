@@ -146,6 +146,29 @@ public class PackageItemKindTests(ITestOutputHelper Console) {
     }
 
     [Fact]
+    public void Extractor_VersionOverrideWinsOverTheCentralVersion() {
+        var tempDir = Path.Combine(Path.GetTempPath(), $"bld-kinds-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+        try {
+            File.WriteAllText(Path.Combine(tempDir, "Directory.Packages.props"), PropsXml);
+            var projectPath = Path.Combine(tempDir, "Sample.csproj");
+            File.WriteAllText(projectPath, ProjectXml.Replace("<PackageReference Include=\"Newtonsoft.Json\" />", "<PackageReference Include=\"Newtonsoft.Json\" VersionOverride=\"12.0.1\" />"));
+
+            var console = new TestConsole(Console);
+            MSBuildService.RegisterMSBuildDefaults(console, new CleaningOptions());
+            var extractor = new NugetPackageExtractor(console, new ErrorSink(console), new NugetPackageCategorizer());
+
+            var analysis = extractor.AnalyzeProject(new ProjCfg(new Proj(projectPath, null), "Release"), new Dictionary<string, string>());
+
+            // Was reported at the central 13.0.1: the override is what restore uses.
+            Assert.Equal("12.0.1", analysis.Packages.Single(p => p.Name == "Newtonsoft.Json").Version);
+        }
+        finally {
+            Directory.Delete(tempDir, recursive: true);
+        }
+    }
+
+    [Fact]
     public void Extractor_ListsGlobalAndDownloadItemsWithTheirKind() {
         var tempDir = Path.Combine(Path.GetTempPath(), $"bld-kinds-{Guid.NewGuid():N}");
         Directory.CreateDirectory(tempDir);

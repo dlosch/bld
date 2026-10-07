@@ -8,8 +8,8 @@ namespace bld.Commands;
 
 internal sealed class CleanCommand : BaseCommand {
 
-    private readonly Option<bool> _forceOption = new Option<bool>("--force") {
-        Description = "Do not ask for confirmation (requires explicit root).",
+    private readonly Option<bool> _forceOption = new Option<bool>("--force", "--yes", "-y") {
+        Description = "Do not ask for confirmation (requires explicit root). --yes/-y is the same switch, as in `outdated undo`.",
         DefaultValueFactory = _ => false
     };
 
@@ -140,8 +140,10 @@ internal sealed class CleanCommand : BaseCommand {
         }
         base.Output = new SpectreConsoleOutput(options.LogLevel);
 
-        if (options.Force && !HasExplicitRoot(parseResult)) {
-            Output.WriteError("--force requires an explicit root path via --root/-r or positional root argument.");
+        // Argument-level precedence (which of picker/delete/script, and the contradictions that do not
+        // depend on the terminal) is resolved in one place so it can be tested through the real parser.
+        if (ResolveAction(parseResult).Error is { } actionError) {
+            Output.WriteError(actionError);
             return 1;
         }
 
@@ -160,9 +162,10 @@ internal sealed class CleanCommand : BaseCommand {
             return 1;
         }
         // Picking directories is a deletion flow: the picker chooses, one question confirms the
-        // whole selection. Asking for an output file explicitly still writes the script instead.
-        if (options.Interactive && !writeScript) {
-            options.Delete = true;
+        // whole selection. Asking for an output file explicitly still writes the script instead, even
+        // alongside --delete (an explicit -i wins the otherwise contradictory pair).
+        if (options.Interactive) {
+            options.Delete = !writeScript;
         }
         // The picker plus that one question are the confirmation, so nothing is asked per
         // directory afterwards. An explicit --confirm still wins.
@@ -179,4 +182,44 @@ internal sealed class CleanCommand : BaseCommand {
         await app.InitAsync(options);
         return await app.RunAsync(new[] { rootPath }, options, cancellationToken);
     }
+
+    /// <summary>
+    /// What a parsed `clean` line does — picker, direct delete or script — and the argument-level errors
+    /// that do not depend on the terminal: <c>--force</c> needs an explicit root, and <c>--delete</c> with
+    /// <c>--output-file</c> contradict (one deletes now, the other writes a script for later) unless the
+    /// picker is explicitly on, where the picker simply writes the script. Factored out of
+    /// <see cref="ExecuteAsync"/> so the precedence can be exercised through the real parser; the terminal
+    /// and output-path checks stay in <see cref="ExecuteAsync"/>.
+    /// </summary>
+    internal (CleanAction Action, string? Error) ResolveAction(ParseResult parseResult) {
+        var writeScript = parseResult.GetResult(_outputFileOption) is { Implicit: false };
+        var delete = parseResult.GetValue(_deleteOption);
+        var interactive = parseResult.GetResult(_interactiveOption) is { Implicit: false }
+            ? parseResult.GetValue(_interactiveOption)
+            : !writeScript && !delete;
+
+        if (parseResult.GetValue(_forceOption) && !HasExplicitRoot(parseResult)) {
+            return (CleanAction.Picker, "--force requires an explicit root path via --root/-r or positional root argument.");
+        }
+        if (delete && writeScript && !interactive) {
+            return (CleanAction.Delete, "--delete and --output-file exclude each other: --delete deletes now, --output-file writes a script to run later. Pass one, or -i to pick and write the script.");
+        }
+
+        // The picker is a deletion flow and writes the script when --output-file is given, so it is the
+        // action whenever it is on; otherwise --output-file writes a script and --delete deletes.
+        if (interactive) return (CleanAction.Picker, null);
+        if (writeScript) return (CleanAction.Script, null);
+        if (delete) return (CleanAction.Delete, null);
+        return (CleanAction.Picker, null);
+    }
+}
+
+/// <summary>What a parsed <c>clean</c> line resolves to; see <see cref="CleanCommand.ResolveAction"/>.</summary>
+internal enum CleanAction {
+    /// <summary>Show the picker (which deletes, or writes the script when --output-file is given).</summary>
+    Picker,
+    /// <summary>Delete directly, no picker.</summary>
+    Delete,
+    /// <summary>Write a deletion script, no picker.</summary>
+    Script,
 }

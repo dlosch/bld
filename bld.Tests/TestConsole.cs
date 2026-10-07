@@ -20,6 +20,9 @@ internal sealed class TestConsole : IConsoleOutput {
     /// <summary>Answers handed to <see cref="Confirm"/> in order; the default is used once empty.</summary>
     public Queue<bool> ConfirmAnswers { get; } = new();
 
+    /// <summary>Every prompt <see cref="Confirm"/> was asked, in order, so a test can assert it was (not) asked.</summary>
+    public List<string> ConfirmPrompts { get; } = new();
+
     /// <summary>
     /// Picks the entries a <see cref="MultiPrompt{T}"/> returns. Receives the prompt so a test can
     /// answer differently per call; returning null means "nothing selected".
@@ -51,7 +54,10 @@ internal sealed class TestConsole : IConsoleOutput {
     public void WriteVerbose(string message) { Log("Verbose", message); }
     public void WriteTable(Table table) { }
     public void WriteRule(string title) { Log("Rule", title); }
-    public bool Confirm(string message, bool defaultValue = false) => ConfirmAnswers.Count > 0 ? ConfirmAnswers.Dequeue() : defaultValue;
+    public bool Confirm(string message, bool defaultValue = false) {
+        ConfirmPrompts.Add(message);
+        return ConfirmAnswers.Count > 0 ? ConfirmAnswers.Dequeue() : defaultValue;
+    }
     public T Prompt<T>(SelectionPrompt<T> prompt) where T : notnull => default!;
     public List<T> MultiPrompt<T>(MultiSelectionPrompt<T> prompt) where T : notnull =>
         MultiPromptAnswer?.Invoke(prompt)?.Cast<T>().ToList() ?? new List<T>();

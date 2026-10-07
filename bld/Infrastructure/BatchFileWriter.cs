@@ -5,6 +5,8 @@ namespace bld.Infrastructure;
 internal interface IBatchFileWriter {
     void Append(string dir);
     void AppendFile(string fileName);
+    /// <summary>Remove a parent directory left empty by the deletions, but only while it is empty.</summary>
+    void AppendEmptyParent(string dir);
     string GetResult();
 }
 
@@ -31,6 +33,12 @@ internal class WindowsBatchFileWriter : IBatchFileWriter {
 
     public void AppendFile(string fileName) {
         builder.AppendLine($"del {Quote(fileName)}");
+    }
+
+    // Plain rmdir removes the directory only when it is empty; 2>nul swallows the "not empty" line for
+    // a parent that still holds an unselected sibling, so the sweep is best-effort and never noisy.
+    public void AppendEmptyParent(string dir) {
+        builder.AppendLine($"rmdir /q {Quote(dir)} 2>nul");
     }
 
     /// <summary>
@@ -70,6 +78,14 @@ internal class LinuxBashBatchFileWriter : IBatchFileWriter {
     // -f: a package file that is already gone is not a failure.
     public void AppendFile(string fileName) {
         builder.Append($"rm -f -- {Quote(fileName)} || status=1\n");
+    }
+
+    // rmdir removes the directory only when it is empty; 2>/dev/null and "|| :" swallow the failure for a
+    // parent that still holds an unselected sibling (or is already gone), so the sweep is best-effort and
+    // never touches the run's exit status. No --ignore-fail-on-non-empty: that is GNU-only, and BSD/macOS
+    // rmdir rejects it, which the redirect would hide.
+    public void AppendEmptyParent(string dir) {
+        builder.Append($"rmdir -- {Quote(dir)} 2>/dev/null || :\n");
     }
 
     public string GetResult() => builder.Length == 0 ? string.Empty : Header + builder + Footer;

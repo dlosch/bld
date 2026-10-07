@@ -240,5 +240,62 @@ public class CommandSafetyTests {
         Assert.False(applyOption.DefaultValueFactory(null!));
     }
 
+    private static Option<bool> ContainerizeOption(ContainerizeCommand command, string field) =>
+        (Option<bool>)typeof(ContainerizeCommand).GetField(field, BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(command)!;
+
+    /// <summary>B2.1: -p collided with outdated's --package, so --projects keeps the long name only.</summary>
+    [Fact]
+    public void ContainerizeCommand_ProjectsHasNoDashPAlias() {
+        var command = new ContainerizeCommand(new TestConsole());
+        var projects = ContainerizeOption(command, "_projectsOption");
+        var root = new System.CommandLine.RootCommand { command };
+
+        Assert.True(root.Parse("containerize --projects").GetValue(projects));
+        // -p is no longer bound to anything on this command.
+        Assert.NotEmpty(root.Parse("containerize -p").Errors);
+    }
+
+    /// <summary>B2.2: --force was renamed to --allow-unsupported, kept as an alias on the same option.</summary>
+    [Fact]
+    public void ContainerizeCommand_AllowUnsupportedKeepsForceAsAlias() {
+        var command = new ContainerizeCommand(new TestConsole());
+        var option = ContainerizeOption(command, "_forceOption");
+        var root = new System.CommandLine.RootCommand { command };
+
+        Assert.Equal("--allow-unsupported", option.Name);
+        Assert.True(root.Parse("containerize --migrate --allow-unsupported").GetValue(option));
+        Assert.True(root.Parse("containerize --migrate --force").GetValue(option));
+    }
+
+    /// <summary>B2.4: --concurrency was never read here, so it is no longer offered.</summary>
+    [Fact]
+    public void ContainerizeCommand_DoesNotOfferConcurrency() {
+        var command = new ContainerizeCommand(new TestConsole());
+        Assert.DoesNotContain(command.Options, o => o.Name == "--concurrency");
+    }
+
+    /// <summary>B2.5: --markdown with --interactive is rejected, not silently downgraded to text.</summary>
+    [Fact]
+    public async Task ContainerizeCommand_MarkdownWithInteractive_IsRejected() {
+        var command = new ContainerizeCommand(new TestConsole());
+        var exitCode = await command.Parse(["--validate", "--markdown", "--interactive"]).InvokeAsync();
+        Assert.Equal(1, exitCode);
+    }
+
+    /// <summary>B2.7: a write-flag without its mode only warns; it does not fail the run.</summary>
+    [Fact]
+    public async Task ContainerizeCommand_RunAsRootWithoutMigrate_WarnsButSucceeds() {
+        var root = Path.Combine(Path.GetTempPath(), $"bld-containerize-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try {
+            var command = new ContainerizeCommand(new TestConsole());
+            var exitCode = await command.Parse(["--run-as-root", "--root", root]).InvokeAsync();
+            Assert.Equal(0, exitCode);
+        }
+        finally {
+            Directory.Delete(root, true);
+        }
+    }
+
     #endregion
 }

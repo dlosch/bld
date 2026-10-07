@@ -87,6 +87,7 @@ internal class MarkDeleteResultDeleteProcessor : IMarkDeleteResultProcessor {
                 try {
                     path.Delete(true);
                     _console.WriteLine($"Deleted {path.FullName}");
+                    RemoveEmptyParents(path.FullName, kvp.References);
                 }
                 catch (Exception ex) {
                     // Record it so the run exits non-zero; printing alone let CI treat a failed clean as success.
@@ -100,5 +101,28 @@ internal class MarkDeleteResultDeleteProcessor : IMarkDeleteResultProcessor {
         }
 
         return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Removing bin/Debug/net8.0 leaves bin/Debug empty; sweep such parents away so a clean does not
+    /// leave hollow shells behind. The walk stops below the bin/obj (or artifacts/&lt;kind&gt;/&lt;project&gt;)
+    /// root and never climbs to a project directory. A non-empty parent - an unselected sibling TFM is
+    /// still there - stops the climb, since nothing above it can be empty either.
+    /// </summary>
+    private void RemoveEmptyParents(string deletedDir, IReadOnlyList<Dir> references) {
+        foreach (var parent in DirExt.EmptyParentCandidates(deletedDir, references.SelectMany(r => r.AbsParentPath))) {
+            var info = new DirectoryInfo(parent);
+            info.Refresh();
+            if (!info.Exists) continue;
+            if (info.IsNotEmpty()) break;
+            try {
+                info.Delete(false);
+                _console.WriteDebug($"Removed empty {info.FullName}");
+            }
+            catch (Exception ex) {
+                _console.WriteDebug($"Could not remove empty {info.FullName}: {ex.FormatMessage()}");
+                break;
+            }
+        }
     }
 }

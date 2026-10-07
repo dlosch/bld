@@ -12,7 +12,7 @@ internal sealed class ContainerizeCommand : BaseCommand {
         DefaultValueFactory = _ => false
     };
 
-    private readonly Option<bool> _projectsOption = new Option<bool>("--projects", "-p") {
+    private readonly Option<bool> _projectsOption = new Option<bool>("--projects") {
         Description = "Scan for .NET projects with container build properties.",
         DefaultValueFactory = _ => false
     };
@@ -37,8 +37,8 @@ internal sealed class ContainerizeCommand : BaseCommand {
         DefaultValueFactory = _ => false
     };
 
-    private readonly Option<bool> _forceOption = new Option<bool>("--force") {
-        Description = "With --migrate, migrate a Dockerfile even when its runtime stage has instructions the SDK cannot express (RUN, VOLUME, HEALTHCHECK, files copied from the build context). They are listed and dropped.",
+    private readonly Option<bool> _forceOption = new Option<bool>("--allow-unsupported", "--force") {
+        Description = "With --migrate, migrate a Dockerfile even when its runtime stage has instructions the SDK cannot express (RUN, VOLUME, HEALTHCHECK, files copied from the build context). They are listed and dropped. --force is the old name for this option.",
         DefaultValueFactory = _ => false
     };
 
@@ -75,7 +75,6 @@ internal sealed class ContainerizeCommand : BaseCommand {
         Add(_interactiveOption);
         Add(_vsToolsPath);
         Add(_noResolveVsToolsPath);
-        Add(_concurrencyOption);
         Add(_rootArgument);
     }
 
@@ -92,9 +91,18 @@ internal sealed class ContainerizeCommand : BaseCommand {
         var markdownOutput = parseResult.GetValue(_markdownOption);
 
         var interactive = parseResult.GetValue(_interactiveOption);
+        var migrate = parseResult.GetValue(_migrateOption);
+        var validate = parseResult.GetValue(_validateOption);
+        var apply = parseResult.GetValue(_applyOption);
+
         if (interactive) {
-            if (!parseResult.GetValue(_validateOption) && !parseResult.GetValue(_migrateOption)) {
+            if (!validate && !migrate) {
                 Output.WriteError("--interactive needs --migrate or --validate.");
+                return 1;
+            }
+            // Interactive mode prints prompts and writes answers; a markdown table cannot do both.
+            if (markdownOutput) {
+                Output.WriteError("--markdown cannot be combined with --interactive.");
                 return 1;
             }
             if (!Output.CanPrompt) {
@@ -103,13 +111,22 @@ internal sealed class ContainerizeCommand : BaseCommand {
             }
         }
 
-        if (parseResult.GetValue(_validateOption)) {
-            return await ValidateAsync(rootPath, depth, apply: parseResult.GetValue(_applyOption), interactive, markdownOutput, cancellationToken);
+        // The write-flags only do something in a migrate (or, for --apply, a validate) run; say so when
+        // they are passed without their mode instead of ignoring them.
+        if (!migrate) {
+            if (apply && !validate) Output.WriteWarning("--apply has no effect without --migrate or --validate.");
+            if (parseResult.GetValue(_deleteDockerfileOption)) Output.WriteWarning("--delete-dockerfile has no effect without --migrate.");
+            if (parseResult.GetValue(_forceOption)) Output.WriteWarning("--allow-unsupported has no effect without --migrate.");
+            if (parseResult.GetValue(_runAsRootOption)) Output.WriteWarning("--run-as-root has no effect without --migrate.");
         }
 
-        if (parseResult.GetValue(_migrateOption)) {
+        if (validate) {
+            return await ValidateAsync(rootPath, depth, apply, interactive, markdownOutput, cancellationToken);
+        }
+
+        if (migrate) {
             return await MigrateAsync(rootPath, depth,
-                apply: parseResult.GetValue(_applyOption),
+                apply,
                 deleteDockerfile: parseResult.GetValue(_deleteDockerfileOption),
                 force: parseResult.GetValue(_forceOption),
                 runAsRoot: parseResult.GetValue(_runAsRootOption) ? true : null,
@@ -370,7 +387,7 @@ internal sealed class ContainerizeCommand : BaseCommand {
             return 0;
         }
 
-        var service = new Services.ContainerMigrationService(Output, runAsRoot);
+        var service = new Services.ContainerMigrationService(Output, runAsRoot, willWrite: apply || interactive);
         var plans = new List<Services.ContainerMigrationService.MigrationPlan>();
         var claimed = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         // The plain Dockerfile goes first, so it is the one that claims a project it shares with variants.
@@ -429,7 +446,7 @@ internal sealed class ContainerizeCommand : BaseCommand {
                 foreach (var item in plan.Unsupported) Output.WriteLine($"    Not migrated: {item}");
                 foreach (var note in plan.Notes) Output.WriteLine($"    Note: {note}");
                 if (plan.SkipReason is null && plan.Unsupported.Count > 0 && !force && !interactive) {
-                    Output.WriteLine("    Skipped: the runtime image has instructions the SDK cannot express; pass --force to migrate without them.");
+                    Output.WriteLine("    Skipped: the runtime image has instructions the SDK cannot express; pass --allow-unsupported to migrate without them.");
                 }
 
                 if (interactive && plan.SkipReason is null) {

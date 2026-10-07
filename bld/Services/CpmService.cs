@@ -371,8 +371,12 @@ internal class CpmService {
         if (File.Exists(filePath)) {
             var merged = 0;
             var written = await XmlProjectFile.EditAsync(filePath, doc => {
-                var itemGroup = doc.ElementsNamed("ItemGroup").FirstOrDefault(g => g.ElementsNamed("PackageVersion").Any())
-                    ?? doc.ElementsNamed("ItemGroup").FirstOrDefault();
+                // Only an unconditioned group may take the new entries: inside a conditioned one (a
+                // per-framework pin block) they would inherit the Condition and be active for one
+                // framework only, leaving the other projects without a version (NU1010).
+                var unconditioned = doc.ElementsNamed("ItemGroup").Where(g => !g.IsConditioned()).ToList();
+                var itemGroup = unconditioned.FirstOrDefault(g => g.ElementsNamed("PackageVersion").Any())
+                    ?? unconditioned.FirstOrDefault();
 
                 if (itemGroup is null) {
                     itemGroup = new XElement("ItemGroup");

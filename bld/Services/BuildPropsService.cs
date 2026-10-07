@@ -187,24 +187,7 @@ internal class BuildPropsService {
         try {
             project = new Project(projectPath, globalProperties, null, pc);
 
-            // Use the Imports API to find actually-imported Directory.Build.props files
-            var propsFiles = project.Imports
-                .Where(i => Path.GetFileName(i.ImportedProject.FullPath)
-                    .Equals("Directory.Build.props", StringComparison.OrdinalIgnoreCase))
-                .Select(i => NormalizeFilePath(i.ImportedProject.FullPath))
-                .Where(p => !string.IsNullOrEmpty(p))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .Cast<string>()
-                .ToList();
-
-            var targetsFiles = project.Imports
-                .Where(i => Path.GetFileName(i.ImportedProject.FullPath)
-                    .Equals("Directory.Build.targets", StringComparison.OrdinalIgnoreCase))
-                .Select(i => NormalizeFilePath(i.ImportedProject.FullPath))
-                .Where(p => !string.IsNullOrEmpty(p))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .Cast<string>()
-                .ToList();
+            var (propsFiles, targetsFiles) = ImportedBuildFiles(project);
 
             var projectName = project.GetPropertyValue("ProjectName");
 
@@ -328,25 +311,7 @@ internal class BuildPropsService {
         try {
             project = new Project(projectPath, globalProperties, null, pc);
 
-            var props = project.Imports
-                .Where(i => Path.GetFileName(i.ImportedProject.FullPath)
-                    .Equals("Directory.Build.props", StringComparison.OrdinalIgnoreCase))
-                .Select(i => NormalizeFilePath(i.ImportedProject.FullPath))
-                .Where(p => !string.IsNullOrEmpty(p))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .Cast<string>()
-                .ToList();
-
-            var targets = project.Imports
-                .Where(i => Path.GetFileName(i.ImportedProject.FullPath)
-                    .Equals("Directory.Build.targets", StringComparison.OrdinalIgnoreCase))
-                .Select(i => NormalizeFilePath(i.ImportedProject.FullPath))
-                .Where(p => !string.IsNullOrEmpty(p))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .Cast<string>()
-                .ToList();
-
-            return (props, targets);
+            return ImportedBuildFiles(project);
         }
         catch (Exception ex) {
             _console.WriteVerbose($"Failed to resolve imports for {projectPath}: {ex.FormatMessage()}");
@@ -362,6 +327,51 @@ internal class BuildPropsService {
         }
     }
 
+    /// <summary>
+    /// The Directory.Build.props and Directory.Build.targets files MSBuild actually imported for the
+    /// project, from the evaluated import list.
+    /// </summary>
+    private static (List<string> Props, List<string> Targets) ImportedBuildFiles(Project project) {
+        List<string> Named(string fileName) => project.Imports
+            .Where(i => Path.GetFileName(i.ImportedProject.FullPath).Equals(fileName, StringComparison.OrdinalIgnoreCase))
+            .Select(i => NormalizeFilePath(i.ImportedProject.FullPath))
+            .Where(p => !string.IsNullOrEmpty(p))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Cast<string>()
+            .ToList();
+
+        return (Named("Directory.Build.props"), Named("Directory.Build.targets"));
+    }
+
+    /// <summary>
+    /// Each imported file with the file it nests under in the tree: the one whose directory is the
+    /// deepest proper ancestor of its own, or none. Ordering by path length put a file under another
+    /// merely because its path was shorter, so two unrelated imports (a sibling directory, an explicit
+    /// import) rendered as parent and child.
+    /// </summary>
+    internal static List<(string File, string? Parent)> ImportChain(IEnumerable<string> files) {
+        var distinct = files.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        return distinct
+            .Select(file => {
+                var dir = Path.GetDirectoryName(file) ?? string.Empty;
+                var parent = distinct
+                    .Where(other => !ReferenceEquals(other, file) && IsBelow(dir, Path.GetDirectoryName(other) ?? string.Empty))
+                    .OrderByDescending(other => (Path.GetDirectoryName(other) ?? string.Empty).Length)
+                    .FirstOrDefault();
+                return (File: file, Parent: parent);
+            })
+            // Parents before children, so a node exists by the time something nests under it.
+            .OrderBy(e => (Path.GetDirectoryName(e.File) ?? string.Empty).Length)
+            .ToList();
+    }
+
+    private static bool IsBelow(string dir, string ancestor) {
+        var prefix = ancestor.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        return dir.Length > prefix.Length - 1
+            && dir.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(dir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar), ancestor.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar), StringComparison.OrdinalIgnoreCase);
+    }
+
     private void DisplayListOnly(List<(string Project, List<string> Props)> imports, string rootPath) {
         if (imports.Count == 0) {
             _console.WriteLine("No projects could be evaluated.");
@@ -374,28 +384,23 @@ internal class BuildPropsService {
         var nodeMap = new Dictionary<string, TreeNode>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var (project, props) in imports.OrderBy(i => i.Project, StringComparer.OrdinalIgnoreCase)) {
-            // Chain: outermost (shallowest) props first → innermost → project leaf
-            var chain = props
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .OrderBy(f => f.Length)
-                .ToList();
+            var chain = ImportChain(props);
 
-            // Walk the chain, reusing existing nodes
-            TreeNode? parent = null;
-            foreach (var buildFile in chain) {
+            TreeNode? deepest = null;
+            foreach (var (buildFile, parentFile) in chain) {
                 if (!nodeMap.TryGetValue(buildFile, out var node)) {
                     var label = $"[green]●[/] {Markup.Escape(buildFile)}";
-                    node = parent is null
-                        ? tree.AddNode(label)
-                        : parent.AddNode(label);
+                    node = parentFile is { } && nodeMap.TryGetValue(parentFile, out var parentNode)
+                        ? parentNode.AddNode(label)
+                        : tree.AddNode(label);
                     nodeMap[buildFile] = node;
                 }
-                parent = node;
+                // The project hangs off the innermost import, the last one in ancestor-first order.
+                deepest = node;
             }
 
-            // Project is always a leaf
-            if (parent is not null)
-                parent.AddNode(Markup.Escape(project));
+            if (deepest is not null)
+                deepest.AddNode(Markup.Escape(project));
             else
                 tree.AddNode(Markup.Escape(project));
         }

@@ -1,4 +1,5 @@
 using bld.Models;
+using NuGet.Versioning;
 using System.Text.RegularExpressions;
 
 namespace bld.Services;
@@ -159,73 +160,14 @@ internal class WhitelistBlacklistParser {
             versionString = constraintString;
         }
 
-        // Parse the version, handling pre-release versions by extracting only the version part before any suffix
-        var version = ParseVersionWithPreRelease(versionString);
-        if (version != null) {
+        if (NuGetVersion.TryParse(versionString, out var version)) {
             return new VersionConstraint {
                 Operator = versionOperator,
                 Version = version
             };
         }
 
-        throw new InvalidOperationException($"Invalid version constraint: '{constraintString}'. Expected format: '>=9.0.8', '=1.2.3', or '<=2.0.0'");
-    }
-
-    /// <summary>
-    /// Parse a version string that may contain pre-release suffixes
-    /// Pre-release versions (e.g. "2.0.0-beta7") are considered less than the release version ("2.0.0")
-    /// </summary>
-    /// <param name="versionString">Version string to parse</param>
-    /// <returns>Parsed Version or null if invalid, with pre-release versions adjusted to be less than release versions</returns>
-    private static Version? ParseVersionWithPreRelease(string versionString) {
-        if (string.IsNullOrWhiteSpace(versionString)) {
-            return null;
-        }
-
-        var parts = versionString.Split('-', 2);
-        var versionPart = parts[0].Trim();
-        var hasPreRelease = parts.Length > 1 && !string.IsNullOrWhiteSpace(parts[1]);
-
-        if (Version.TryParse(versionPart, out var version)) {
-            // For pre-release versions, we need to make them less than the release version
-            // We do this by decrementing the revision number (or build if revision is already 0)
-            if (hasPreRelease) {
-                var major = version.Major;
-                var minor = version.Minor;
-                var build = version.Build == -1 ? 0 : version.Build;
-                var revision = version.Revision == -1 ? 0 : version.Revision;
-
-                // Decrement to make pre-release less than release
-                if (revision > 0) {
-                    revision--;
-                }
-                else if (build > 0) {
-                    build--;
-                    revision = int.MaxValue; // Max revision for the decremented build
-                }
-                else if (minor > 0) {
-                    minor--;
-                    build = int.MaxValue;
-                    revision = int.MaxValue;
-                }
-                else if (major > 0) {
-                    major--;
-                    minor = int.MaxValue;
-                    build = int.MaxValue;
-                    revision = int.MaxValue;
-                }
-                else {
-                    // Version is 0.0.0-prerelease, treat as minimum version
-                    return new Version(0, 0, 0, 0);
-                }
-
-                return new Version(major, minor, build, revision);
-            }
-
-            return version;
-        }
-
-        return null;
+        throw new InvalidOperationException($"Invalid version constraint: '{constraintString}'. Expected format: '>=9.0.8', '=1.2.3', '<=2.0.0' or '>=2.0.0-beta'");
     }
 
     /// <summary>
@@ -336,12 +278,7 @@ internal class WhitelistBlacklistParser {
         }
 
         // Check version constraint
-        var version = ParseVersionWithPreRelease(packageVersion);
-        if (version != null) {
-            return pattern.VersionConstraint.IsSatisfiedBy(version);
-        }
-
-        return false;
+        return NuGetVersion.TryParse(packageVersion, out var version) && pattern.VersionConstraint.IsSatisfiedBy(version);
     }
 
     /// <summary>

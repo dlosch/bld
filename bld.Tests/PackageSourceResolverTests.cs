@@ -286,17 +286,9 @@ public class PackageSourceResolverTests : IDisposable {
 
     // ----- merging answers from several feeds ----------------------------------------------------
 
-    private static PackageVersionResult Found(string version, string? outside = null) => new() {
+    private static PackageVersionResult Found(string version) => new() {
         PackageId = "P",
         TargetFrameworkVersions = new Dictionary<NuGetFramework, string> { [NuGetFramework.Parse("net8.0")] = version },
-        NewestOutsideFilter = outside,
-    };
-
-    private static PackageVersionResult WindowMiss(string outside) => new() {
-        PackageId = "P",
-        TargetFrameworkVersions = new Dictionary<NuGetFramework, string>(),
-        NewestOutsideFilter = outside,
-        NoVersionWithinFilter = true,
     };
 
     [Fact]
@@ -304,24 +296,6 @@ public class PackageSourceResolverTests : IDisposable {
         var best = NugetMetadataService.PickNewest(new[] { Found("2.0.0"), null, Found("3.5.0"), Found("3.4.9") });
 
         Assert.Equal("3.5.0", best!.TargetFrameworkVersions.Values.Single());
-    }
-
-    [Fact]
-    public void PickNewest_HeldBackVersionIsTheNewestAnyFeedRejected() {
-        var best = NugetMetadataService.PickNewest(new[] { Found("2.0.0", outside: "3.0.0"), Found("2.1.0"), WindowMiss("4.0.0") });
-
-        Assert.Equal("2.1.0", best!.TargetFrameworkVersions.Values.Single());
-        Assert.Equal("4.0.0", best.NewestOutsideFilter);
-        Assert.False(best.NoVersionWithinFilter);
-    }
-
-    [Fact]
-    public void PickNewest_WindowMissOnlyWhenNoFeedHasACandidate() {
-        var miss = NugetMetadataService.PickNewest(new[] { null, WindowMiss("4.0.0"), WindowMiss("5.0.0") });
-
-        Assert.True(miss!.NoVersionWithinFilter);
-        Assert.Equal("5.0.0", miss.NewestOutsideFilter);
-        Assert.Empty(miss.TargetFrameworkVersions);
     }
 
     [Fact]

@@ -104,10 +104,16 @@ internal sealed class NugetPackageExtractor {
             foreach (var item in packageReferenceItems) {
                 var packageName = item.EvaluatedInclude;
                 var version = item.GetMetadataValue("Version");
-                // todo VersionOverride
 
                 if (string.IsNullOrWhiteSpace(packageName)) {
                     continue;
+                }
+
+                // Under central package management a reference may pin its own version with
+                // VersionOverride; that is the version restore uses, not the central one.
+                var versionOverride = item.GetMetadataValue("VersionOverride");
+                if (string.IsNullOrWhiteSpace(version) && !string.IsNullOrWhiteSpace(versionOverride)) {
+                    version = versionOverride;
                 }
 
                 var kind = globalVersions.ContainsKey(packageName) ? PackageItemKind.GlobalPackageReference : PackageItemKind.PackageReference;

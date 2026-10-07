@@ -8,17 +8,17 @@ namespace bld.Commands;
 internal sealed class StatsCommand : BaseCommand {
 
     private readonly Option<bool> _nonCurrentOption = new Option<bool>("--non-current", "--noncurrent", "-nc") {
-        Description = "Only clean directories for non-current target frameworks.",
+        Description = "Only report directories for non-current target frameworks.",
         DefaultValueFactory = _ => false
     };
 
     private readonly Option<bool> _objOption = new Option<bool>("--obj", "-obj") {
-        Description = "Also clean BaseIntermediateOutputPath (obj folder).",
+        Description = "Also include BaseIntermediateOutputPath (obj folder).",
         DefaultValueFactory = _ => false
     };
 
     private readonly Option<bool> _keepAssetsOption = new Option<bool>("--keep-assets") {
-        Description = "When cleaning obj, preserve NuGet restore artifacts (project.assets.json etc.) and only delete build output subdirectories.",
+        Description = "With --obj, leave out NuGet restore artifacts (project.assets.json etc.) and only count build output subdirectories.",
         DefaultValueFactory = _ => false
     };
 

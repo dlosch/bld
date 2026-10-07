@@ -83,4 +83,39 @@ public class DockerfileParserTests {
 
         Assert.Equal(["RUN a b c", "CMD [\"x\"]"], joined);
     }
+
+    /// <summary>A4.3: a heredoc body is not parsed, so an EXPOSE inside it is not a real port.</summary>
+    [Fact]
+    public async Task Parse_SkipsHeredocBodySoItsExposeIsNotAPort() {
+        var info = await ParseAsync(
+            "FROM mcr.microsoft.com/dotnet/aspnet:8.0\n" +
+            "EXPOSE 8080\n" +
+            "RUN <<EOF\n" +
+            "echo building\n" +
+            "EXPOSE 9000\n" +
+            "EOF\n" +
+            "ENTRYPOINT [\"dotnet\", \"App.dll\"]\n");
+
+        // Only the real EXPOSE counts; the one in the heredoc body is skipped.
+        Assert.Equal(["8080"], info.ExposedPorts);
+        // The RUN instruction itself is still seen (and is unsupported for migration).
+        var stage = Assert.Single(info.StageDetails);
+        Assert.Contains(stage.Instructions, i => i.Directive == "RUN");
+        Assert.Equal("[\"dotnet\", \"App.dll\"]", info.EntryPoint);
+    }
+
+    [Fact]
+    public void JoinContinuations_SkipsQuotedAndMultipleHeredocBodies() {
+        var joined = DockerfileParser.JoinContinuations([
+            "COPY <<\"FILE1\" <<-FILE2 /dest",
+            "content of 1",
+            "FILE1",
+            "\tcontent of 2",
+            "FILE2",
+            "RUN echo done",
+        ]).ToList();
+
+        // Both heredoc bodies are dropped; the COPY line and the following RUN remain.
+        Assert.Equal(["COPY <<\"FILE1\" <<-FILE2 /dest", "RUN echo done"], joined);
+    }
 }

@@ -1,9 +1,12 @@
+using System.Text.RegularExpressions;
+
 namespace bld.Infrastructure;
 
 /// <summary>
 /// Parses Dockerfiles to extract configuration information. Backslash continuations are folded into
-/// one logical line before parsing; heredocs are still not interpreted, and ARG/ENV substitution is
-/// left to the caller (see <see cref="DockerfileSubstitution"/>).
+/// one logical line before parsing; the body of a `RUN`/`COPY`/`ADD` heredoc (`<<EOF`) is skipped so
+/// that its lines are not read as instructions, while the instruction that opens it is kept as
+/// written. ARG/ENV substitution is left to the caller (see <see cref="DockerfileSubstitution"/>).
 /// </summary>
 internal class DockerfileParser {
     public record DockerfileInfo {
@@ -120,8 +123,18 @@ internal class DockerfileParser {
     /// </summary>
     internal static IEnumerable<string> JoinContinuations(IEnumerable<string> lines) {
         var pending = (string?)null;
+        // Terminators of the heredocs opened by the current instruction, in the order their bodies
+        // appear. While any is pending, the lines in between are heredoc content, not instructions.
+        var heredocs = new Queue<string>();
 
         foreach (var rawLine in lines) {
+            if (heredocs.Count > 0) {
+                // The body ends at the terminator word on its own line; `<<-` allows it to be indented,
+                // so the comparison is against the trimmed line. Nothing in between is parsed.
+                if (rawLine.Trim() == heredocs.Peek()) heredocs.Dequeue();
+                continue;
+            }
+
             var line = rawLine.Trim();
 
             if (pending is null && (line.Length == 0 || line.StartsWith('#'))) continue;
@@ -134,12 +147,33 @@ internal class DockerfileParser {
             pending = pending is null ? line : $"{pending} {line}".Trim();
 
             if (!continues) {
-                if (pending.Length > 0) yield return pending;
+                if (pending.Length > 0) {
+                    foreach (var terminator in HeredocTerminators(pending)) heredocs.Enqueue(terminator);
+                    yield return pending;
+                }
                 pending = null;
             }
         }
 
         if (!string.IsNullOrWhiteSpace(pending)) yield return pending;
+    }
+
+    // `<<EOF`, `<<-EOF`, quoted `<<"EOF"`/`<<'EOF'`; several on one instruction are allowed.
+    private static readonly Regex HeredocRegex =
+        new(@"<<-?(?:""([A-Za-z_][A-Za-z0-9_]*)""|'([A-Za-z_][A-Za-z0-9_]*)'|([A-Za-z_][A-Za-z0-9_]*))", RegexOptions.Compiled);
+
+    /// <summary>The terminator words of the heredocs a RUN/COPY/ADD instruction opens, in body order.</summary>
+    private static IEnumerable<string> HeredocTerminators(string instruction) {
+        var split = instruction.Split((char[]?)null, 2, StringSplitOptions.RemoveEmptyEntries);
+        if (split.Length < 2) yield break;
+        var directive = split[0].ToUpperInvariant();
+        // Heredocs are only legal on these; restricting avoids reading a stray `<<` elsewhere as one.
+        if (directive is not ("RUN" or "COPY" or "ADD")) yield break;
+        foreach (Match match in HeredocRegex.Matches(instruction)) {
+            yield return match.Groups[1].Success ? match.Groups[1].Value
+                : match.Groups[2].Success ? match.Groups[2].Value
+                : match.Groups[3].Value;
+        }
     }
 
     /// <summary>

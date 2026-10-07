@@ -45,8 +45,6 @@ internal sealed class MarkDeleteProcessor : IProjectProcessor {
         _fileSystem = fileSystem;
         _options = options;
         _errorSink = errorSink;
-
-        _enumerateFiles = new EnumerationOptions { MatchType = MatchType.Simple, MaxRecursionDepth = 10 /*options.Depth*/, RecurseSubdirectories = true, ReturnSpecialDirectories = false, IgnoreInaccessible = true };
     }
 
     public async Task ProcessAsync(ProjCfg cfg, ProjectInfo info) {
@@ -55,8 +53,6 @@ internal sealed class MarkDeleteProcessor : IProjectProcessor {
         // Build directory tracking structures similar to old processor
         await AddDir(info, cfg);
     }
-
-    private readonly EnumerationOptions _enumerateFiles;
 
     internal MarkDeleteResult GetResult() {
         var results = new List<DirResult>();
@@ -233,90 +229,89 @@ internal sealed class MarkDeleteProcessor : IProjectProcessor {
                         var dirInfo = new DirectoryInfo(absPath);
                         var exists = dirInfo.Exists;
 
-                        if (exists && dirInfo.IsEmpty()) {
-                            // todo we dont delete empty dirs.
-                            // delete dir - this would be handled by the deletion phase
-                        }
-
                         var deleteCandidates = default(IEnumerable<DirectoryInfo>);
 
-                        if (HasValidateBasicOutDirStructureFlag()) {
-                            if (NetUtil.Instance.IsTfmName(dirInfo.Name, DefaultComparison)
-                            && dir.Configs.Any(cfg => 0 == string.Compare(cfg, dirInfo.Parent?.Name, DefaultComparison))) {
-                                var cfgDir = dirInfo.Parent;
+                        if (NetUtil.Instance.IsTfmName(dirInfo.Name, DefaultComparison)
+                        && dir.Configs.Any(cfg => 0 == string.Compare(cfg, dirInfo.Parent?.Name, DefaultComparison))) {
+                            var cfgDir = dirInfo.Parent;
 
-                                if (!cfgDir!.Exists) {
-                                    _console.WriteDebug($"{cfgDir.FullName} does not exist.");
-                                    return default;
-                                }
-
-                                // "Current" means current for *any* project writing here, not just this one.
-                                var claimedTfms = TfmsClaimedUnder(cfgDir);
-
-                                IEnumerable<DirectoryInfo> GetCfgNestedAffected(DirectoryInfo cfgDir2, Dir dir2, bool onlyNonCurrent2) => cfgDir2.EnumerateDirectories()
-                                        .Where(tfmDir => NetUtil.Instance.IsTfmName(tfmDir.Name, DefaultComparison)
-                                        && (!onlyNonCurrent2 || !claimedTfms.Contains(tfmDir.Name)));
-
-                                var onlyNonCurrent = HasCleanOnlyNoncurrentTfmsFlag();
-
-                                if (onlyNonCurrent
-                                    || (cfgDir.EnumerateFiles().Any())
-                                    || (cfgDir.EnumerateDirectories().Any(tfmDir => !NetUtil.Instance.IsTfmName(tfmDir.Name, DefaultComparison)))) {
-
-                                    _console.WriteVerbose($"{absPath} contains files or directories which don't match tfm format. Selectively adding subdirectories ...");
-                                    deleteCandidates = GetCfgNestedAffected(cfgDir, dir, onlyNonCurrent);
-                                }
-                                else {
-                                    if (cfgDir.Parent is { } binDir) {
-                                        if (0 == string.Compare(binDir.Name, "bin", DefaultComparison)
-                                            || dir.AbsProjPath.Any(kvp => kvp.Value is { } projectName && (0 == string.Compare(binDir.Name, projectName, DefaultComparison)))) {
-
-                                            if (binDir.EnumerateFiles().Any()
-                                            || binDir.EnumerateDirectories().Any(cfgDir => !dir.Configs.Contains(cfgDir.Name))) {
-                                                _console.WriteVerbose($"{absPath} contains files or directories which don't match configurations format. Selectively adding subdirectories ...");
-                                                deleteCandidates = GetCfgNestedAffected(cfgDir, dir, onlyNonCurrent);
-                                            }
-                                            else {
-                                                deleteCandidates = GetCfgNestedAffected(cfgDir, dir, onlyNonCurrent);
-                                            }
-                                        }
-                                    }
-                                }
+                            if (!cfgDir!.Exists) {
+                                _console.WriteDebug($"{cfgDir.FullName} does not exist.");
+                                return default;
                             }
-                            else if (exists && dir.Configs.Any(cfg => 0 == string.Compare(cfg, dirInfo.Name, DefaultComparison))) {
-                                // OutDir is the configuration directory itself (bin\Debug\), which is what
-                                // MSBuild produces for a multi-targeted outer build and for legacy projects.
-                                // The TFM-shaped branch above never matched these, so they were never cleaned.
-                                var binDir = dirInfo.Parent;
-                                var underBin = binDir is { } && (0 == string.Compare(binDir.Name, "bin", DefaultComparison)
-                                    || dir.AbsProjPath.Any(kvp => kvp.Value is { } projectName && 0 == string.Compare(binDir.Name, projectName, DefaultComparison)));
-                                if (underBin && HasCleanOnlyNoncurrentTfmsFlag()) {
-                                    // The configuration directory is this project's current output, so it
-                                    // stays; only TFM directories below it that nothing targets are stale.
-                                    var claimed = TfmsClaimedUnder(dirInfo);
-                                    claimed.UnionWith(dir.Tfms);
-                                    deleteCandidates = dirInfo.EnumerateDirectories()
-                                        .Where(tfmDir => NetUtil.Instance.IsTfmName(tfmDir.Name, DefaultComparison) && !claimed.Contains(tfmDir.Name))
-                                        .ToList();
-                                }
-                                else if (underBin) {
-                                    deleteCandidates = new DirectoryInfo[] { dirInfo };
-                                }
-                                else {
-                                    _console.WriteVerbose($"{absPath} is a configuration directory but its parent is not 'bin'; skipping.");
-                                }
+
+                            // "Current" means current for *any* project writing here, not just this one.
+                            var claimedTfms = TfmsClaimedUnder(cfgDir);
+
+                            IEnumerable<DirectoryInfo> GetCfgNestedAffected(DirectoryInfo cfgDir2, Dir dir2, bool onlyNonCurrent2) => cfgDir2.EnumerateDirectories()
+                                    .Where(tfmDir => NetUtil.Instance.IsTfmName(tfmDir.Name, DefaultComparison)
+                                    && (!onlyNonCurrent2 || !claimedTfms.Contains(tfmDir.Name)));
+
+                            var onlyNonCurrent = HasCleanOnlyNoncurrentTfmsFlag();
+
+                            if (onlyNonCurrent
+                                || (cfgDir.EnumerateFiles().Any())
+                                || (cfgDir.EnumerateDirectories().Any(tfmDir => !NetUtil.Instance.IsTfmName(tfmDir.Name, DefaultComparison)))) {
+
+                                _console.WriteVerbose($"{absPath} contains files or directories which don't match tfm format. Selectively adding subdirectories ...");
+                                deleteCandidates = GetCfgNestedAffected(cfgDir, dir, onlyNonCurrent);
                             }
-                            else if (exists) {
-                                // Neither shape matched. This used to be silent, so a project whose output was
-                                // never cleaned looked exactly like a project with no output.
-                                var owner = dir.AbsProjPath.Keys.FirstOrDefault() ?? absPath;
-                                if (_unrecognizedLayoutWarned.Add(owner)) {
-                                    _console.WriteWarning($"Skipping {absPath}: output layout not recognized (expected bin/<Configuration>/<tfm>[/<rid>], bin/<Configuration> or artifacts/bin/<Project>/<config>_<tfm>).");
-                                }
+                            // A clean bin/<config> with only TFM folders: whether or not it also holds
+                            // clutter, the stale (or, without --non-current, all) TFM directories are what
+                            // goes, so both former branches did the same thing.
+                            else if (cfgDir.Parent is { } binDir
+                                && (0 == string.Compare(binDir.Name, "bin", DefaultComparison)
+                                    || dir.AbsProjPath.Any(kvp => kvp.Value is { } projectName && 0 == string.Compare(binDir.Name, projectName, DefaultComparison)))) {
+                                deleteCandidates = GetCfgNestedAffected(cfgDir, dir, onlyNonCurrent);
                             }
                         }
-                        else {
-                            if (exists) deleteCandidates = new DirectoryInfo[] { dirInfo };
+                        else if (exists && dir.Configs.Any(cfg => 0 == string.Compare(cfg, dirInfo.Name, DefaultComparison))) {
+                            // OutDir is the configuration directory itself (bin\Debug\), which is what
+                            // MSBuild produces for a multi-targeted outer build and for legacy projects.
+                            // The TFM-shaped branch above never matched these, so they were never cleaned.
+                            var binDir = dirInfo.Parent;
+                            var underBin = binDir is { } && (0 == string.Compare(binDir.Name, "bin", DefaultComparison)
+                                || dir.AbsProjPath.Any(kvp => kvp.Value is { } projectName && 0 == string.Compare(binDir.Name, projectName, DefaultComparison)));
+                            if (underBin && HasCleanOnlyNoncurrentTfmsFlag()) {
+                                // The configuration directory is this project's current output, so it
+                                // stays; only TFM directories below it that nothing targets are stale.
+                                var claimed = TfmsClaimedUnder(dirInfo);
+                                claimed.UnionWith(dir.Tfms);
+                                deleteCandidates = dirInfo.EnumerateDirectories()
+                                    .Where(tfmDir => NetUtil.Instance.IsTfmName(tfmDir.Name, DefaultComparison) && !claimed.Contains(tfmDir.Name))
+                                    .ToList();
+                            }
+                            else if (underBin) {
+                                deleteCandidates = new DirectoryInfo[] { dirInfo };
+                            }
+                            else {
+                                _console.WriteVerbose($"{absPath} is a configuration directory but its parent is not 'bin'; skipping.");
+                            }
+                        }
+                        else if (exists && _ridPattern.IsMatch(dirInfo.Name)
+                            && dir.Configs.Any(cfg => 0 == string.Compare(cfg, dirInfo.Parent?.Name, DefaultComparison))) {
+                            // AppendTargetFrameworkToOutputPath=false with a RuntimeIdentifier gives
+                            // bin/<Configuration>/<rid>/ — a RID leaf under a configuration parent, with no
+                            // TFM segment. There is no TFM to compare, so --non-current leaves it as the
+                            // current output; otherwise it is this project's build output and goes whole,
+                            // like the configuration-directory case above.
+                            var binDir = dirInfo.Parent?.Parent;
+                            var underBin = binDir is { } && (0 == string.Compare(binDir.Name, "bin", DefaultComparison)
+                                || dir.AbsProjPath.Any(kvp => kvp.Value is { } projectName && 0 == string.Compare(binDir.Name, projectName, DefaultComparison)));
+                            if (underBin && !HasCleanOnlyNoncurrentTfmsFlag()) {
+                                deleteCandidates = new DirectoryInfo[] { dirInfo };
+                            }
+                            else if (!underBin) {
+                                _console.WriteVerbose($"{absPath} is a runtime-identifier directory but its grandparent is not 'bin'; skipping.");
+                            }
+                        }
+                        else if (exists) {
+                            // Neither shape matched. This used to be silent, so a project whose output was
+                            // never cleaned looked exactly like a project with no output.
+                            var owner = dir.AbsProjPath.Keys.FirstOrDefault() ?? absPath;
+                            if (_unrecognizedLayoutWarned.Add(owner)) {
+                                _console.WriteWarning($"Skipping {absPath}: output layout not recognized (expected bin/<Configuration>/<tfm>[/<rid>], bin/<Configuration>[/<rid>] or artifacts/bin/<Project>/<config>_<tfm>).");
+                            }
                         }
 
                         if (deleteCandidates is { }) {
@@ -330,11 +325,6 @@ internal sealed class MarkDeleteProcessor : IProjectProcessor {
                         return default;
                     }
 
-                    Stats BaseOutDirDelete(string absPath, DirType dirType, Dir dir) {
-                        _console.WriteVerbose("Not Implemented :(");
-                        return default;
-                    }
-
                     Stats BaseIntermediateOutputDirDelete(string absPath, DirType dirType, Dir dir) {
                         if (!MarkObj) return default;
                         if (!Directory.Exists(absPath)) return default;
@@ -344,6 +334,24 @@ internal sealed class MarkDeleteProcessor : IProjectProcessor {
                         // tree - including any sources under it - marked for recursive deletion.
                         if (ContainsProjectOrSolution(absPath)) {
                             _console.WriteWarning($"Skipping {absPath}: it contains project or solution files.");
+                            return default;
+                        }
+
+                        if (HasCleanOnlyNoncurrentTfmsFlag()) {
+                            // obj mirrors bin as obj/<config>/<tfm>; only the TFM folders nothing targets
+                            // are stale. The current project's output stays, and because nothing at the
+                            // obj or config root is marked the restore artifacts (project.assets.json,
+                            // *.nuget.*) are kept too, so --non-current already implies --keep-assets here.
+                            foreach (var configDir in new DirectoryInfo(absPath).EnumerateDirectories()) {
+                                var claimed = TfmsClaimedUnder(configDir);
+                                claimed.UnionWith(dir.Tfms);
+                                foreach (var tfmDir in configDir.EnumerateDirectories()) {
+                                    if (NetUtil.Instance.IsTfmName(tfmDir.Name, DefaultComparison) && !claimed.Contains(tfmDir.Name)) {
+                                        Mark(tfmDir.FullName, dirType, dir);
+                                        _console.WriteDebug($"{tfmDir.FullName} marked for deletion.");
+                                    }
+                                }
+                            }
                             return default;
                         }
 
@@ -373,6 +381,8 @@ internal sealed class MarkDeleteProcessor : IProjectProcessor {
 
                     Stats TestResultsDirDelete(string absPath, DirType dirType, Dir dir) {
                         if (!Directory.Exists(absPath)) return default;
+                        // TestResults has no TFM to be stale by, so --non-current never marks it.
+                        if (HasCleanOnlyNoncurrentTfmsFlag()) return default;
                         if (ContainsProjectOrSolution(absPath)) {
                             _console.WriteWarning($"Skipping {absPath}: it contains project or solution files.");
                             return default;
@@ -418,6 +428,10 @@ internal sealed class MarkDeleteProcessor : IProjectProcessor {
                     Stats PublishOrPackageDirDelete(string absPath, DirType dirType, Dir dir) {
                         if (!Directory.Exists(absPath)) return default;
 
+                        // publish and package output has no TFM to be stale by, so --non-current never
+                        // marks it (the artifacts layout keeps its per-TFM pivots via ArtifactsDirDelete).
+                        if (HasCleanOnlyNoncurrentTfmsFlag()) return default;
+
                         // Default PublishDir is $(OutputPath)publish/ and default PackageOutputPath is
                         // $(OutputPath) itself, so the usual case is already covered by the marked build output.
                         if (_deleteDirs.Keys.Any(marked => SamePath(marked, absPath) || DirExt.IsNestedBelow(absPath, marked))) {
@@ -447,7 +461,6 @@ internal sealed class MarkDeleteProcessor : IProjectProcessor {
                         (_, DirType.TestResults) => TestResultsDirDelete(item.path, item.type, dir),
                         (ProjectType.Vcxproj, _) => VcxDir(item.path, item.type, dir),
                         (_, DirType.OutDir) => OutDirDelete(item.path, item.type, dir),
-                        (_, DirType.BaseOutputPath) => BaseOutDirDelete(item.path, item.type, dir),
                         (_, DirType.BaseIntermediateOutputPath) => BaseIntermediateOutputDirDelete(item.path, item.type, dir),
                         _ => default,
                     };
@@ -654,8 +667,7 @@ internal sealed class MarkDeleteProcessor : IProjectProcessor {
 
     private readonly HashSet<string> _unrecognizedLayoutWarned = new(PathComparer);
 
-    private bool HasValidateBasicOutDirStructureFlag() => true; // Default to true
-    private bool HasCleanOnlyNoncurrentTfmsFlag() => _options.CleanOnlyNonCurrentTfms; // Default to false for now
+    private bool HasCleanOnlyNoncurrentTfmsFlag() => _options.CleanOnlyNonCurrentTfms;
 
     /// <summary>
     /// Get the directories marked for deletion

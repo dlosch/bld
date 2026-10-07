@@ -103,6 +103,37 @@ public class BatchFileWriterTests {
         }
     }
 
+    /// <summary>
+    /// A1.4: after a marked directory goes, the script sweeps the parents it emptied, but only while
+    /// they are empty - plain rmdir removes an empty directory and fails (silently) on a non-empty one,
+    /// so an unselected sibling keeps its parent standing, and the bin/obj root is never passed here.
+    /// </summary>
+    [Fact]
+    public void Bash_EmptyParentIsRemovedOnlyWhileEmpty() {
+        var writer = new LinuxBashBatchFileWriter();
+        writer.Append("/repo/App/bin/Debug/net8.0");
+        writer.AppendEmptyParent("/repo/App/bin/Debug");
+        var script = writer.GetResult();
+
+        Assert.Contains("rm -rf -- '/repo/App/bin/Debug/net8.0' || status=1\n", script);
+        Assert.Contains("rmdir -- '/repo/App/bin/Debug' 2>/dev/null || :\n", script);
+        // Best-effort: a parent that is still full must not flip the run's exit status.
+        Assert.DoesNotContain("rmdir -- '/repo/App/bin/Debug' 2>/dev/null || status=1", script);
+        // GNU-only; BSD/macOS rmdir rejects it and the redirect would hide that.
+        Assert.DoesNotContain("--ignore-fail-on-non-empty", script);
+    }
+
+    [Fact]
+    public void Windows_EmptyParentUsesPlainRmdirSoItStopsAtANonEmptyDirectory() {
+        var writer = new WindowsBatchFileWriter();
+        writer.AppendEmptyParent(@"C:\repo\App\bin\Debug");
+        var script = writer.GetResult();
+
+        Assert.Contains(@"rmdir /q ""C:\repo\App\bin\Debug"" 2>nul", script);
+        // Not /s: that would delete the directory whether or not it is empty.
+        Assert.DoesNotContain("/s", script);
+    }
+
     [Theory]
     [InlineData("clean.sh", "./clean.sh")]
     [InlineData("out/clean.sh", "out/clean.sh")]
