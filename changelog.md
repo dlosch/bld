@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented in this file.
 
-## [Unreleased]
+## [0.6.0] - 2026-10-07
 
 - change `nuget`: every package shows its source next to its version, `(7.0.0, nuget.org)`: the source it was restored from (recorded in its `.nupkg.metadata`) or, if it is not restored yet, the sources it would come from (`nuget.config` with `packageSourceMapping`, or the project's `RestoreSources`/`RestoreAdditionalProjectSources`). When sources other than nuget.org are involved, a legend maps source names to URLs. The summary counts packages per source, and `--markdown` has a `Source` column.
 - [BUG] `clean --delete -o`: `--delete` deletes immediately and `--output-file` writes a script to run later, but the two together silently deleted and wrote no script. The combination is now rejected; pass one of them, or `-i` to pick and write the script (an explicit `-i` makes the picker write the script even next to `--delete`).
