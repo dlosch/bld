@@ -21,6 +21,10 @@ internal static class ProjectAssetsReader {
 
     public static string GetPath(string projectExtensionsPath) => Path.Combine(projectExtensionsPath, FileName);
 
+    /// <summary>The file's path from the evaluated MSBuildProjectExtensionsPath; "obj" is the SDK default when the project does not say.</summary>
+    public static string GetPath(string? projectExtensionsPath, string projectDir) =>
+        GetPath(DirExt.EnsureRooted(string.IsNullOrWhiteSpace(projectExtensionsPath) ? "obj" : projectExtensionsPath, projectDir));
+
     public static IReadOnlyList<ResolvedPackage>? TryRead(string path) =>
         File.Exists(path) ? Parse(File.ReadAllText(path)) : null;
 

@@ -79,8 +79,8 @@ internal class CleaningApplication(IConsoleOutput _console, Func<IConsoleOutput,
                         return;
                     }
 
-                    if (options.PrivatePackagesDirectory is not null && properties.Properties.TryGetValue("MSBuildProjectExtensionsPath", out var extensionsPath) && !string.IsNullOrEmpty(extensionsPath)) {
-                        assetsFiles.Add(ProjectAssetsReader.GetPath(DirExt.EnsureRooted(extensionsPath, projCfg.ProjDir)));
+                    if (options.PrivatePackagesDirectory is not null) {
+                        assetsFiles.Add(ProjectAssetsReader.GetPath(properties.Properties.GetValueOrDefault("MSBuildProjectExtensionsPath"), projCfg.ProjDir));
                     }
 
                     await markDeleteProcessor.ProcessAsync(projCfg, properties);

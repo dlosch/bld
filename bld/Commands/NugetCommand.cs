@@ -42,6 +42,8 @@ internal sealed class NugetCommand : BaseCommand {
         Add(_showProjectsOption);
         Add(_transitiveOption);
         Add(_rootArgument);
+
+        Add(new NugetKeepCommand(console));
     }
 
     protected override async Task<int> ExecuteAsync(ParseResult parseResult, CancellationToken cancellationToken) {

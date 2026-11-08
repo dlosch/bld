@@ -60,7 +60,7 @@ internal sealed class CleanCommand : BaseCommand {
     };
 
     private readonly Option<bool> _keepPrivatePackagesOption = new Option<bool>("--keep-private-packages") {
-        Description = $"Before cleaning, copy every package restored from a source other than nuget.org from the NuGet packages folder into a folder feed and write {PrivatePackageBackup.ConfigFileName} next to the root, pointing those sources at it. Keeps the repo restorable after the private feed is gone and the caches are cleared. Needs a prior restore.",
+        Description = $"Before cleaning, copy every package restored from a source other than nuget.org from the NuGet packages folder into a folder feed and write {PrivatePackageBackup.ConfigFileName} next to the root, pointing those sources at it. Keeps the repo restorable after the private feed is gone and the caches are cleared. Needs a prior restore. The same step as `nuget keep`.",
         DefaultValueFactory = _ => false
     };
 
