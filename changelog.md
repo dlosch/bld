@@ -5,6 +5,7 @@ All notable changes to this project are documented in this file.
 ## [Unreleased]
 
 - extend `nuget` command: `nuget keep` is the step behind `clean --keep-private-packages` as a command of its own, so keeping the packages from private feeds no longer means running `clean`. `bld nuget keep [<root>]` evaluates the projects under the root, reads each `project.assets.json`, copies every package restored from a source other than nuget.org into `.nuget-private/<source key>/` (`--dir` picks another folder) and writes `nuget.offline.config` next to the root; `clean --keep-private-packages` is unchanged.
+- change `outdated`: the picker is the default, as in `clean`. `bld outdated` in a terminal opens the picker and updates what is checked; `--apply` updates without the picker and `--markdown` prints the report, an explicit `-i` next to either brings the picker back. Without a terminal a bare `bld outdated` prints the report as before, so scripts and CI are unaffected; an explicit `-i` still fails there with a hint.
 - [BUG] `clean --publish`: a tool with `PackAsTool` and `RuntimeIdentifiers` (or `ToolPackageRuntimeIdentifiers`) packs one package per RID named `<PackageId>.<rid>` (.NET 10+), and `dotnet pack -r <rid>` writes only that one. These packages were not listed, because only `<PackageId>` counted as the project's own. The project's RIDs count now; a RID it does not list still does not.
 
 ## [0.6.0] - 2026-10-07

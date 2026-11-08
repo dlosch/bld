@@ -122,8 +122,8 @@ internal sealed class OutdatedCommand : BaseCommand {
     };
 
     private readonly Option<bool> _interactiveOption = new Option<bool>("--interactive", "-i") {
-        Description = "Pick the packages to update from a grouped list before applying, and the target version per package (space toggles, left/right change the target, enter confirms, esc cancels). Dependency conflicts between what you picked and what stays are surfaced so you can include the other package, skip the picked one, or accept the risk. Implies --apply and needs an interactive terminal.",
-        DefaultValueFactory = _ => false
+        Description = "Pick the packages to update from a grouped list before applying, and the target version per package (space toggles, left/right change the target, enter confirms, esc cancels). Dependency conflicts between what you picked and what stays are surfaced so you can include the other package, skip the picked one, or accept the risk. Implies --apply. On by default in an interactive terminal unless --apply or --markdown is given; without a terminal the report is printed instead, and an explicit -i fails.",
+        DefaultValueFactory = _ => true
     };
 
     private readonly Option<bool> _ignorePolicyOption = new Option<bool>("--ignore-policy") {
@@ -195,8 +195,11 @@ internal sealed class OutdatedCommand : BaseCommand {
         var includePrerelease = parseResult.GetValue(_prereleaseOption);
         var listOrphans = parseResult.GetValue(_orphanedOption);
         var commentOrphans = parseResult.GetValue(_commentOrphansOption);
-        var interactive = parseResult.GetValue(_interactiveOption);
+        var interactive = ResolveInteractive(parseResult, Output.CanPrompt);
         if (interactive) applyUpdates = true;
+        else if (!Output.CanPrompt && !applyUpdates && !options.MarkdownOutput) {
+            Output.WriteInfo("No interactive terminal, so the picker is skipped: reporting only. Pass --apply to update unattended.");
+        }
 
         var maxBump = parseResult.GetValue(_maxBumpOption);
         // Already validated during parsing, so this cannot throw here.
@@ -238,5 +241,19 @@ internal sealed class OutdatedCommand : BaseCommand {
 
         var service = new OutdatedService(Output, options);
         return await service.CheckOutdatedPackagesAsync(rootValue, applyUpdates, skipTfmCheck, includePrerelease, listOrphans, commentOrphans, interactive, maxBump, bumpOverrides, includePatterns, excludePatterns, allowConflicts, verifyRestore, sources, ignoreSourceMapping, grouping, preselect, evalCache, policies, ignorePolicy, cancellationToken);
+    }
+
+    /// <summary>
+    /// Whether the run shows the picker, as `clean` decides it: an explicit <c>-i</c> wins (and without a
+    /// terminal fails in the service, where it always did). Otherwise the picker is on in a terminal
+    /// unless <c>--apply</c> (update unattended) or <c>--markdown</c> (a report to pipe) says what the
+    /// run is for; without a terminal the report is printed, as before. Factored out of
+    /// <see cref="ExecuteAsync"/> so the precedence can be exercised through the real parser.
+    /// </summary>
+    internal bool ResolveInteractive(ParseResult parseResult, bool canPrompt) {
+        if (parseResult.GetResult(_interactiveOption) is { Implicit: false }) {
+            return parseResult.GetValue(_interactiveOption);
+        }
+        return canPrompt && !parseResult.GetValue(_applyOption) && !parseResult.GetValue(_markdownOption);
     }
 }
