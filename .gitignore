@@ -369,8 +369,14 @@ clean.sh
 clean.cmd
 session.md
 
-# AI agent-generated docs (reviews, notes)
+# AI agent-generated docs (reviews, notes, prompts)
 agent-docs/
+/CODE-REVIEW-*.md
+/FIX-PROMPTS-*.md
+/GAP-ANALYSIS-*.md
+/OUTDATED-*.md
+/REVIEW-*.md
+/PROMPT*.md
 
 # Local debug profiles (contain machine-specific paths)
 launchSettings.json
