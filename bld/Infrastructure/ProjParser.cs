@@ -298,6 +298,20 @@ internal sealed class ProjParser(IConsoleOutput Output, ErrorSink ErrorSink, Cle
         }
         return value;
     }
+    /// <summary>
+    /// Microsoft.NET.PackTool.targets (.NET 10+) suffixes PackageId with the RID in each RID-specific
+    /// tool pack. The RIDs are the ones the user listed (ToolPackageRuntimeIdentifiers, else
+    /// RuntimeIdentifiers), which the targets keep apart from the shim RIDs they add.
+    /// </summary>
+    static IReadOnlyList<string> RidSpecificToolPackageRids(Project project) {
+        if (SafeBool(project.GetPropertyValue("CreateRidSpecificToolPackages")) != true) return Array.Empty<string>();
+        return $"{project.GetPropertyValue("_UserSpecifiedToolPackageRids")};{project.GetPropertyValue("RuntimeIdentifier")}"
+            .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(rid => rid != "any")
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
     internal ProjectInfo? LoadProject(ProjCfg proj, string[] propertyNames) {
         string projectPath = proj.Path;
         string? configuration = proj.Configuration;
@@ -324,6 +338,7 @@ internal sealed class ProjParser(IConsoleOutput Output, ErrorSink ErrorSink, Cle
                 ArtifactsProjectName = Safe(project.GetPropertyValue("ArtifactsProjectName")),
                 PackageId = Safe(project.GetPropertyValue("PackageId")),
                 IsPackable = SafeBool(project.GetPropertyValue("IsPackable")),
+                RidSpecificToolPackageRids = RidSpecificToolPackageRids(project),
                 Properties = propertyNames.ToDictionary(p => p, p => project.GetPropertyValue(p)),
             });
         }

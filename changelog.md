@@ -2,6 +2,10 @@
 
 All notable changes to this project are documented in this file.
 
+## [Unreleased]
+
+- [BUG] `clean --publish`: a tool with `PackAsTool` and `RuntimeIdentifiers` (or `ToolPackageRuntimeIdentifiers`) packs one package per RID named `<PackageId>.<rid>` (.NET 10+), and `dotnet pack -r <rid>` writes only that one. These packages were not listed, because only `<PackageId>` counted as the project's own. The project's RIDs count now; a RID it does not list still does not.
+
 ## [0.6.0] - 2026-10-07
 
 - change `nuget`: every package shows its source next to its version, `(7.0.0, nuget.org)`: the source it was restored from (recorded in its `.nupkg.metadata`) or, if it is not restored yet, the sources it would come from (`nuget.config` with `packageSourceMapping`, or the project's `RestoreSources`/`RestoreAdditionalProjectSources`). When sources other than nuget.org are involved, a legend maps source names to URLs. The summary counts packages per source, and `--markdown` has a `Source` column.

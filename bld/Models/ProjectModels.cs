@@ -18,6 +18,11 @@ internal record ProjectInfo {
     public string? PackageId { get; init; }
     /// <summary>Null when the project does not say; the SDK's default is true, test projects set false.</summary>
     public bool? IsPackable { get; init; }
+    /// <summary>
+    /// RIDs a tool project packs separately (CreateRidSpecificToolPackages): `dotnet pack -r <rid>`
+    /// writes `<PackageId>.<rid>`, and a plain `dotnet pack` writes one of those per RID next to `<PackageId>`.
+    /// </summary>
+    public IReadOnlyList<string> RidSpecificToolPackageRids { get; init; } = Array.Empty<string>();
     public IReadOnlyDictionary<string, string> Properties { get; init; } = new Dictionary<string, string>();
     public bool HasDockerProperties { get; init; }
     public string? OutDir { get; internal set; }

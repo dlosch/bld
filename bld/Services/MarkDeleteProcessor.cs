@@ -25,7 +25,7 @@ internal sealed class MarkDeleteProcessor : IProjectProcessor {
     // Single files marked for deletion: only a project's own packages in a package output directory.
     private readonly ConcurrentDictionary<string, ConcurrentBag<Dir>> _deleteFiles = new ConcurrentDictionary<string, ConcurrentBag<Dir>>(PathComparer);
     // Per project file: the package id it packs under and whether it packs at all, for the file match.
-    private readonly ConcurrentDictionary<string, (string? PackageId, bool Packable)> _packages = new ConcurrentDictionary<string, (string?, bool)>(PathComparer);
+    private readonly ConcurrentDictionary<string, (IReadOnlyList<string> PackageIds, bool Packable)> _packages = new ConcurrentDictionary<string, (IReadOnlyList<string>, bool)>(PathComparer);
 
     // In interactive mode every category is marked and the flags only pick what starts out checked.
     private bool MarkObj => _options.CleanObjDirectory || _options.Interactive;
@@ -131,7 +131,8 @@ internal sealed class MarkDeleteProcessor : IProjectProcessor {
             // ProcessDirs drops it when it is already covered. Anywhere else (a local feed, the shared
             // artifacts/package/<config>/) only this project's own package files are candidates.
             if (!string.IsNullOrEmpty(info.PackageOutputPath)) {
-                _packages[absProjPath] = (info.PackageId ?? info.AssemblyName ?? Path.GetFileNameWithoutExtension(absProjPath), info.IsPackable ?? true);
+                var packageId = info.PackageId ?? info.AssemblyName ?? Path.GetFileNameWithoutExtension(absProjPath);
+                _packages[absProjPath] = ([packageId, .. info.RidSpecificToolPackageRids.Select(rid => $"{packageId}.{rid}")], info.IsPackable ?? true);
                 await AddDirInternal(DirExt.EnsureRooted(info.PackageOutputPath, cfg.ProjDir), DirType.PackageOutputPath, absProjPath, projName, info.Configuration, tfms, cfg.ProjDir);
             }
         }
@@ -476,13 +477,14 @@ internal sealed class MarkDeleteProcessor : IProjectProcessor {
     /// packages that are not this run's to delete. A file counts only when it sits directly in the
     /// directory and is named `<PackageId>.<version>[.symbols].nupkg` or `.snupkg` of a project that
     /// packs, so `Foo` never claims `Foo.Bar.1.0.0.nupkg`, and only when the package itself says it
-    /// belongs to that project.
+    /// belongs to that project. A RID-specific tool also owns `<PackageId>.<rid>` for each of its RIDs.
     /// </summary>
     private void PackageOutputFiles(string absPath, Dir dir) {
         var ids = dir.AbsProjPath.Keys
-            .Select(p => _packages.TryGetValue(p, out var package) ? package : (PackageId: null, Packable: false))
-            .Where(p => p.Packable && !string.IsNullOrWhiteSpace(p.PackageId))
-            .Select(p => p.PackageId!)
+            .Select(p => _packages.TryGetValue(p, out var package) ? package : (PackageIds: [], Packable: false))
+            .Where(p => p.Packable)
+            .SelectMany(p => p.PackageIds)
+            .Where(id => !string.IsNullOrWhiteSpace(id))
             .Distinct(DefaultComparer)
             .ToList();
         if (ids.Count == 0) {

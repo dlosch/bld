@@ -407,6 +407,37 @@ public class MarkDeleteProcessorTests {
     }
 
     [Fact]
+    public async Task PackageOutput_RidSpecificToolMarksItsPerRidPackages() {
+        // `dotnet pack` on a tool with RuntimeIdentifiers writes App plus App.<rid> per RID;
+        // `dotnet pack -r linux-x64` writes only App.linux-x64. A RID the project does not list is not its own.
+        var root = Path.Combine(Path.GetTempPath(), "bld_mdp_" + Guid.NewGuid().ToString("N"));
+        var projDir = Path.Combine(root, "App");
+        var bin = Directory.CreateDirectory(Path.Combine(projDir, "bin", "Release")).FullName;
+        var csproj = Path.Combine(projDir, "App.csproj");
+        await File.WriteAllTextAsync(csproj, "<Project Sdk=\"Microsoft.NET.Sdk\" />");
+        var own = new[] { ("App", "App.1.0.0.nupkg"), ("App.linux-x64", "App.linux-x64.1.0.0.nupkg"), ("App.win-x64", "App.win-x64.1.0.0.nupkg") }
+            .Select(p => { var path = Path.Combine(bin, p.Item2); WriteNupkg(path, p.Item1, "1.0.0"); return path; })
+            .ToList();
+        WriteNupkg(Path.Combine(bin, "App.osx-arm64.1.0.0.nupkg"), "App.osx-arm64", "1.0.0");
+
+        try {
+            var console = new TestConsole();
+            var errorSink = new ErrorSink(console);
+            var processor = new MarkDeleteProcessor(console, new FileSystem(console, errorSink), new CleaningOptions { CleanObjDirectory = false, CleanPublishDirectory = true }, errorSink);
+            var info = new ProjectInfo { ProjectPath = csproj, ProjectName = "App", PackageId = "App", RidSpecificToolPackageRids = ["linux-x64", "win-x64"], TargetFramework = "net10.0", Configuration = "Release", PackageOutputPath = bin };
+
+            await processor.ProcessAsync(new ProjCfg(new Proj(csproj, null), "Release"), info);
+            await processor.ProcessDirs();
+
+            var result = processor.GetResult();
+            Assert.Equal(own.Select(Norm).OrderBy(p => p), result.Files.Select(f => Norm(f.File.FullName)).OrderBy(p => p));
+        }
+        finally {
+            try { Directory.Delete(root, recursive: true); } catch { /* best effort cleanup */ }
+        }
+    }
+
+    [Fact]
     public async Task PackageOutput_ProjectThatDoesNotPackMarksNothing() {
         var root = Path.Combine(Path.GetTempPath(), "bld_mdp_" + Guid.NewGuid().ToString("N"));
         var projDir = Path.Combine(root, "App.Tests");
