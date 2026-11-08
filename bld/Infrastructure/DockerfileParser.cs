@@ -288,6 +288,56 @@ internal static class DockerfileSubstitution {
         return ["/bin/sh", "-c", trimmed];
     }
 
+    /// <summary>
+    /// The simple commands of a shell line, split at the unquoted operators `&amp;&amp;`, `||`, `|`,
+    /// `;`, `&amp;` and newlines, so `"-p:A=1;B=2"` stays one argument of one command. Quotes and
+    /// backslash escapes are read the way <see cref="Tokenize"/> reads them; a redirect's `&amp;`
+    /// (`2>&amp;1`) is not a separator. Subshells and command substitution are not understood: their
+    /// parentheses and backticks stay in the text.
+    /// </summary>
+    internal static List<string> SplitShellCommands(string script) {
+        var commands = new List<string>();
+        var current = new System.Text.StringBuilder();
+        var quote = '\0';
+
+        void Flush() {
+            var command = current.ToString().Trim();
+            if (command.Length > 0) commands.Add(command);
+            current.Clear();
+        }
+
+        for (var i = 0; i < script.Length; i++) {
+            var c = script[i];
+            if (quote != '\0') {
+                current.Append(c);
+                if (c == '\\' && i + 1 < script.Length) { current.Append(script[++i]); }
+                else if (c == quote) quote = '\0';
+                continue;
+            }
+            switch (c) {
+                case '"' or '\'':
+                    quote = c;
+                    current.Append(c);
+                    break;
+                case '\\' when i + 1 < script.Length:
+                    current.Append(c).Append(script[++i]);
+                    break;
+                case '&' when i > 0 && script[i - 1] is '>' or '<':
+                    current.Append(c);
+                    break;
+                case '&' or '|' or ';' or '\n':
+                    Flush();
+                    if (c is '&' or '|' && i + 1 < script.Length && script[i + 1] == c) i++;
+                    break;
+                default:
+                    current.Append(c);
+                    break;
+            }
+        }
+        Flush();
+        return commands;
+    }
+
     /// <summary>Tokenizes on whitespace, keeping quoted spans (with their quotes) together.</summary>
     internal static List<string> Tokenize(string text) {
         var tokens = new List<string>();

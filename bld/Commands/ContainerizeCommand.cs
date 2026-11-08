@@ -52,6 +52,33 @@ internal sealed class ContainerizeCommand : BaseCommand {
         DefaultValueFactory = _ => false
     };
 
+    private readonly Option<bool> _enableOption = new Option<bool>("--enable", "-e") {
+        Description = "Enable SDK container publishing for the apps under the root that have no container settings yet, so `dotnet publish /t:PublishContainer` builds their image: EnableSdkContainerSupport in each project, and the settings all of them share (ContainerFamily, the runtime identifier(s), ContainerRegistry, ContainerImageTags) in Directory.Build.props or the projects. Their defaults are your last interactive answers (container.json under BLD_HOME), then what Directory.Build.props already sets, then --family/--rid/--registry/--image-tags. Libraries, test projects, projects with container settings and .NET Framework targets are listed with the reason they are skipped. Dry run unless --apply is given; -i asks the shared settings once, with the defaults preselected, then per app.",
+        DefaultValueFactory = _ => false
+    };
+
+    private readonly Option<string?> _familyOption = new Option<string?>("--family") {
+        Description = "With --enable, the ContainerFamily: the variant of the image the SDK picks (alpine, noble, noble-chiseled, noble-chiseled-extra, azurelinux3.0, azurelinux3.0-distroless, azurelinux3.0-distroless-extra; any other tag suffix is written as given), or 'default' for the SDK's Debian image. With -i, skips that question.",
+    };
+
+    private readonly Option<string[]> _ridOption = new Option<string[]>("--rid") {
+        Description = "With --enable, the runtime identifier of the image (ContainerRuntimeIdentifier, e.g. linux-arm64, linux-musl-x64 for alpine). Several, repeated or ';'-separated, make one multi-platform image (ContainerRuntimeIdentifiers, with RuntimeIdentifiers covering them). With -i, skips that question.",
+        AllowMultipleArgumentsPerToken = true
+    };
+
+    private readonly Option<string?> _registryOption = new Option<string?>("--registry") {
+        Description = "With --enable, the ContainerRegistry to push to (host, with port if any); an empty value means none, the image goes to the local daemon. With -i, skips that question.",
+    };
+
+    private readonly Option<string?> _imageTagsOption = new Option<string?>("--image-tags") {
+        Description = "With --enable, the ContainerImageTags (';'-separated, $(Version) allowed); an empty value means the SDK's 'latest'. With -i, skips that question.",
+    };
+
+    private readonly Option<bool> _buildPropsOption = new Option<bool>("--build-props") {
+        Description = "With --enable, write the shared settings into Directory.Build.props (the one the projects import, or a new one in the root), where every project below gets them, and only EnableSdkContainerSupport into each app. Without -i the settings go into each app; with -i this is asked, defaulting to yes for more than one app or an existing Directory.Build.props.",
+        DefaultValueFactory = _ => false
+    };
+
     private readonly Option<bool> _runAsRootOption = new Option<bool>("--run-as-root") {
         Description = "With --migrate, write ContainerUser=root for a Dockerfile without USER instead of asking. Without it the question is asked per Dockerfile; when it cannot be asked the SDK's default user (non-root app on .NET 8+ images) is kept.",
         DefaultValueFactory = _ => false
@@ -72,6 +99,12 @@ internal sealed class ContainerizeCommand : BaseCommand {
         Add(_forceOption);
         Add(_runAsRootOption);
         Add(_validateOption);
+        Add(_enableOption);
+        Add(_familyOption);
+        Add(_ridOption);
+        Add(_registryOption);
+        Add(_imageTagsOption);
+        Add(_buildPropsOption);
         Add(_interactiveOption);
         Add(_vsToolsPath);
         Add(_noResolveVsToolsPath);
@@ -93,11 +126,12 @@ internal sealed class ContainerizeCommand : BaseCommand {
         var interactive = parseResult.GetValue(_interactiveOption);
         var migrate = parseResult.GetValue(_migrateOption);
         var validate = parseResult.GetValue(_validateOption);
+        var enable = parseResult.GetValue(_enableOption);
         var apply = parseResult.GetValue(_applyOption);
 
         if (interactive) {
-            if (!validate && !migrate) {
-                Output.WriteError("--interactive needs --migrate or --validate.");
+            if (!validate && !migrate && !enable) {
+                Output.WriteError("--interactive needs --migrate, --validate or --enable.");
                 return 1;
             }
             // Interactive mode prints prompts and writes answers; a markdown table cannot do both.
@@ -114,18 +148,35 @@ internal sealed class ContainerizeCommand : BaseCommand {
         // The write-flags only do something in a migrate (or, for --apply, a validate) run; say so when
         // they are passed without their mode instead of ignoring them.
         if (!migrate) {
-            if (apply && !validate) Output.WriteWarning("--apply has no effect without --migrate or --validate.");
+            if (apply && !validate && !enable) Output.WriteWarning("--apply has no effect without --migrate, --validate or --enable.");
             if (parseResult.GetValue(_deleteDockerfileOption)) Output.WriteWarning("--delete-dockerfile has no effect without --migrate.");
             if (parseResult.GetValue(_forceOption)) Output.WriteWarning("--allow-unsupported has no effect without --migrate.");
             if (parseResult.GetValue(_runAsRootOption)) Output.WriteWarning("--run-as-root has no effect without --migrate.");
         }
+        if (enable && (migrate || validate)) Output.WriteWarning("--enable has no effect together with --migrate or --validate; run it separately.");
+        if (!enable) {
+            if (parseResult.GetValue(_familyOption) is { }) Output.WriteWarning("--family has no effect without --enable.");
+            if (parseResult.GetValue(_ridOption) is { Length: > 0 }) Output.WriteWarning("--rid has no effect without --enable.");
+            if (parseResult.GetValue(_registryOption) is { }) Output.WriteWarning("--registry has no effect without --enable.");
+            if (parseResult.GetValue(_imageTagsOption) is { }) Output.WriteWarning("--image-tags has no effect without --enable.");
+            if (parseResult.GetValue(_buildPropsOption)) Output.WriteWarning("--build-props has no effect without --enable.");
+        }
 
         if (validate) {
-            return await ValidateAsync(rootPath, depth, apply, interactive, markdownOutput, cancellationToken);
+            return await ValidateAsync(rootPath, depth, apply, interactive, markdownOutput, ProjectEvaluator(parseResult, logLevel), cancellationToken);
+        }
+
+        if (enable && !migrate) {
+            var rids = (parseResult.GetValue(_ridOption) ?? [])
+                .SelectMany(r => r.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            return await EnableAsync(rootPath, depth, ProjectEvaluator(parseResult, logLevel), apply, interactive, markdownOutput,
+                parseResult.GetValue(_familyOption), rids, parseResult.GetValue(_registryOption), parseResult.GetValue(_imageTagsOption),
+                parseResult.GetValue(_buildPropsOption), cancellationToken);
         }
 
         if (migrate) {
-            return await MigrateAsync(rootPath, depth,
+            return await MigrateAsync(rootPath, depth, ProjectEvaluator(parseResult, logLevel),
                 apply,
                 deleteDockerfile: parseResult.GetValue(_deleteDockerfileOption),
                 force: parseResult.GetValue(_forceOption),
@@ -138,22 +189,7 @@ internal sealed class ContainerizeCommand : BaseCommand {
         var shouldScanProjects = scanAll || scanProjects;
 
         // Initialize MSBuild if we need to scan projects
-        var resolvedOptions = default(CleaningOptions);
-        if (shouldScanProjects) {
-            var options = new CleaningOptions {
-                LogLevel = logLevel,
-                VSToolsPath = parseResult.GetValue(_vsToolsPath),
-                NoResolveVSToolsPath = parseResult.GetValue(_noResolveVsToolsPath)
-            };
-
-            if (!options.NoResolveVSToolsPath && string.IsNullOrEmpty(options.VSToolsPath)) {
-                options.VSToolsPath = TryResolveVSToolsPath(out var vsRoot);
-                options.VSRootPath = vsRoot;
-            }
-
-            Services.MSBuildService.RegisterMSBuildDefaults(Output, options);
-            resolvedOptions = options;
-        }
+        var globalProps = shouldScanProjects ? RegisterMSBuild(parseResult, logLevel) : new Dictionary<string, string>();
 
         Output.WriteInfo($"Scanning: {rootPath}");
         Output.WriteInfo($"Search depth: {depth}");
@@ -171,17 +207,6 @@ internal sealed class ContainerizeCommand : BaseCommand {
 
             var projectFiles = await ProjectContainerScanner.FindProjectFilesAsync(rootPath, depth, ReportFailure);
             var containerProjects = new List<ProjectContainerScanner.ContainerProjectInfo>();
-
-            // Prepare global properties for project evaluation. Reading the raw option here discarded
-            // the VSToolsPath resolved above, so projects needing those targets failed to evaluate and
-            // were silently reported as "not a container project".
-            var globalProps = new Dictionary<string, string>();
-            if (!string.IsNullOrEmpty(resolvedOptions?.VSToolsPath)) {
-                globalProps["VSToolsPath"] = resolvedOptions.VSToolsPath;
-            }
-            if (!string.IsNullOrEmpty(resolvedOptions?.VSRootPath) && Directory.Exists(Path.Combine(resolvedOptions.VSRootPath, "MSBuild"))) {
-                globalProps["MSBuildExtensionsPath"] = Path.Combine(resolvedOptions.VSRootPath, "MSBuild");
-            }
 
             foreach (var projectFile in projectFiles) {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -353,10 +378,246 @@ internal sealed class ContainerizeCommand : BaseCommand {
     }
 
     /// <summary>
-    /// Plans one migration per Dockerfile and, with --apply, writes it. The project files are read as
-    /// XML, so this needs no MSBuild registration. Returns 1 when a write failed.
+    /// Registers MSBuild and returns the global properties projects are evaluated with. Reading the raw
+    /// option here discarded the VSToolsPath resolved from the environment, so projects needing those
+    /// targets failed to evaluate and were silently reported as "not a container project".
     /// </summary>
-    private async Task<int> MigrateAsync(string rootPath, int depth, bool apply, bool deleteDockerfile, bool force, bool? runAsRoot, bool interactive, bool markdownOutput, CancellationToken cancellationToken) {
+    private Dictionary<string, string> RegisterMSBuild(ParseResult parseResult, LogLevel logLevel) {
+        var options = new CleaningOptions {
+            LogLevel = logLevel,
+            VSToolsPath = parseResult.GetValue(_vsToolsPath),
+            NoResolveVSToolsPath = parseResult.GetValue(_noResolveVsToolsPath)
+        };
+
+        if (!options.NoResolveVSToolsPath && string.IsNullOrEmpty(options.VSToolsPath)) {
+            options.VSToolsPath = TryResolveVSToolsPath(out var vsRoot);
+            options.VSRootPath = vsRoot;
+        }
+
+        Services.MSBuildService.RegisterMSBuildDefaults(Output, options);
+
+        var globalProps = new Dictionary<string, string>();
+        if (!string.IsNullOrEmpty(options.VSToolsPath)) {
+            globalProps["VSToolsPath"] = options.VSToolsPath;
+        }
+        if (!string.IsNullOrEmpty(options.VSRootPath) && Directory.Exists(Path.Combine(options.VSRootPath, "MSBuild"))) {
+            globalProps["MSBuildExtensionsPath"] = Path.Combine(options.VSRootPath, "MSBuild");
+        }
+        return globalProps;
+    }
+
+    /// <summary>
+    /// Evaluates projects with MSBuild for migrate and validate, so a target framework or container
+    /// setting from Directory.Build.props counts. Without a usable MSBuild the project files are read
+    /// as XML, as before.
+    /// </summary>
+    private Func<string, Services.ContainerMigrationService.ProjectFacts, Services.ContainerMigrationService.ProjectFacts>? ProjectEvaluator(ParseResult parseResult, LogLevel logLevel) {
+        try {
+            var globalProps = RegisterMSBuild(parseResult, logLevel);
+            return (path, facts) => Services.ContainerMigrationService.EvaluateProject(path, facts, globalProps);
+        }
+        catch (Exception ex) {
+            Output.WriteWarning($"MSBuild is not available ({ex.FormatMessage()}); reading the project files only, so values from Directory.Build.props are unknown.");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Enables SDK container publishing for every app under the root without container settings and,
+    /// with --apply or per answer in interactive mode, writes it: the switch into each app, the shared
+    /// settings into Directory.Build.props or the apps. Returns 1 when an option is invalid or a write failed.
+    /// </summary>
+    private async Task<int> EnableAsync(string rootPath, int depth, Func<string, Services.ContainerMigrationService.ProjectFacts, Services.ContainerMigrationService.ProjectFacts>? evaluate, bool apply, bool interactive, bool markdownOutput, string? family, IReadOnlyList<string> runtimeIdentifiers, string? registry, string? imageTags, bool buildProps, CancellationToken cancellationToken) {
+        if (runtimeIdentifiers.FirstOrDefault(r => !Services.ContainerEnableService.IsRuntimeIdentifier(r)) is { } bad) {
+            Output.WriteError($"--rid {bad} is not a runtime identifier (linux-x64, linux-arm64, linux-musl-x64, ...).");
+            return 1;
+        }
+
+        void ReportScanFailure(string path, Exception ex) => Output.WriteWarning($"Could not scan {path}: {ex.FormatMessage()}");
+        var searchRoot = Directory.Exists(rootPath) ? rootPath : Path.GetDirectoryName(rootPath)!;
+        string Rel(string path) => Path.GetRelativePath(searchRoot, path);
+        var projectFiles = await ProjectContainerScanner.FindProjectFilesAsync(rootPath, depth, ReportScanFailure);
+
+        Output.WriteInfo($"Scanning: {rootPath}");
+        Output.WriteInfo($"Mode: {(interactive ? "Interactive" : apply ? "Apply changes" : "Dry run")}");
+
+        if (projectFiles.Count == 0) {
+            Output.WriteWarning("No projects found.");
+            return 0;
+        }
+
+        var service = new Services.ContainerEnableService(Output, evaluate);
+        Services.ContainerEnableService.SharedProps shared;
+        try {
+            shared = Services.ContainerEnableService.FindSharedProps(searchRoot);
+        }
+        catch (InvalidDataException ex) {
+            Output.WriteError(ex.Message);
+            return 1;
+        }
+
+        // The defaults: the profile, then what Directory.Build.props already sets, then the command line.
+        var defaults = service.LoadProfile(Services.ContainerEnableService.ProfilePath) ?? new Services.ContainerEnableService.Choices();
+        if (!defaults.IsEmpty) Output.WriteInfo($"Defaults from {Services.ContainerEnableService.ProfilePath}: {Describe(defaults)}");
+        defaults.Overlay(shared.Existing);
+        if (family is { }) defaults.Family = family.Equals("default", StringComparison.OrdinalIgnoreCase) ? string.Empty : family;
+        if (runtimeIdentifiers.Count > 0) {
+            defaults.RuntimeIdentifiers.Clear();
+            defaults.RuntimeIdentifiers.AddRange(runtimeIdentifiers);
+        }
+        if (registry is { }) defaults.Registry = registry.Trim();
+        if (imageTags is { }) defaults.ImageTags = imageTags.Trim();
+        var given = new Services.ContainerEnableService.Given(family is { }, runtimeIdentifiers.Count > 0, registry is { }, imageTags is { }, buildProps);
+
+        var plans = new List<Services.ContainerEnableService.Plan>();
+        foreach (var projectFile in projectFiles.OrderBy(p => p, StringComparer.OrdinalIgnoreCase)) {
+            cancellationToken.ThrowIfCancellationRequested();
+            try {
+                plans.Add(await service.PlanAsync(projectFile, shared, cancellationToken));
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException) {
+                Output.WriteWarning($"Could not read {projectFile}: {ex.FormatMessage()}");
+            }
+        }
+        var candidates = plans.Count(p => p.SkipReason is null);
+
+        var choices = defaults;
+        var sharedInProps = buildProps;
+        if (interactive && candidates > 0) {
+            (choices, sharedInProps) = service.AskChoices(defaults, given, shared, candidates, given.SharedInProps ? buildProps : candidates > 1 || shared.Exists);
+            try {
+                Services.ContainerEnableService.SaveProfile(Services.ContainerEnableService.ProfilePath, choices);
+                Output.WriteLine($"Saved as your defaults: {Services.ContainerEnableService.ProfilePath}");
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) {
+                Output.WriteWarning($"Could not save the defaults to {Services.ContainerEnableService.ProfilePath}: {ex.FormatMessage()}");
+            }
+            Output.WriteLine("");
+        }
+        if (choices.IsEmpty) sharedInProps = false;
+        foreach (var warning in Services.ContainerEnableService.Warnings(choices)) Output.WriteWarning(warning);
+
+        var propsChanges = sharedInProps ? Services.ContainerEnableService.PropsChanges(shared, choices) : [];
+        var propsNeeded = propsChanges.Count > 0 && plans.Any(p => p.SkipReason is null && p.ImportsSharedProps);
+        var propsWritten = false;
+        var propsFailed = false;
+        var failures = 0;
+        var written = 0;
+        var declined = 0;
+        var outcome = new Dictionary<Services.ContainerEnableService.Plan, bool>();
+
+        // Written before the first app that needs it, so a run that enables nothing leaves the file
+        // alone; a failure counts once and is not retried per app.
+        async Task<bool> EnsurePropsAsync() {
+            if (!propsNeeded || propsWritten) return true;
+            if (propsFailed) return false;
+            propsWritten = await service.ApplyPropsAsync(shared, choices, cancellationToken);
+            if (propsWritten) {
+                Output.WriteLine($"{(interactive ? "    " : string.Empty)}✓ Updated {Rel(shared.Path)}");
+            }
+            else {
+                propsFailed = true;
+                failures++;
+            }
+            return propsWritten;
+        }
+
+        // An app whose shared settings could not be written is left alone rather than half-enabled.
+        async Task WriteAsync(Services.ContainerEnableService.Plan plan, string indent) {
+            if (plan.ImportsSharedProps && !await EnsurePropsAsync()) {
+                Output.WriteLine($"{indent}Not written: {Rel(plan.ProjectPath)}, since {Rel(shared.Path)} could not be.");
+                outcome[plan] = false;
+            }
+            else if (await service.ApplyAsync(plan, choices, sharedInProps, cancellationToken)) {
+                written++;
+                outcome[plan] = true;
+                Output.WriteLine($"{indent}✓ Updated {Rel(plan.ProjectPath)}");
+            }
+            else {
+                failures++;
+                outcome[plan] = false;
+            }
+        }
+
+        async Task WriteAllAsync() {
+            foreach (var plan in plans.Where(p => p.SkipReason is null)) {
+                cancellationToken.ThrowIfCancellationRequested();
+                await WriteAsync(plan, string.Empty);
+            }
+        }
+
+        if (markdownOutput && !interactive) {
+            // Written first, so the table reports what happened rather than what was meant to.
+            if (apply) await WriteAllAsync();
+            var rows = new List<IReadOnlyList<string?>>();
+            if (propsNeeded) {
+                rows.Add(new[] { Rel(shared.Path), propsWritten ? "written" : apply ? "failed" : "would write", string.Join("; ", propsChanges.Select(c => $"{c.Name}={c.Value}")), shared.Exists ? "exists" : "new" });
+            }
+            rows.AddRange(plans.Select(plan => (IReadOnlyList<string?>)new[] {
+                Rel(plan.ProjectPath),
+                plan.SkipReason is { } ? "skipped" : !apply ? "can be enabled" : outcome.GetValueOrDefault(plan) ? "enabled" : "failed",
+                plan.SkipReason is { } ? string.Empty : string.Join("; ", plan.Elements(choices, sharedInProps).Elements().Select(DescribeSetting)),
+                string.Join("; ", (plan.SkipReason is { } ? [plan.SkipReason] : plan.Warnings(choices, sharedInProps)).Concat(plan.Notes)),
+            }));
+            MarkdownTableFormatter.Write(Output, "SDK container publishing (markdown)", new[] { "Project", "Status", "Settings", "Notes" }, rows);
+        }
+        else {
+            if (propsNeeded) {
+                Output.WriteLine($"  • {Rel(shared.Path)} ({(shared.Exists ? "exists, shared settings added" : "new, so every project below gets the shared settings")})");
+                Output.WriteLine(apply || interactive ? "    Adding:" : "    Would add:");
+                foreach (var (name, value) in propsChanges) Output.WriteLine($"      <{name}>{value}</{name}>");
+                Output.WriteLine("");
+            }
+            foreach (var plan in plans) {
+                Output.WriteLine($"  • {Rel(plan.ProjectPath)}");
+                if (plan.SkipReason is { }) {
+                    Output.WriteLine($"    Skipped: {plan.SkipReason}");
+                }
+                foreach (var note in plan.Notes) Output.WriteLine($"    Note: {note}");
+
+                if (plan.SkipReason is null) {
+                    var proceed = true;
+                    if (interactive) {
+                        proceed = service.AskProject(plan, Rel(plan.ProjectPath));
+                        if (!proceed) declined++;
+                    }
+                    if (proceed) {
+                        Output.WriteLine(apply || interactive ? "    Adding:" : "    Would add:");
+                        foreach (var line in plan.Elements(choices, sharedInProps).ToString().Split('\n')) {
+                            Output.WriteLine("      " + line.TrimEnd('\r'));
+                        }
+                        foreach (var warning in plan.Warnings(choices, sharedInProps)) Output.WriteLine($"    Note: {warning}");
+                    }
+                    if (proceed && interactive) await WriteAsync(plan, "    ");
+                }
+                Output.WriteLine("");
+            }
+        }
+
+        if (apply && !interactive && !markdownOutput) await WriteAllAsync();
+
+        var skipped = plans.Count - candidates;
+        Output.WriteLine("");
+        Output.WriteLine(interactive
+            ? $"Enabled container publishing for {written} of {plans.Count} project(s); {declined} declined, {skipped} skipped, {failures} failed."
+            : apply
+            ? $"Enabled container publishing for {written} of {plans.Count} project(s); {skipped} skipped, {failures} failed."
+            : $"{candidates} of {plans.Count} project(s) can publish a container; {skipped} skipped. Pass --apply to write, or -i to pick the image family, platform, registry and tags once for all.");
+        if (written > 0) {
+            Output.WriteLine("Build the image with: dotnet publish <project> -c Release /t:PublishContainer");
+        }
+
+        return failures > 0 ? 1 : 0;
+
+        static string Describe(Services.ContainerEnableService.Choices choices) =>
+            string.Join(", ", choices.Properties().Select(p => $"{p.Name}={p.Value}"));
+    }
+
+    /// <summary>
+    /// Plans one migration per Dockerfile and, with --apply, writes it. The project files are edited as
+    /// XML; <paramref name="evaluate"/> adds what only the MSBuild evaluation knows. Returns 1 when a write failed.
+    /// </summary>
+    private async Task<int> MigrateAsync(string rootPath, int depth, Func<string, Services.ContainerMigrationService.ProjectFacts, Services.ContainerMigrationService.ProjectFacts>? evaluate, bool apply, bool deleteDockerfile, bool force, bool? runAsRoot, bool interactive, bool markdownOutput, CancellationToken cancellationToken) {
         if (deleteDockerfile && !apply && !interactive) {
             Output.WriteWarning("--delete-dockerfile has no effect without --apply.");
         }
@@ -387,7 +648,7 @@ internal sealed class ContainerizeCommand : BaseCommand {
             return 0;
         }
 
-        var service = new Services.ContainerMigrationService(Output, runAsRoot, willWrite: apply || interactive);
+        var service = new Services.ContainerMigrationService(Output, runAsRoot, willWrite: apply || interactive, evaluate);
         var plans = new List<Services.ContainerMigrationService.MigrationPlan>();
         var claimed = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         // The plain Dockerfile goes first, so it is the one that claims a project it shares with variants.
@@ -396,7 +657,7 @@ internal sealed class ContainerizeCommand : BaseCommand {
                      .ThenBy(path => path, StringComparer.OrdinalIgnoreCase)) {
             cancellationToken.ThrowIfCancellationRequested();
             try {
-                var plan = await service.PlanAsync(dockerfile, projectFiles, cancellationToken);
+                var plan = await service.PlanAsync(dockerfile, projectFiles, cancellationToken, searchRoot);
                 // Two Dockerfiles for one project (debug and release variants) cannot both win.
                 if (plan.SkipReason is null && plan.ProjectPath is { } project) {
                     if (claimed.TryGetValue(project, out var first)) {
@@ -457,10 +718,12 @@ internal sealed class ContainerizeCommand : BaseCommand {
                         declined++;
                     }
                     else {
-                        var delete = deleteDockerfile || Output.Confirm($"    Delete {Rel(plan.DockerfilePath)} and the Visual Studio container-tools settings?", defaultValue: false);
+                        // A Dockerfile that compose or a pipeline still builds from is kept; no point asking.
+                        var delete = plan.DockerfileReferences.Count == 0
+                            && (deleteDockerfile || Output.Confirm($"    Delete {Rel(plan.DockerfilePath)} and the Visual Studio container-tools settings?", defaultValue: false));
                         if (await service.ApplyAsync(plan, delete, cancellationToken)) {
                             written++;
-                            Output.WriteLine($"    ✓ Updated {Rel(plan.ProjectPath!)}{(delete ? $", deleted {Rel(plan.DockerfilePath)}" : "")}");
+                            Output.WriteLine($"    ✓ Updated {Rel(plan.ProjectPath!)}{Deleted(plan)}");
                         }
                         else {
                             failures++;
@@ -476,7 +739,7 @@ internal sealed class ContainerizeCommand : BaseCommand {
                 cancellationToken.ThrowIfCancellationRequested();
                 if (await service.ApplyAsync(plan, deleteDockerfile, cancellationToken)) {
                     written++;
-                    Output.WriteLine($"✓ Updated {Rel(plan.ProjectPath!)}{(deleteDockerfile ? $", deleted {Rel(plan.DockerfilePath)}" : "")}");
+                    Output.WriteLine($"✓ Updated {Rel(plan.ProjectPath!)}{Deleted(plan)}");
                 }
                 else {
                     failures++;
@@ -498,6 +761,9 @@ internal sealed class ContainerizeCommand : BaseCommand {
         }
 
         return failures > 0 ? 1 : 0;
+
+        string Deleted(Services.ContainerMigrationService.MigrationPlan plan) =>
+            plan.Deleted.Count > 0 ? $", deleted {string.Join(", ", plan.Deleted.Select(Rel))}" : string.Empty;
     }
 
     /// <summary>
@@ -505,7 +771,7 @@ internal sealed class ContainerizeCommand : BaseCommand {
     /// the fixable findings. Projects without any container setting are not listed. Returns 1 when a
     /// write failed.
     /// </summary>
-    private async Task<int> ValidateAsync(string rootPath, int depth, bool apply, bool interactive, bool markdownOutput, CancellationToken cancellationToken) {
+    private async Task<int> ValidateAsync(string rootPath, int depth, bool apply, bool interactive, bool markdownOutput, Func<string, Services.ContainerMigrationService.ProjectFacts, Services.ContainerMigrationService.ProjectFacts>? evaluate, CancellationToken cancellationToken) {
         var searchRoot = Directory.Exists(rootPath) ? rootPath : Path.GetDirectoryName(rootPath)!;
         string Rel(string path) => Path.GetRelativePath(searchRoot, path);
         var projectFiles = await ProjectContainerScanner.FindProjectFilesAsync(rootPath, depth,
@@ -514,7 +780,7 @@ internal sealed class ContainerizeCommand : BaseCommand {
         Output.WriteInfo($"Scanning: {rootPath}");
         Output.WriteInfo($"Mode: {(interactive ? "Interactive" : apply ? "Apply changes" : "Report")}");
 
-        var service = new Services.ContainerValidationService(Output);
+        var service = new Services.ContainerValidationService(Output, evaluate);
         var reports = new List<Services.ContainerValidationService.Report>();
         foreach (var projectFile in projectFiles.OrderBy(p => p, StringComparer.OrdinalIgnoreCase)) {
             cancellationToken.ThrowIfCancellationRequested();

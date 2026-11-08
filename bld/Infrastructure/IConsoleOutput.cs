@@ -35,6 +35,8 @@ internal interface IConsoleOutput {
     bool CanPrompt { get; }
 
     bool Confirm(string message, bool defaultValue = false);
+    /// <summary>A free-text answer; enter alone returns <paramref name="defaultValue"/>. Needs a terminal, like <see cref="Prompt{T}"/>.</summary>
+    string Ask(string message, string defaultValue);
     T Prompt<T>(SelectionPrompt<T> prompt) where T : notnull;
     List<T> MultiPrompt<T>(MultiSelectionPrompt<T> prompt) where T : notnull;
 
@@ -50,6 +52,10 @@ internal interface IConsoleOutput {
 
     void StartProgress(string description, Action<ProgressContext> action);
     Task StartProgressAsync(string description, Func<ProgressContext, Task> action);
+    /// <summary>
+    /// <paramref name="description"/> and what the action passes to <c>ctx.Status</c> are markup:
+    /// escape paths and other data with <c>Markup.Escape</c>, as <see cref="WriteRule"/> expects.
+    /// </summary>
     Task StartStatusAsync(string description, Func<StatusContext, Task> action);
     void WriteException(Exception exception);
     void WriteOutput(string caption, string? content = default);

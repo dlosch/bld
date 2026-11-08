@@ -29,6 +29,12 @@ internal sealed class TestConsole : IConsoleOutput {
     /// </summary>
     public Func<object, System.Collections.IList?>? MultiPromptAnswer { get; set; }
 
+    /// <summary>Answers handed to <see cref="Prompt{T}"/> in order, each the chosen item itself.</summary>
+    public Queue<object> PromptAnswers { get; } = new();
+
+    /// <summary>Answers handed to <see cref="Ask"/> in order; the default is used once empty.</summary>
+    public Queue<string> TextAnswers { get; } = new();
+
     public bool CanPrompt { get; set; } = true;
 
     /// <summary>
@@ -58,7 +64,14 @@ internal sealed class TestConsole : IConsoleOutput {
         ConfirmPrompts.Add(message);
         return ConfirmAnswers.Count > 0 ? ConfirmAnswers.Dequeue() : defaultValue;
     }
-    public T Prompt<T>(SelectionPrompt<T> prompt) where T : notnull => default!;
+    public string Ask(string message, string defaultValue) {
+        Log("Ask", message);
+        return TextAnswers.Count > 0 ? TextAnswers.Dequeue() : defaultValue;
+    }
+    public T Prompt<T>(SelectionPrompt<T> prompt) where T : notnull {
+        Log("Prompt", prompt.Title ?? string.Empty);
+        return PromptAnswers.Count > 0 ? (T)PromptAnswers.Dequeue() : default!;
+    }
     public List<T> MultiPrompt<T>(MultiSelectionPrompt<T> prompt) where T : notnull =>
         MultiPromptAnswer?.Invoke(prompt)?.Cast<T>().ToList() ?? new List<T>();
 

@@ -16,6 +16,9 @@ internal sealed class ContainerMigrationService {
     private readonly IConsoleOutput _console;
     private readonly bool? _runAsRoot;
     private readonly bool _willWrite;
+    private readonly Func<string, ProjectFacts, ProjectFacts>? _evaluate;
+    // Files that may run `docker build` or compose, per repository root; read once per run.
+    private readonly Dictionary<string, List<(string Path, string Text)>> _buildScripts = new(StringComparer.OrdinalIgnoreCase);
 
     /// <param name="runAsRoot">
     /// What to write for a Dockerfile without USER: true writes ContainerUser=root, false leaves the SDK
@@ -25,10 +28,15 @@ internal sealed class ContainerMigrationService {
     /// Whether the run will write (apply or interactive). Only a writing run asks "keep running as root?";
     /// a plain dry run defers the question and notes that --apply would ask it.
     /// </param>
-    public ContainerMigrationService(IConsoleOutput console, bool? runAsRoot = null, bool willWrite = false) {
+    /// <param name="evaluate">
+    /// Completes the facts read from the project file with the MSBuild evaluation (see
+    /// <see cref="EvaluateProject"/>); null reads the project file only, which needs no MSBuild registration.
+    /// </param>
+    public ContainerMigrationService(IConsoleOutput console, bool? runAsRoot = null, bool willWrite = false, Func<string, ProjectFacts, ProjectFacts>? evaluate = null) {
         _console = console;
         _runAsRoot = runAsRoot;
         _willWrite = willWrite;
+        _evaluate = evaluate;
     }
 
     internal sealed class MigrationPlan {
@@ -43,6 +51,12 @@ internal sealed class ContainerMigrationService {
         public List<XElement> Elements { get; } = new();
         /// <summary>Visual Studio container-tools properties and package the project carries.</summary>
         public List<string> DockerToolsReferences { get; } = new();
+        /// <summary>Compose files, pipelines and scripts that build from the Dockerfile; they keep it from being deleted.</summary>
+        public List<string> DockerfileReferences { get; } = new();
+        /// <summary>The repository (or scan) root the references were searched under.</summary>
+        public string? RepositoryRoot { get; set; }
+        /// <summary>What <see cref="ApplyAsync"/> deleted: the Dockerfile and the .dockerignore that only served it.</summary>
+        public List<string> Deleted { get; } = new();
 
         public bool CanApply(bool force) => SkipReason is null && (Unsupported.Count == 0 || force);
     }
@@ -67,12 +81,16 @@ internal sealed class ContainerMigrationService {
         "ContainerAppCommand", "ContainerAppCommandArgs", "ContainerDefaultArgs",
     ];
 
-    private static readonly Regex ProjectTokenRegex = new(@"[^\s""'\[\],]+\.csproj", RegexOptions.IgnoreCase | RegexOptions.Compiled);
-    private static readonly Regex DotnetCommandRegex = new(@"\bdotnet\s+(publish|build)\b(?<args>[^&|;]*)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex ProjectTokenRegex = new(@"[^\s""'\[\],]+\.(?:cs|fs|vb)proj\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly string[] ProjectExtensions = [".csproj", ".fsproj", ".vbproj"];
+
+    internal static bool IsDotnetProject(string path) =>
+        ProjectExtensions.Any(e => path.EndsWith(e, StringComparison.OrdinalIgnoreCase));
     // <repo>:<version>[-<family>]: the family is what ContainerFamily appends to the tag the SDK computes.
     private static readonly Regex DefaultImageRegex = new(@"^mcr\.microsoft\.com/dotnet/(?<repo>aspnet|runtime|runtime-deps):(?<version>\d+\.\d+)(-(?<family>[a-z0-9.-]+))?$", RegexOptions.Compiled);
 
-    public async Task<MigrationPlan> PlanAsync(string dockerfilePath, IReadOnlyList<string> projectFiles, CancellationToken cancellationToken) {
+    /// <param name="searchRoot">Where compose files and pipelines that build from the Dockerfile are searched when it is not inside a git repository.</param>
+    public async Task<MigrationPlan> PlanAsync(string dockerfilePath, IReadOnlyList<string> projectFiles, CancellationToken cancellationToken, string? searchRoot = null) {
         var plan = new MigrationPlan { DockerfilePath = dockerfilePath };
         var info = Parse(await File.ReadAllLinesAsync(dockerfilePath, cancellationToken), dockerfilePath);
 
@@ -98,6 +116,21 @@ internal sealed class ContainerMigrationService {
             return plan;
         }
         plan.DockerToolsReferences.AddRange(project.DockerToolsReferences);
+        if (_evaluate is { }) {
+            try {
+                project = _evaluate(plan.ProjectPath, project);
+            }
+            catch (Exception ex) {
+                plan.Notes.Add($"could not evaluate the project ({ex.FormatMessage()}); read its file only, so values from Directory.Build.props and other imports are unknown");
+            }
+        }
+
+        // What `dotnet publish` was told on the command line decides the image as much as the project
+        // does: --self-contained needs runtime-deps, -r picks the platform.
+        var dockerfileDir = Path.GetDirectoryName(dockerfilePath) ?? string.Empty;
+        var publish = MergePublishCommands(publishes.Where(p => p.Verb == "publish"
+            && (p.Project is null || string.Equals(ResolveProjectToken(p.Project, projectFiles, dockerfileDir), plan.ProjectPath, StringComparison.OrdinalIgnoreCase))));
+        project = ApplyPublishSwitches(project, publish, baseImage, plan);
 
         // Fold the runtime stage chain, root stage first, the way Docker layers it.
         var values = new Dictionary<string, string>(info.GlobalArgs, StringComparer.Ordinal);
@@ -146,7 +179,9 @@ internal sealed class ContainerMigrationService {
                             var slash = token.IndexOf('/');
                             var port = slash < 0 ? token : token[..slash];
                             var type = slash < 0 ? "tcp" : token[(slash + 1)..].ToLowerInvariant();
-                            if (!ports.Contains((port, type))) ports.Add((port, type));
+                            foreach (var single in ExpandPorts(port, plan.Notes)) {
+                                if (!ports.Contains((single, type))) ports.Add((single, type));
+                            }
                         }
                         break;
                     case "WORKDIR": {
@@ -311,20 +346,26 @@ internal sealed class ContainerMigrationService {
             items.Add(new XElement("ContainerLabel", new XAttribute("Include", EscapeItemSpec(key)), new XAttribute("Value", EscapeMetadata(value))));
         }
 
+        ReconcileInheritedSettings(properties, items, project, baseImage, plan);
+
         plan.Elements.Add(properties);
         if (items.HasElements) plan.Elements.Add(items);
+        if (PublishPropertyGroup(publish) is { } publishGroup) plan.Elements.Add(publishGroup);
 
-        foreach (var publish in publishes.Where(p => p.Verb == "publish")) {
-            var extra = publish.ExtraArguments;
-            if (extra.Count > 0) {
-                plan.Notes.Add($"dotnet publish ran with `{string.Join(" ", extra)}`; pass the same arguments to `dotnet publish /t:PublishContainer` or set the properties in the project");
-            }
+        if (publish.ExtraArguments.Count > 0) {
+            plan.Notes.Add($"dotnet publish ran with `{string.Join(" ", publish.ExtraArguments)}`; pass the same arguments to `dotnet publish /t:PublishContainer` or set the properties in the project");
         }
         if (unresolved.Count > 0) {
             plan.Notes.Add($"build args without a default were left as written: {string.Join(", ", unresolved)}");
         }
         if (plan.DockerToolsReferences.Count > 0) {
             plan.Notes.Add($"Visual Studio container tools settings present ({string.Join(", ", plan.DockerToolsReferences)}); removed only together with the Dockerfile");
+        }
+
+        plan.RepositoryRoot = FindRepositoryRoot(dockerfileDir) ?? searchRoot ?? dockerfileDir;
+        plan.DockerfileReferences.AddRange(FindDockerfileReferences(dockerfilePath, plan.RepositoryRoot));
+        if (plan.DockerfileReferences.Count > 0) {
+            plan.Notes.Add($"{Path.GetFileName(dockerfilePath)} is used by {string.Join(", ", plan.DockerfileReferences.Select(r => Path.GetRelativePath(plan.RepositoryRoot, r)))}; it is kept even with --delete-dockerfile");
         }
 
         return plan;
@@ -339,6 +380,12 @@ internal sealed class ContainerMigrationService {
         var projectPath = plan.ProjectPath;
         var projectDir = Path.GetDirectoryName(projectPath) ?? string.Empty;
         var relativeDockerfile = Path.GetRelativePath(projectDir, plan.DockerfilePath).Replace('\\', '/');
+        if (deleteDockerfile && plan.DockerfileReferences.Count > 0) {
+            // Deleting it would break the compose file or pipeline that still builds from it; the
+            // Visual Studio settings stay with it.
+            _console.WriteWarning($"Kept {plan.DockerfilePath}: used by {string.Join(", ", plan.DockerfileReferences)}.");
+            deleteDockerfile = false;
+        }
 
         try {
             var written = await XmlProjectFile.EditAsync(projectPath, doc => {
@@ -376,6 +423,11 @@ internal sealed class ContainerMigrationService {
 
             if (deleteDockerfile) {
                 File.Delete(plan.DockerfilePath);
+                plan.Deleted.Add(plan.DockerfilePath);
+                foreach (var ignore in OrphanedDockerignores(plan.DockerfilePath, plan.RepositoryRoot)) {
+                    File.Delete(ignore);
+                    plan.Deleted.Add(ignore);
+                }
             }
             return true;
         }
@@ -409,7 +461,32 @@ internal sealed class ContainerMigrationService {
         return info.StageDetails.FirstOrDefault(s => s.Name is { } && s.Name.Equals(reference, StringComparison.OrdinalIgnoreCase));
     }
 
-    private sealed record PublishCommand(DockerStage Stage, string Verb, string? Project, string? Output, List<string> ExtraArguments);
+    /// <summary>
+    /// One `dotnet publish`/`dotnet build` line: the project and output it names, and the switches that
+    /// change what is published (framework, runtime identifier, self-contained, -p properties).
+    /// </summary>
+    private sealed record PublishCommand(DockerStage Stage, string Verb, string? Project, string? Output, List<string> ExtraArguments) {
+        public string? Framework { get; set; }
+        public string? RuntimeIdentifier { get; set; }
+        public bool? SelfContained { get; set; }
+        /// <summary>SelfContained came from the SDK's old default (see <see cref="ImpliesSelfContained"/>), not from a switch.</summary>
+        public bool ImplicitSelfContained { get; set; }
+        public List<(string Name, string Value)> Properties { get; } = new();
+    }
+
+    private static readonly Regex SdkImageVersionRegex = new(@"dotnet/(?:nightly/)?sdk:(?<major>\d+)\.\d+", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    /// <summary>
+    /// Up to the .NET 7 SDK, `-r` without `--self-contained` published self-contained (with warning
+    /// NETSDK1179); the .NET 8 SDK turned that default around. A Dockerfile building on an older SDK
+    /// image meant self-contained, so the migration has to say so explicitly.
+    /// </summary>
+    internal static bool ImpliesSelfContained(string sdkImage) =>
+        SdkImageVersionRegex.Match(sdkImage) is { Success: true } match && int.Parse(match.Groups["major"].Value) < 8;
+
+    // Switches that change how, not what, is published.
+    private static readonly string[] IgnoredPublishSwitches = ["--no-restore", "--no-build", "--nologo", "--no-dependencies"];
+    private static readonly string[] PropertySwitches = ["-p:", "/p:", "--property:", "-property:", "/property:"];
 
     private static List<PublishCommand> FindPublishCommands(DockerfileInfo info) {
         var values = new Dictionary<string, string>(info.GlobalArgs, StringComparer.Ordinal);
@@ -424,29 +501,198 @@ internal sealed class ContainerMigrationService {
         var result = new List<PublishCommand>();
         foreach (var stage in info.StageDetails) {
             foreach (var run in stage.Instructions.Where(i => i.Directive == "RUN")) {
-                foreach (Match match in DotnetCommandRegex.Matches(run.Arguments)) {
-                    var tokens = DockerfileSubstitution.Tokenize(DockerfileSubstitution.Substitute(match.Groups["args"].Value, values))
-                        .Select(DockerfileSubstitution.Unquote).ToList();
+                foreach (var (verb, tokens) in DotnetCommands(run.Arguments, values)) {
                     string? project = null, output = null;
                     var extra = new List<string>();
+                    var command = new PublishCommand(stage, verb, null, null, extra);
                     for (var i = 0; i < tokens.Count; i++) {
                         var token = tokens[i];
                         var next = i + 1 < tokens.Count ? tokens[i + 1] : null;
-                        if (token is "-o" or "--output" && next is { }) { output = next; i++; }
-                        else if (token is "-c" or "--configuration" && next is { }) { i++; }
-                        else if (token.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase)) { project = token; }
-                        else if (token.StartsWith("--output=", StringComparison.Ordinal)) { output = token[9..]; }
-                        else if (IsConfigurationSwitch(token)) { }
+                        if (TryOption(tokens, ref i, ["-o", "--output"], out var value)) { output = value; }
+                        else if (TryOption(tokens, ref i, ["-c", "--configuration"], out _)) { }
+                        // A build arg without a value stays `$NAME`; it cannot be written, only reported.
+                        else if (TryOption(tokens, ref i, ["-f", "--framework"], out value)) {
+                            if (value.Contains('$')) extra.Add($"-f {value}"); else command.Framework = value;
+                        }
+                        else if (TryOption(tokens, ref i, ["-r", "--runtime"], out value)) {
+                            if (value.Contains('$')) extra.Add($"-r {value}"); else command.RuntimeIdentifier = value;
+                        }
+                        else if (token is "--self-contained" or "--sc") {
+                            // The value is optional: `--self-contained` alone means true.
+                            if (next is { } && bool.TryParse(next, out var sc)) { command.SelfContained = sc; i++; }
+                            else command.SelfContained = true;
+                        }
+                        else if (TryOption(tokens, ref i, ["--self-contained", "--sc"], out value) && bool.TryParse(value, out var scValue)) { command.SelfContained = scValue; }
+                        else if (token == "--no-self-contained") { command.SelfContained = false; }
+                        else if (IsDotnetProject(token)) { project = token; }
+                        else if (IsConfigurationSwitch(token) || IgnoredPublishSwitches.Contains(token)) { }
+                        else if (PropertySwitches.FirstOrDefault(s => token.StartsWith(s, StringComparison.OrdinalIgnoreCase)) is { } prefix) {
+                            AddProperties(command, token, token[prefix.Length..]);
+                        }
+                        else if (token == "-p" && next is { } && next.Contains('=')) { AddProperties(command, $"{token} {next}", next); i++; }
                         else { extra.Add(token); }
                     }
-                    result.Add(new PublishCommand(stage, match.Groups[1].Value.ToLowerInvariant(), project, output, extra));
+                    if (command.RuntimeIdentifier is { } && command.SelfContained is null
+                        && ImpliesSelfContained(DockerfileSubstitution.Substitute(stage.BaseRef, values))) {
+                        command.SelfContained = true;
+                        command.ImplicitSelfContained = true;
+                    }
+                    result.Add(command with { Project = project, Output = output });
                 }
             }
         }
         return result;
     }
 
+    /// <summary>
+    /// Every `dotnet publish`/`dotnet build` in a RUN line, with its arguments as unquoted tokens. The
+    /// shell form is split into its commands first (`cd src && dotnet publish ... ; echo done`), with
+    /// build args expanded as the shell would; the exec form is one command and, as in Docker, gets no
+    /// expansion. A `dotnet` preceded by another word (`exec`, `time`) still counts.
+    /// </summary>
+    private static IEnumerable<(string Verb, List<string> Arguments)> DotnetCommands(string runArguments, IReadOnlyDictionary<string, string> values) {
+        var vector = DockerfileSubstitution.ParseCommand(runArguments);
+        var commands = vector is ["/bin/sh", "-c", var script]
+            ? DockerfileSubstitution.SplitShellCommands(script)
+                .Select(c => DockerfileSubstitution.Tokenize(DockerfileSubstitution.Substitute(c, values)).Select(DockerfileSubstitution.Unquote).ToList())
+            : [vector];
+        foreach (var command in commands) {
+            var tokens = WithoutRedirections(command);
+            var dotnet = tokens.FindIndex(t => t.Equals("dotnet", StringComparison.OrdinalIgnoreCase));
+            if (dotnet < 0 || dotnet + 1 >= tokens.Count) continue;
+            var verb = tokens[dotnet + 1].ToLowerInvariant();
+            if (verb is "publish" or "build") yield return (verb, tokens[(dotnet + 2)..]);
+        }
+    }
+
+    // A redirection, possibly glued to the word before it (`publish>&2`, `/out>log`): `>out`, `2>>log`,
+    // `2>&1`, `&>/dev/null`, `<in`; a bare operator (`> out`, `2> log`, `&> log`) takes the next token.
+    private static readonly Regex RedirectionRegex = new(@"^(?<word>[^<>&]*?)(?<op>\d*>>?&?|&>>?|<)(?<target>.*)$", RegexOptions.Compiled);
+
+    /// <summary>The shell's redirections are not arguments of dotnet; they would only end up as "unresolved".</summary>
+    private static List<string> WithoutRedirections(List<string> tokens) {
+        var result = new List<string>();
+        for (var i = 0; i < tokens.Count; i++) {
+            var match = RedirectionRegex.Match(tokens[i]);
+            if (!match.Success) { result.Add(tokens[i]); continue; }
+            if (match.Groups["word"].Length > 0) result.Add(match.Groups["word"].Value);
+            // `>&1` names its target in the operator; `>` and `&>` without one take the next token.
+            if (match.Groups["target"].Length == 0 && !match.Groups["op"].Value.EndsWith('&')) i++;
+        }
+        return result;
+    }
+
+    /// <summary>`-r x`, `-r:x` and `--runtime=x` alike; advances past a separate value.</summary>
+    private static bool TryOption(List<string> tokens, ref int index, string[] names, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out string? value) {
+        var token = tokens[index];
+        foreach (var name in names) {
+            if (token == name && index + 1 < tokens.Count) {
+                value = tokens[++index];
+                return true;
+            }
+            if (token.Length > name.Length + 1 && token.StartsWith(name, StringComparison.Ordinal) && token[name.Length] is '=' or ':') {
+                value = token[(name.Length + 1)..];
+                return true;
+            }
+        }
+        value = null;
+        return false;
+    }
+
+    private static readonly Regex PropertyNameRegex = new(@"^[A-Za-z_][A-Za-z0-9_-]*$", RegexOptions.Compiled);
+
+    /// <summary>
+    /// `-p:A=1;B=2`: each pair a property, unless it is the configuration. One pair that cannot be
+    /// written (a build arg without a value, a name MSBuild would not take) keeps the whole switch out,
+    /// as a note; writing half of it would leave the project and the note contradicting each other.
+    /// </summary>
+    private static void AddProperties(PublishCommand command, string token, string assignments) {
+        var pairs = new List<(string Name, string Value)>();
+        foreach (var assignment in assignments.Split(';', StringSplitOptions.RemoveEmptyEntries)) {
+            var eq = assignment.IndexOf('=');
+            var name = eq > 0 ? assignment[..eq].Trim() : string.Empty;
+            var value = eq > 0 ? assignment[(eq + 1)..].Trim() : string.Empty;
+            if (name.Equals("Configuration", StringComparison.OrdinalIgnoreCase)) continue;
+            if (!PropertyNameRegex.IsMatch(name) || value.Contains('$')) {
+                command.ExtraArguments.Add(token);
+                return;
+            }
+            pairs.Add((name, value));
+        }
+        command.Properties.AddRange(pairs);
+    }
+
     /// <summary>The configuration is the SDK's business at publish time, not something to carry over.</summary>
+
+    /// <summary>The publish lines of one project folded into one, later switches winning as they would on a rerun.</summary>
+    private static PublishCommand MergePublishCommands(IEnumerable<PublishCommand> commands) {
+        var merged = new PublishCommand(null!, "publish", null, null, new List<string>());
+        foreach (var command in commands) {
+            merged.Framework = command.Framework ?? merged.Framework;
+            merged.RuntimeIdentifier = command.RuntimeIdentifier ?? merged.RuntimeIdentifier;
+            merged.SelfContained = command.SelfContained ?? merged.SelfContained;
+            merged.ImplicitSelfContained = command.SelfContained is { } ? command.ImplicitSelfContained : merged.ImplicitSelfContained;
+            foreach (var (name, value) in command.Properties) {
+                merged.Properties.RemoveAll(p => p.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+                merged.Properties.Add((name, value));
+            }
+            foreach (var extra in command.ExtraArguments.Where(e => !merged.ExtraArguments.Contains(e))) merged.ExtraArguments.Add(extra);
+        }
+        return merged;
+    }
+
+    /// <summary>
+    /// The project as `dotnet publish` saw it in the Dockerfile: a switch that makes it self-contained
+    /// (or AOT) means runtime-deps is the SDK's image, not a pin; -f picks the framework of a
+    /// multi-targeting project, which the SDK needs to compute an image at all.
+    /// </summary>
+    private static ProjectFacts ApplyPublishSwitches(ProjectFacts project, PublishCommand publish, string baseImage, MigrationPlan plan) {
+        string? Property(string name) => publish.Properties.LastOrDefault(p => p.Name.Equals(name, StringComparison.OrdinalIgnoreCase)).Value;
+        bool IsTrue(string name) => string.Equals(Property(name), "true", StringComparison.OrdinalIgnoreCase);
+
+        var selfContained = publish.SelfContained
+            ?? (Property("SelfContained") is { } value ? value.Equals("true", StringComparison.OrdinalIgnoreCase) : project.SelfContained);
+        selfContained |= IsTrue("PublishSelfContained") || IsTrue("PublishAot");
+
+        var framework = publish.Framework ?? project.TargetFramework ?? (project.TargetFrameworks.Count == 1 ? project.TargetFrameworks[0] : null);
+        if (project.TargetFrameworks.Count > 1) {
+            // The image's version names the framework the Dockerfile ran, when -f did not.
+            framework ??= TryParseSdkImage(baseImage, out _, out var version, out _)
+                ? project.TargetFrameworks.FirstOrDefault(t => t.Equals("net" + version, StringComparison.OrdinalIgnoreCase))
+                : null;
+            var all = string.Join(";", project.TargetFrameworks);
+            plan.Notes.Add(framework is { }
+                ? $"the project targets {all}; publish the container for {framework}: dotnet publish -f {framework} /t:PublishContainer"
+                : $"the project targets {all}; dotnet publish /t:PublishContainer needs -f <framework>, and the image is pinned since the SDK's pick depends on it");
+        }
+
+        if (publish.ImplicitSelfContained) {
+            plan.Notes.Add($"the Dockerfile's SDK published self-contained for -r {publish.RuntimeIdentifier} without --self-contained (the default up to the .NET 7 SDK); SelfContained=true is written to keep that, since the .NET 8 SDK defaults to framework-dependent");
+        }
+        if (publish.RuntimeIdentifier is { } || publish.SelfContained is { } || publish.Properties.Count > 0) {
+            plan.Notes.Add("the Dockerfile's publish switches are written in a PropertyGroup for publishing only ('$(_IsPublishing)' == 'true'), so build and run on the host are unchanged");
+        }
+
+        return project with {
+            TargetFramework = framework,
+            SelfContained = selfContained,
+            AssemblyName = Property("AssemblyName") ?? project.AssemblyName,
+        };
+    }
+
+    /// <summary>
+    /// The publish switches as properties. `dotnet publish` sets _IsPublishing, so they apply to
+    /// `dotnet publish /t:PublishContainer` as they did in the Dockerfile, but not to a build or run
+    /// on the developer's machine (a linux RuntimeIdentifier there would break F5).
+    /// </summary>
+    private static XElement? PublishPropertyGroup(PublishCommand publish) {
+        var group = new XElement("PropertyGroup", new XAttribute("Condition", "'$(_IsPublishing)' == 'true'"));
+        if (publish.RuntimeIdentifier is { } rid) group.Add(new XElement("RuntimeIdentifier", EscapeProperty(rid)));
+        if (publish.SelfContained is { } selfContained) group.Add(new XElement("SelfContained", selfContained ? "true" : "false"));
+        foreach (var (name, value) in publish.Properties) group.Add(new XElement(name, EscapeProperty(value)));
+        return group.HasElements ? group : null;
+    }
+
     private static bool IsConfigurationSwitch(string token) =>
         token.StartsWith("-c:", StringComparison.Ordinal)
         || token.StartsWith("--configuration=", StringComparison.Ordinal)
@@ -467,7 +713,7 @@ internal sealed class ContainerMigrationService {
         if (entrypoint is { }) {
             var parts = DockerfileSubstitution.ParseCommand(entrypoint);
             var dll = parts.FirstOrDefault(p => p.EndsWith(".dll", StringComparison.OrdinalIgnoreCase));
-            if (dll is { }) candidates.Add(Path.GetFileNameWithoutExtension(dll) + ".csproj");
+            if (dll is { }) candidates.AddRange(ProjectExtensions.Select(e => Path.GetFileNameWithoutExtension(dll) + e));
         }
 
         var mentioned = info.StageDetails.SelectMany(s => s.Instructions)
@@ -482,7 +728,7 @@ internal sealed class ContainerMigrationService {
             if (resolved is { }) return resolved;
         }
 
-        var siblings = Directory.Exists(dockerfileDir) ? Directory.GetFiles(dockerfileDir, "*.csproj") : [];
+        var siblings = Directory.Exists(dockerfileDir) ? Directory.GetFiles(dockerfileDir, "*.*proj").Where(IsDotnetProject).ToArray() : [];
         return siblings.Length == 1 ? siblings[0] : null;
     }
 
@@ -556,6 +802,29 @@ internal sealed class ContainerMigrationService {
         return true;
     }
 
+    // A range Docker accepts but ContainerPort does not; larger ones are more likely a mistake than ports to publish one by one.
+    private const int MaxExpandedPortRange = 16;
+
+    /// <summary>
+    /// ContainerPort takes one port number per item. EXPOSE also takes a range (8000-8010), expanded
+    /// here when small, and a build arg that has no value, which cannot be written at all.
+    /// </summary>
+    internal static IEnumerable<string> ExpandPorts(string port, List<string> notes) {
+        if (int.TryParse(port, out var single) && single is > 0 and <= 65535) return [single.ToString()];
+
+        var dash = port.IndexOf('-');
+        if (dash > 0 && int.TryParse(port[..dash], out var first) && int.TryParse(port[(dash + 1)..], out var last)
+            && first is > 0 and <= 65535 && last is > 0 and <= 65535 && first <= last) {
+            var count = last - first + 1;
+            if (count <= MaxExpandedPortRange) return Enumerable.Range(first, count).Select(p => p.ToString());
+            notes.Add($"EXPOSE {port} not written: a range of {count} ports; ContainerPort takes one port per item, add the ones the app listens on");
+            return [];
+        }
+
+        notes.Add($"EXPOSE {port} not written: not a port number; ContainerPort takes one port per item");
+        return [];
+    }
+
     private static string NormalizeDir(string path) => path.Replace('\\', '/').TrimEnd('/');
 
     /// <summary>
@@ -584,14 +853,29 @@ internal sealed class ContainerMigrationService {
 
     // ---- Project analysis ----------------------------------------------------------------------
 
-    internal sealed record ProjectFacts(string? Sdk, string? TargetFramework, string AssemblyName, bool SelfContained, List<string> ExistingContainerSettings, List<string> DockerToolsReferences);
+    /// <param name="IsWeb">References Microsoft.AspNetCore.App, so the SDK picks the aspnet image.</param>
+    /// <param name="TargetFrameworks">The TargetFrameworks list of a multi-targeting project; empty otherwise.</param>
+    /// <param name="ExistingContainerSettings">Container settings written in the project file itself.</param>
+    internal sealed record ProjectFacts(bool IsWeb, string? TargetFramework, IReadOnlyList<string> TargetFrameworks, string AssemblyName, bool SelfContained, List<string> ExistingContainerSettings, List<string> DockerToolsReferences) {
+        /// <summary>Container settings the project gets from an import (Directory.Build.props, ...); known only when evaluated.</summary>
+        public List<InheritedSetting> InheritedSettings { get; init; } = new();
+        /// <summary>The repository's files the evaluation imported (Directory.Build.props, .props of its own); empty when not evaluated.</summary>
+        public List<string> ImportedFiles { get; init; } = new();
+    }
+
+    /// <summary>A container property (<paramref name="Include"/> null) or item from <paramref name="File"/>; for an item, Value is its Value or Type metadata.</summary>
+    internal sealed record InheritedSetting(string Name, string? Include, string Value, string File);
 
     internal static async Task<ProjectFacts> ReadProjectAsync(string projectPath, CancellationToken cancellationToken) {
         XDocument doc;
         using (var stream = File.OpenRead(projectPath)) {
             doc = await XDocument.LoadAsync(stream, LoadOptions.None, cancellationToken);
         }
+        return ReadProject(doc, projectPath);
+    }
 
+    /// <summary>The facts the project file alone states; see <see cref="EvaluateProject"/> for the rest.</summary>
+    internal static ProjectFacts ReadProject(XDocument doc, string projectPath) {
         var sdk = doc.Root?.Attribute("Sdk")?.Value;
         string? Property(string name) {
             var value = doc.ElementsNamed(name).LastOrDefault()?.Value.Trim();
@@ -610,8 +894,260 @@ internal sealed class ContainerMigrationService {
             tools.Add(DockerToolsPackage);
         }
 
-        return new ProjectFacts(sdk, Property("TargetFramework"), assemblyName, selfContained, existing, tools);
+        var isWeb = sdk?.Equals("Microsoft.NET.Sdk.Web", StringComparison.OrdinalIgnoreCase) == true
+            || doc.ElementsNamed("FrameworkReference").Any(e => string.Equals(e.Attribute("Include")?.Value, "Microsoft.AspNetCore.App", StringComparison.OrdinalIgnoreCase));
+        var frameworks = Property("TargetFrameworks")?.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries) ?? [];
+
+        return new ProjectFacts(isWeb, Property("TargetFramework"), frameworks, assemblyName, selfContained, existing, tools);
     }
+
+    /// <summary>
+    /// Completes <paramref name="fromFile"/> with the MSBuild evaluation: the target framework, SDK,
+    /// assembly name and self-contained switches wherever they are set (Directory.Build.props, an
+    /// imported .props), and the container settings the project inherits from such files. What the
+    /// project file itself contains (existing settings, Visual Studio tools) stays as read, since that
+    /// is what the migration edits. Needs a registered MSBuild.
+    /// </summary>
+    internal static ProjectFacts EvaluateProject(string projectPath, ProjectFacts fromFile, IDictionary<string, string> globalProperties) {
+        using var collection = new Microsoft.Build.Evaluation.ProjectCollection();
+        var project = new Microsoft.Build.Evaluation.Project(projectPath, globalProperties, null, collection);
+
+        string? Value(string name) => project.GetPropertyValue(name).Trim() is { Length: > 0 } value ? value : null;
+        bool IsTrue(string name) => string.Equals(Value(name), "true", StringComparison.OrdinalIgnoreCase);
+
+        // The SDK and NuGet packages define container defaults of their own; only the repository's
+        // files count as settings someone wrote.
+        var toolRoots = new[] { "NetCoreRoot", "DOTNET_HOST_PATH", "MSBuildExtensionsPath", "MSBuildBinPath", "MSBuildSDKsPath", "NuGetPackageRoot" }
+            .Select(Value).OfType<string>()
+            .Select(p => Path.GetFullPath(File.Exists(p) ? Path.GetDirectoryName(p)! : p))
+            .ToList();
+        bool IsUserFile(string file) =>
+            !string.Equals(file, projectPath, StringComparison.OrdinalIgnoreCase)
+            && !toolRoots.Any(root => file.StartsWith(root, StringComparison.OrdinalIgnoreCase));
+
+        var inherited = new List<InheritedSetting>();
+        foreach (var name in ContainerProperties) {
+            var property = project.GetProperty(name);
+            if (property is { IsImported: true, Xml: { } xml } && IsUserFile(xml.ContainingProject.FullPath)) {
+                inherited.Add(new InheritedSetting(name, null, property.EvaluatedValue, xml.ContainingProject.FullPath));
+            }
+        }
+        foreach (var name in ContainerItems) {
+            foreach (var item in project.GetItems(name).Where(i => i.IsImported && IsUserFile(i.Xml.ContainingProject.FullPath))) {
+                var value = name == "ContainerPort"
+                    ? (item.GetMetadataValue("Type") is { Length: > 0 } type ? type.ToLowerInvariant() : "tcp")
+                    : item.GetMetadataValue("Value");
+                inherited.Add(new InheritedSetting(name, item.EvaluatedInclude, value, item.Xml.ContainingProject.FullPath));
+            }
+        }
+
+        var frameworks = Value("TargetFrameworks")?.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries) ?? [];
+        // A multi-targeting project's outer evaluation has no TargetFramework. One that is set anyway
+        // (a Directory.Build.props next to a TargetFrameworks list) makes the project build only that.
+        var framework = Value("TargetFramework");
+        var isWeb = fromFile.IsWeb || IsTrue("UsingMicrosoftNETSdkWeb")
+            || project.GetItems("FrameworkReference").Any(i => i.EvaluatedInclude.Equals("Microsoft.AspNetCore.App", StringComparison.OrdinalIgnoreCase));
+
+        return fromFile with {
+            IsWeb = isWeb,
+            TargetFramework = framework,
+            TargetFrameworks = framework is null ? frameworks : [],
+            AssemblyName = Value("AssemblyName") ?? fromFile.AssemblyName,
+            SelfContained = IsTrue("SelfContained") || IsTrue("PublishSelfContained") || IsTrue("PublishAot"),
+            InheritedSettings = inherited,
+            ImportedFiles = project.Imports.Select(i => i.ImportedProject.FullPath).Where(IsUserFile).Distinct(DirExt.PathComparer).ToList(),
+        };
+    }
+
+    // The settings the Dockerfile decides by leaving them out: an inherited value replaces that default.
+    private static readonly string[] DefaultedByDockerfile = ["ContainerUser", "ContainerWorkingDirectory", "ContainerAppCommandInstruction", "ContainerRuntimeIdentifier"];
+
+    /// <summary>
+    /// Adjusts what is written to the settings the project already inherits: a value an import already
+    /// sets is not written again, one that differs is written (the project file wins over
+    /// Directory.Build.props) and noted. An inherited ContainerBaseImage or ContainerFamily would replace
+    /// the image the Dockerfile ran on, so then the image is pinned explicitly.
+    /// </summary>
+    private static void ReconcileInheritedSettings(XElement properties, XElement items, ProjectFacts project, string baseImage, MigrationPlan plan) {
+        if (project.InheritedSettings.Count == 0) return;
+        var projectDir = Path.GetDirectoryName(plan.ProjectPath) ?? string.Empty;
+        string From(InheritedSetting setting) => Path.GetRelativePath(projectDir, setting.File);
+
+        plan.Notes.Add($"inherits container settings: {string.Join(", ", project.InheritedSettings.GroupBy(From).Select(g => $"{string.Join(", ", g.Select(s => s.Name).Distinct())} from {g.Key}"))}");
+
+        var inherited = project.InheritedSettings.Where(s => s.Include is null).ToDictionary(s => s.Name);
+        var image = inherited.GetValueOrDefault("ContainerBaseImage");
+        var family = inherited.GetValueOrDefault("ContainerFamily");
+        if (properties.Element("ContainerBaseImage") is null && (image is { } || family is { })) {
+            var writtenFamily = properties.Element("ContainerFamily");
+            if (image is { } && image.Value == baseImage) {
+                writtenFamily?.Remove();
+                plan.Notes.Add($"ContainerBaseImage={baseImage} already comes from {From(image)}; not written");
+            }
+            else if (image is null && writtenFamily?.Value == family!.Value) {
+                writtenFamily.Remove();
+                plan.Notes.Add($"ContainerFamily={family.Value} already comes from {From(family)}; not written");
+            }
+            else {
+                // Either import would put the project on another image than the Dockerfile's.
+                writtenFamily?.Remove();
+                properties.Element("EnableSdkContainerSupport")!.AddAfterSelf(new XElement("ContainerBaseImage", EscapeProperty(baseImage)));
+                var other = image ?? family!;
+                plan.Notes.Add($"ContainerBaseImage written: {From(other)} sets {other.Name}={other.Value}, which would replace {baseImage}");
+            }
+            inherited.Remove("ContainerBaseImage");
+            inherited.Remove("ContainerFamily");
+        }
+
+        foreach (var setting in inherited.Values) {
+            var written = properties.Element(setting.Name);
+            if (written is { } && written.Value == EscapeProperty(setting.Value)) {
+                written.Remove();
+                plan.Notes.Add($"{setting.Name}={setting.Value} already comes from {From(setting)}; not written");
+            }
+            else if (written is { }) {
+                plan.Notes.Add($"{setting.Name} overrides {setting.Value} from {From(setting)}");
+            }
+            else if (DefaultedByDockerfile.Contains(setting.Name)) {
+                plan.Notes.Add($"{setting.Name}={setting.Value} from {From(setting)} applies to this project too; the Dockerfile left it at the default");
+            }
+        }
+
+        foreach (var setting in project.InheritedSettings.Where(s => s.Include is { })) {
+            var written = items.Elements(setting.Name).FirstOrDefault(e => e.Attribute("Include")?.Value == EscapeItemSpec(setting.Include!));
+            if (written is null) continue;
+            var value = setting.Name == "ContainerPort" ? written.Attribute("Type")?.Value ?? "tcp" : written.Attribute("Value")?.Value;
+            if (value == (setting.Name == "ContainerPort" ? setting.Value : EscapeMetadata(setting.Value))) {
+                written.Remove();
+                plan.Notes.Add($"{setting.Name} {setting.Include} already comes from {From(setting)}; not written");
+            }
+            else {
+                plan.Notes.Add($"{setting.Name} {setting.Include} is also set by {From(setting)}, to {setting.Value}");
+            }
+        }
+    }
+
+    // ---- Dockerfile references -----------------------------------------------------------------
+
+    private static readonly HashSet<string> SkippedDirectories = new(StringComparer.OrdinalIgnoreCase) { "bin", "obj", "node_modules", ".git", ".vs", "packages" };
+    // Compose files, pipelines (.yml), devcontainer.json, and the scripts that run `docker build`.
+    private static readonly HashSet<string> BuildScriptExtensions = new(StringComparer.OrdinalIgnoreCase) { ".yml", ".yaml", ".json", ".sh", ".ps1", ".psm1", ".cmd", ".bat", ".mk", ".cake" };
+    private static readonly HashSet<string> BuildScriptNames = new(StringComparer.OrdinalIgnoreCase) { "Jenkinsfile", "Makefile", "Taskfile", "justfile" };
+    private const long MaxBuildScriptSize = 1 << 20;
+
+    /// <summary>The directory holding .git above <paramref name="directory"/>, or null outside a repository.</summary>
+    internal static string? FindRepositoryRoot(string directory) {
+        for (var dir = directory; !string.IsNullOrEmpty(dir); dir = Path.GetDirectoryName(dir)) {
+            var git = Path.Combine(dir, ".git");
+            if (Directory.Exists(git) || File.Exists(git)) return dir;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// The files under <paramref name="root"/> that build from the Dockerfile: they name its path
+    /// (relative to themselves or to the root, where pipelines run), or, for a file named plainly
+    /// `Dockerfile`, use its directory as the build context (`build: ./Api`, `docker build Api`). A
+    /// false positive only keeps the Dockerfile.
+    /// </summary>
+    internal List<string> FindDockerfileReferences(string dockerfilePath, string root) {
+        if (!_buildScripts.TryGetValue(root, out var scripts)) {
+            scripts = new List<(string, string)>();
+            CollectBuildScripts(root, scripts);
+            _buildScripts[root] = scripts;
+        }
+
+        var dockerfileDir = Path.GetDirectoryName(dockerfilePath) ?? string.Empty;
+        var isDefaultName = Path.GetFileName(dockerfilePath) == "Dockerfile";
+        // The patterns depend on the script's directory only; the scripts of one directory share them.
+        var pathPatterns = new Dictionary<string, Regex>(StringComparer.Ordinal);
+        var contextPatterns = new Dictionary<string, Regex>(StringComparer.Ordinal);
+        var result = new List<string>();
+        foreach (var (path, text) in scripts) {
+            foreach (var baseDir in new[] { Path.GetDirectoryName(path) ?? root, root }.Distinct(StringComparer.OrdinalIgnoreCase)) {
+                var file = Path.GetRelativePath(baseDir, dockerfilePath).Replace('\\', '/');
+                var dir = Path.GetRelativePath(baseDir, dockerfileDir).Replace('\\', '/');
+                if (!pathPatterns.TryGetValue(file, out var pathPattern)) pathPatterns[file] = pathPattern = PathPattern(file);
+                if (!contextPatterns.TryGetValue(dir, out var contextPattern)) contextPatterns[dir] = contextPattern = ContextPattern(dir);
+                if (pathPattern.IsMatch(text) || (isDefaultName && contextPattern.IsMatch(text))) {
+                    result.Add(path);
+                    break;
+                }
+            }
+        }
+        return result;
+    }
+
+    private static void CollectBuildScripts(string directory, List<(string Path, string Text)> scripts) {
+        try {
+            foreach (var file in Directory.EnumerateFiles(directory)) {
+                var name = Path.GetFileName(file);
+                if (!BuildScriptExtensions.Contains(Path.GetExtension(name)) && !BuildScriptNames.Contains(name)) continue;
+                if (new FileInfo(file).Length > MaxBuildScriptSize) continue;
+                scripts.Add((file, File.ReadAllText(file)));
+            }
+            foreach (var dir in Directory.EnumerateDirectories(directory)) {
+                if (!SkippedDirectories.Contains(Path.GetFileName(dir))) CollectBuildScripts(dir, scripts);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) {
+            // An unreadable folder cannot reference the Dockerfile in a way that matters here.
+        }
+    }
+
+    /// <summary>The relative path as a whole token, `./` optional, either slash.</summary>
+    private static Regex PathPattern(string relativePath) =>
+        new($@"(?<![\w./\\-])(?:\./)?{SlashAgnostic(relativePath)}(?![\w./\\-])", RegexOptions.IgnoreCase);
+
+    /// <summary>A compose `build:`/`context:` line or a `docker build` command whose context is the directory.</summary>
+    private static Regex ContextPattern(string relativeDir) {
+        var dir = relativeDir == "." ? @"\." : $@"(?:\./)?{SlashAgnostic(relativeDir)}";
+        return new($@"(?:^\s*-?\s*(?:build|context)\s*:\s*[""']?{dir}[/\\]?[""']?\s*$|\bdocker(?:\s+buildx)?\s+build\b[^\r\n]*\s[""']?{dir}[/\\]?[""']?(?=\s|$))",
+            RegexOptions.IgnoreCase | RegexOptions.Multiline);
+    }
+
+    private static string SlashAgnostic(string path) => Regex.Escape(path).Replace("/", @"[/\\]");
+
+    /// <summary>
+    /// The .dockerignore files that served only the deleted Dockerfile: its own (`Dockerfile.dockerignore`)
+    /// and the nearest plain `.dockerignore` up to the root, once no Dockerfile or compose file is left
+    /// below that one's directory.
+    /// </summary>
+    private static List<string> OrphanedDockerignores(string dockerfilePath, string? root) {
+        var result = new List<string>();
+        var own = dockerfilePath + ".dockerignore";
+        if (File.Exists(own)) result.Add(own);
+
+        var stop = root is { } ? Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar) : null;
+        for (var dir = Path.GetDirectoryName(dockerfilePath); !string.IsNullOrEmpty(dir); dir = Path.GetDirectoryName(dir)) {
+            var shared = Path.Combine(dir, ".dockerignore");
+            if (File.Exists(shared)) {
+                if (!HasOtherBuildInputs(dir)) result.Add(shared);
+                break;
+            }
+            if (stop is null || string.Equals(Path.GetFullPath(dir).TrimEnd(Path.DirectorySeparatorChar), stop, StringComparison.OrdinalIgnoreCase)) break;
+        }
+        return result;
+    }
+
+    private static bool HasOtherBuildInputs(string directory) {
+        try {
+            if (Directory.EnumerateFiles(directory).Select(Path.GetFileName)
+                    .Any(n => DockerfileParser.IsDockerfileName(n!) || IsComposeFile(n!))) {
+                return true;
+            }
+            return Directory.EnumerateDirectories(directory)
+                .Where(d => !SkippedDirectories.Contains(Path.GetFileName(d)))
+                .Any(HasOtherBuildInputs);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) {
+            return true;
+        }
+    }
+
+    private static bool IsComposeFile(string name) =>
+        (name.StartsWith("docker-compose", StringComparison.OrdinalIgnoreCase) || name.StartsWith("compose", StringComparison.OrdinalIgnoreCase))
+        && (name.EndsWith(".yml", StringComparison.OrdinalIgnoreCase) || name.EndsWith(".yaml", StringComparison.OrdinalIgnoreCase));
 
     /// <summary>
     /// Null unless the image is the one the SDK would compute anyway (see ComputeDotnetBaseImageAndTag):
@@ -641,8 +1177,7 @@ internal sealed class ContainerMigrationService {
 
     /// <summary>The repository the SDK picks (see ComputeDotnetBaseImageAndTag), or null when the pinned image is not one of them.</summary>
     internal static string SdkImageRepository(ProjectFacts project) {
-        var isWeb = project.Sdk?.Equals("Microsoft.NET.Sdk.Web", StringComparison.OrdinalIgnoreCase) == true;
-        return project.SelfContained ? "runtime-deps" : isWeb ? "aspnet" : "runtime";
+        return project.SelfContained ? "runtime-deps" : project.IsWeb ? "aspnet" : "runtime";
     }
 
     /// <summary>The image the SDK would compute for the project without ContainerBaseImage, for messages; null when the version is unknown.</summary>
@@ -686,7 +1221,7 @@ internal sealed class ContainerMigrationService {
 
     // ---- MSBuild escaping ----------------------------------------------------------------------
 
-    private static string EscapeProperty(string value) => value.Replace("%", "%25").Replace("$(", "%24(").Replace("@(", "%40(");
+    internal static string EscapeProperty(string value) => value.Replace("%", "%25").Replace("$(", "%24(").Replace("@(", "%40(");
 
     /// <summary>An Include is split on `;` and expanded as a glob, which no command-line argument wants.</summary>
     private static string EscapeItemSpec(string value) =>
@@ -697,7 +1232,7 @@ internal sealed class ContainerMigrationService {
     // ---- Project editing -----------------------------------------------------------------------
 
     /// <summary>The indent unit and newline of the file, read from the first indented child of Project.</summary>
-    private static (string Indent, string Newline) DetectLayout(XElement project) {
+    internal static (string Indent, string Newline) DetectLayout(XElement project) {
         var newline = "\n";
         foreach (var text in project.Nodes().OfType<XText>()) {
             if (!string.IsNullOrWhiteSpace(text.Value)) continue;

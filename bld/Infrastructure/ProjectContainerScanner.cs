@@ -45,8 +45,9 @@ internal class ProjectContainerScanner {
         }
 
         try {
-            // Look for .csproj files
-            var files = Directory.GetFiles(currentPath, "*.csproj", SearchOption.TopDirectoryOnly);
+            // C#, F# and VB projects can all be published as a container.
+            var files = Directory.GetFiles(currentPath, "*.*proj", SearchOption.TopDirectoryOnly)
+                .Where(bld.Services.ContainerMigrationService.IsDotnetProject);
             projects.AddRange(files);
 
             // Recurse into subdirectories

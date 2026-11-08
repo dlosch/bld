@@ -15,9 +15,12 @@ namespace bld.Services;
 /// </summary>
 internal sealed class ContainerValidationService {
     private readonly IConsoleOutput _console;
+    private readonly Func<string, ProjectFacts, ProjectFacts>? _evaluate;
 
-    public ContainerValidationService(IConsoleOutput console) {
+    /// <param name="evaluate">Completes the project facts with the MSBuild evaluation (target framework from Directory.Build.props, ...); null reads the project file only.</param>
+    public ContainerValidationService(IConsoleOutput console, Func<string, ProjectFacts, ProjectFacts>? evaluate = null) {
         _console = console;
+        _evaluate = evaluate;
     }
 
     internal sealed class Finding {
@@ -82,6 +85,14 @@ internal sealed class ContainerValidationService {
         if (settings.Count == 0 && facts.ExistingContainerSettings.Count == 0) return null;
 
         var report = new Report { ProjectPath = projectPath, SettingCount = settings.Count };
+        if (_evaluate is { }) {
+            try {
+                facts = _evaluate(projectPath, facts);
+            }
+            catch (Exception ex) {
+                _console.WriteWarning($"Could not evaluate {projectPath}, reading its file only: {ex.FormatMessage()}");
+            }
+        }
 
         foreach (var name in settings.Select(e => e.Name.LocalName).Distinct(StringComparer.Ordinal)) {
             if (KnownSettings.Contains(name)) continue;

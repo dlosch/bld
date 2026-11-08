@@ -102,6 +102,14 @@ internal class SpectreConsoleOutput : IConsoleOutput {
         return AnsiConsole.Prompt(prompt);
     }
 
+    public string Ask(string message, string defaultValue) {
+        if (!CanPrompt) throw new InvalidOperationException("Interactive prompt requires a terminal");
+        var prompt = new TextPrompt<string>(Markup.Escape(message)).DefaultValue(defaultValue).AllowEmpty();
+        // The default is rendered as markup, unescaped: a value with brackets ("[1.0]") would be read as a style tag.
+        prompt.Converter = Markup.Escape;
+        return AnsiConsole.Prompt(prompt).Trim();
+    }
+
     public List<T> MultiPrompt<T>(MultiSelectionPrompt<T> prompt) where T : notnull {
         if (!CanPrompt) throw new InvalidOperationException("Interactive prompt requires a terminal");
         return AnsiConsole.Prompt(prompt);

@@ -37,10 +37,14 @@ public class ContainerMigrationTests : IDisposable {
         await new ContainerMigrationService(_console, runAsRoot, willWrite: true).PlanAsync(dockerfile, projects, default);
 
     private static XElement Group(ContainerMigrationService.MigrationPlan plan, string name) =>
-        Assert.Single(plan.Elements, e => e.Name.LocalName == name);
+        Assert.Single(plan.Elements, e => e.Name.LocalName == name && e.Attribute("Condition") is null);
 
     private static string? Property(ContainerMigrationService.MigrationPlan plan, string name) =>
         Group(plan, "PropertyGroup").Element(name)?.Value;
+
+    /// <summary>A property of the group that only applies to `dotnet publish`, which carries the Dockerfile's publish switches.</summary>
+    private static string? PublishProperty(ContainerMigrationService.MigrationPlan plan, string name) =>
+        plan.Elements.SingleOrDefault(e => e.Attribute("Condition")?.Value == "'$(_IsPublishing)' == 'true'")?.Element(name)?.Value;
 
     private static List<XElement> Items(ContainerMigrationService.MigrationPlan plan, string name) =>
         plan.Elements.Where(e => e.Name.LocalName == "ItemGroup").SelectMany(g => g.Elements(name)).ToList();
@@ -150,7 +154,9 @@ public class ContainerMigrationTests : IDisposable {
         Assert.Equal("mcr.microsoft.com/dotnet/nightly/runtime-deps:8.0-alpine-aot", labels[0].Attribute("Value")?.Value);
         Assert.Equal("Sample Project", labels[1].Attribute("Value")?.Value);
 
-        Assert.Contains(plan.Notes, n => n.Contains("-r linux-musl-x64 /p:UseAppHost=true"));
+        Assert.Equal("linux-musl-x64", PublishProperty(plan, "RuntimeIdentifier"));
+        Assert.Equal("true", PublishProperty(plan, "UseAppHost"));
+        Assert.DoesNotContain(plan.Notes, n => n.Contains("dotnet publish ran with"));
         Assert.Contains(plan.Notes, n => n.Contains("apt-get"));
     }
 
@@ -612,6 +618,347 @@ public class ContainerMigrationTests : IDisposable {
             "    <EnableSdkContainerSupport>true</EnableSdkContainerSupport>\n" +
             "  </PropertyGroup>\n" +
             "</Project>\n", text);
+    }
+
+    private const string Net9WebProject =
+        "<Project Sdk=\"Microsoft.NET.Sdk.Web\">\n" +
+        "  <PropertyGroup>\n" +
+        "    <TargetFramework>net9.0</TargetFramework>\n" +
+        "  </PropertyGroup>\n" +
+        "</Project>\n";
+
+    /// <summary>
+    /// Regression: the self-contained switch only became a note, so runtime-deps was pinned while the
+    /// SDK published framework-dependent onto it - an image without a .NET runtime, reported ready.
+    /// </summary>
+    [Fact]
+    public async Task Plan_SelfContainedPublish_TakesTheSwitchesIntoAPublishOnlyGroup() {
+        var project = Write("Svc/Svc.csproj", Net9WebProject);
+        var dockerfile = Write("Svc/Dockerfile",
+            "FROM mcr.microsoft.com/dotnet/sdk:9.0-alpine AS build\n" +
+            "WORKDIR /src\n" +
+            "COPY . .\n" +
+            "RUN dotnet publish Svc.csproj -c Release -r linux-musl-x64 --self-contained -p:PublishTrimmed=true --no-restore -o /out\n" +
+            "FROM mcr.microsoft.com/dotnet/runtime-deps:9.0-alpine\n" +
+            "WORKDIR /app\n" +
+            "COPY --from=build /out .\n" +
+            "ENTRYPOINT [\"./Svc\"]\n");
+
+        var plan = await PlanAsync(true, dockerfile, project);
+
+        Assert.True(plan.CanApply(force: false));
+        // runtime-deps is the SDK's own pick for a self-contained publish, so the family is enough.
+        Assert.Null(Property(plan, "ContainerBaseImage"));
+        Assert.Equal("alpine", Property(plan, "ContainerFamily"));
+        Assert.Equal("linux-musl-x64", PublishProperty(plan, "RuntimeIdentifier"));
+        Assert.Equal("true", PublishProperty(plan, "SelfContained"));
+        Assert.Equal("true", PublishProperty(plan, "PublishTrimmed"));
+        Assert.DoesNotContain(plan.Notes, n => n.Contains("dotnet publish ran with"));
+    }
+
+    [Theory]
+    [InlineData("-r:linux-x64 --sc false", "RuntimeIdentifier", "linux-x64")]
+    [InlineData("--runtime=linux-arm64", "RuntimeIdentifier", "linux-arm64")]
+    [InlineData("--self-contained false", "SelfContained", "false")]
+    [InlineData("--no-self-contained", "SelfContained", "false")]
+    [InlineData("-p:InvariantGlobalization=true -p:TieredPGO=false", "TieredPGO", "false")]
+    [InlineData("/p:UseAppHost=false", "UseAppHost", "false")]
+    [InlineData("--property:PublishReadyToRun=true", "PublishReadyToRun", "true")]
+    public async Task Plan_MapsPublishSwitchesToProperties(string switches, string property, string expected) {
+        var project = Write("App/App.csproj", Net9WebProject);
+        var dockerfile = Write("App/Dockerfile",
+            "FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build\n" +
+            $"RUN dotnet publish App.csproj {switches} -o /out\n" +
+            "FROM mcr.microsoft.com/dotnet/aspnet:9.0\n" +
+            "COPY --from=build /out .\n");
+
+        var plan = await PlanAsync(false, dockerfile, project);
+
+        Assert.Equal(expected, PublishProperty(plan, property));
+        Assert.Null(PublishProperty(plan, "Configuration"));
+    }
+
+    [Fact]
+    public async Task Plan_KeepsUnresolvedPublishSwitchesAsANote() {
+        var project = Write("App/App.csproj", Net9WebProject);
+        var dockerfile = Write("App/Dockerfile",
+            "FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build\n" +
+            "ARG RID\n" +
+            "RUN dotnet publish App.csproj -r $RID -p:Version=$VERSION --arch x64 -o /out\n" +
+            "FROM mcr.microsoft.com/dotnet/aspnet:9.0\n" +
+            "COPY --from=build /out .\n");
+
+        var plan = await PlanAsync(false, dockerfile, project);
+
+        Assert.Null(PublishProperty(plan, "RuntimeIdentifier"));
+        Assert.Null(PublishProperty(plan, "Version"));
+        Assert.Contains(plan.Notes, n => n.Contains("dotnet publish ran with `-r $RID -p:Version=$VERSION --arch x64`"));
+    }
+
+    /// <summary>
+    /// Regression: the publish line was cut at every `;`, `&amp;` and `|`, quoted or not, so
+    /// `"-p:A=1;B=2"` lost B silently. The shell line is split into its commands at the unquoted
+    /// operators only, and the exec form is read as the one command it is.
+    /// </summary>
+    [Theory]
+    [InlineData("RUN cd /src && dotnet publish App.csproj \"-p:PublishTrimmed=true;InvariantGlobalization=true\" -o /out 2>&1 | tee publish.log; echo done\n")]
+    [InlineData("RUN dotnet restore; dotnet publish App.csproj '-p:PublishTrimmed=true;InvariantGlobalization=true' -o /out || exit 1\n")]
+    [InlineData("RUN [\"dotnet\", \"publish\", \"App.csproj\", \"-p:PublishTrimmed=true;InvariantGlobalization=true\", \"-o\", \"/out\"]\n")]
+    public async Task Plan_SplitsTheShellLineAtUnquotedOperatorsOnly(string run) {
+        var project = Write("App/App.csproj", Net9WebProject);
+        var dockerfile = Write("App/Dockerfile",
+            "FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build\n" +
+            run +
+            "FROM mcr.microsoft.com/dotnet/aspnet:9.0\n" +
+            "COPY --from=build /out .\n");
+
+        var plan = await PlanAsync(false, dockerfile, project);
+
+        Assert.Null(plan.SkipReason);
+        Assert.Equal("true", PublishProperty(plan, "PublishTrimmed"));
+        Assert.Equal("true", PublishProperty(plan, "InvariantGlobalization"));
+        Assert.DoesNotContain(plan.Notes, n => n.Contains("dotnet publish ran with"));
+    }
+
+    /// <summary>One pair of a -p switch that cannot be written keeps the whole switch out, as a note, instead of half of it in the project.</summary>
+    [Fact]
+    public async Task Plan_APropertySwitchWithOneUnresolvablePair_IsKeptOutAsAWhole() {
+        var project = Write("App/App.csproj", Net9WebProject);
+        var dockerfile = Write("App/Dockerfile",
+            "FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build\n" +
+            "RUN dotnet publish App.csproj \"-p:PublishTrimmed=true;Version=$VERSION\" -p:InvariantGlobalization=true -o /out\n" +
+            "FROM mcr.microsoft.com/dotnet/aspnet:9.0\n" +
+            "COPY --from=build /out .\n");
+
+        var plan = await PlanAsync(false, dockerfile, project);
+
+        Assert.Null(PublishProperty(plan, "PublishTrimmed"));
+        Assert.Equal("true", PublishProperty(plan, "InvariantGlobalization"));
+        Assert.Contains(plan.Notes, n => n.Contains("dotnet publish ran with `-p:PublishTrimmed=true;Version=$VERSION`"));
+    }
+
+    /// <summary>Redirections belong to the shell, not to dotnet; a bare operator takes its target with it, a glued one leaves the word.</summary>
+    [Theory]
+    [InlineData("-o /out 2>&1")]
+    [InlineData("-o /out &> publish.log")]
+    [InlineData("-o /out > publish.log 2>&1")]
+    [InlineData("-o /out>/dev/null")]
+    [InlineData("-o /out 2>> errors.log < /dev/null")]
+    public async Task Plan_IgnoresTheShellsRedirections(string tail) {
+        var project = Write("App/App.csproj", Net9WebProject);
+        var dockerfile = Write("App/Dockerfile",
+            "FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build\n" +
+            $"RUN dotnet publish App.csproj -r linux-x64 {tail}\n" +
+            "FROM mcr.microsoft.com/dotnet/aspnet:9.0\n" +
+            "COPY --from=build /out .\n");
+
+        var plan = await PlanAsync(false, dockerfile, project);
+
+        Assert.Null(plan.SkipReason);
+        Assert.Empty(plan.Unsupported);
+        Assert.Equal("linux-x64", PublishProperty(plan, "RuntimeIdentifier"));
+        Assert.DoesNotContain(plan.Notes, n => n.Contains("dotnet publish ran with"));
+    }
+
+    [Theory]
+    [InlineData("a && b || c | d; e & f", new[] { "a", "b", "c", "d", "e", "f" })]
+    [InlineData("dotnet publish \"-p:A=1;B=2\" 'x;y' -o /out 2>&1", new[] { "dotnet publish \"-p:A=1;B=2\" 'x;y' -o /out 2>&1" })]
+    [InlineData("echo \\; still one; two", new[] { "echo \\; still one", "two" })]
+    [InlineData("one\ntwo\n", new[] { "one", "two" })]
+    public void SplitShellCommands(string script, string[] expected) =>
+        Assert.Equal(expected, DockerfileSubstitution.SplitShellCommands(script));
+
+    /// <summary>
+    /// Regression: up to the .NET 7 SDK, -r without --self-contained published self-contained. Taken
+    /// as framework-dependent, runtime-deps was pinned and the image had no runtime.
+    /// </summary>
+    [Theory]
+    [InlineData("6.0", "true")]
+    [InlineData("7.0-alpine", "true")]
+    [InlineData("8.0", null)]
+    public async Task Plan_RuntimeIdentifierWithoutSelfContained_FollowsTheSdkImagesDefault(string sdkTag, string? selfContained) {
+        var project = Write("App/App.csproj", Net9WebProject.Replace("net9.0", "net8.0"));
+        var dockerfile = Write("App/Dockerfile",
+            $"FROM mcr.microsoft.com/dotnet/sdk:{sdkTag} AS build\n" +
+            "RUN dotnet publish App.csproj -r linux-x64 -o /out\n" +
+            "FROM mcr.microsoft.com/dotnet/runtime-deps:8.0\n" +
+            "COPY --from=build /out .\n" +
+            "ENTRYPOINT [\"./App\"]\n");
+
+        var plan = await PlanAsync(false, dockerfile, project);
+
+        Assert.Equal("linux-x64", PublishProperty(plan, "RuntimeIdentifier"));
+        Assert.Equal(selfContained, PublishProperty(plan, "SelfContained"));
+        if (selfContained is { }) {
+            // Self-contained, runtime-deps is the SDK's own pick: no pin.
+            Assert.Null(Property(plan, "ContainerBaseImage"));
+            Assert.Contains(plan.Notes, n => n.Contains("the default up to the .NET 7 SDK"));
+        }
+        else {
+            Assert.Equal("mcr.microsoft.com/dotnet/runtime-deps:8.0", Property(plan, "ContainerBaseImage"));
+            Assert.DoesNotContain(plan.Notes, n => n.Contains("the default up to the .NET 7 SDK"));
+        }
+    }
+
+    /// <summary>Regression: `EXPOSE 8000-8003` was written as one ContainerPort, which takes a single port.</summary>
+    [Fact]
+    public async Task Plan_ExpandsSmallPortRangesAndReportsWhatIsNotAPort() {
+        var project = Write("App/App.csproj", WebProject);
+        var dockerfile = Write("App/Dockerfile",
+            "FROM mcr.microsoft.com/dotnet/aspnet:8.0\n" +
+            "EXPOSE 8000-8003/udp 9000-9999 $PORT 443\n" +
+            "ENTRYPOINT [\"dotnet\", \"App.dll\"]\n");
+
+        var plan = await PlanAsync(false, dockerfile, project);
+
+        var ports = Items(plan, "ContainerPort");
+        Assert.Equal(["8000", "8001", "8002", "8003", "443"], ports.Select(p => p.Attribute("Include")?.Value));
+        Assert.All(ports.Take(4), p => Assert.Equal("udp", p.Attribute("Type")?.Value));
+        Assert.Contains(plan.Notes, n => n.Contains("EXPOSE 9000-9999 not written"));
+        Assert.Contains(plan.Notes, n => n.Contains("EXPOSE $PORT not written"));
+    }
+
+    /// <summary>Regression: only .csproj was recognized, so F# and VB Dockerfiles were skipped.</summary>
+    [Fact]
+    public async Task Plan_ResolvesFSharpAndVisualBasicProjects() {
+        var fsproj = Write("Fs/Fs.fsproj", Net9WebProject);
+        var fsDockerfile = Write("Fs/Dockerfile",
+            "FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build\n" +
+            "RUN dotnet publish Fs/Fs.fsproj -o /out\n" +
+            "FROM mcr.microsoft.com/dotnet/aspnet:9.0\n" +
+            "COPY --from=build /out .\n" +
+            "ENTRYPOINT [\"dotnet\", \"Fs.dll\"]\n");
+        var vbproj = Write("Vb/Vb.vbproj", Net9WebProject);
+        var vbDockerfile = Write("Vb/Dockerfile",
+            "FROM mcr.microsoft.com/dotnet/aspnet:9.0\n" +
+            "ENTRYPOINT [\"dotnet\", \"Other.dll\"]\n");
+
+        var found = await ProjectContainerScanner.FindProjectFilesAsync(_root);
+        Assert.Equal([fsproj, vbproj], found.Order());
+
+        Assert.Equal(fsproj, (await PlanAsync(false, fsDockerfile, [.. found])).ProjectPath);
+        // Neither the publish line nor the ENTRYPOINT names it: the only project next to the Dockerfile.
+        Assert.Equal(vbproj, (await PlanAsync(false, vbDockerfile, [.. found])).ProjectPath);
+    }
+
+    [Fact]
+    public async Task Plan_MultiTargetingProject_UsesTheFrameworkOfTheImage() {
+        var project = Write("App/App.csproj", WebProject.Replace("<TargetFramework>net8.0</TargetFramework>", "<TargetFrameworks>net8.0;net9.0</TargetFrameworks>"));
+        var dockerfile = Write("App/Dockerfile", "FROM mcr.microsoft.com/dotnet/aspnet:9.0\nENTRYPOINT [\"dotnet\", \"App.dll\"]\n");
+
+        var plan = await PlanAsync(false, dockerfile, project);
+
+        Assert.Null(Property(plan, "ContainerBaseImage"));
+        Assert.Contains(plan.Notes, n => n.Contains("dotnet publish -f net9.0 /t:PublishContainer"));
+    }
+
+    /// <summary>
+    /// Regression: the project file was read as XML only, so a TargetFramework from Directory.Build.props
+    /// was unknown (the SDK default image got pinned) and inherited container settings were not seen.
+    /// </summary>
+    [Fact]
+    public async Task Plan_Evaluated_SeesDirectoryBuildPropsAndInheritedSettings() {
+        Write("Directory.Build.props",
+            "<Project>\n" +
+            "  <PropertyGroup>\n" +
+            "    <TargetFramework>net8.0</TargetFramework>\n" +
+            "    <ContainerRegistry>registry.example.com</ContainerRegistry>\n" +
+            "    <ContainerFamily>alpine</ContainerFamily>\n" +
+            "  </PropertyGroup>\n" +
+            "  <ItemGroup>\n" +
+            "    <ContainerPort Include=\"8080\" />\n" +
+            "  </ItemGroup>\n" +
+            "</Project>\n");
+        var project = Write("App/App.csproj", "<Project Sdk=\"Microsoft.NET.Sdk.Web\" />\n");
+        var dockerfile = Write("App/Dockerfile",
+            "FROM mcr.microsoft.com/dotnet/aspnet:8.0\n" +
+            "EXPOSE 8080 9090\n" +
+            "ENTRYPOINT [\"dotnet\", \"App.dll\"]\n");
+
+        MSBuildService.RegisterMSBuildDefaults(_console, new bld.Models.CleaningOptions());
+        var service = new ContainerMigrationService(_console, runAsRoot: false, willWrite: true,
+            evaluate: (path, facts) => ContainerMigrationService.EvaluateProject(path, facts, new Dictionary<string, string>()));
+        var plan = await service.PlanAsync(dockerfile, [project], default);
+
+        Assert.Null(plan.SkipReason);
+        // The inherited family would turn the Dockerfile's aspnet:8.0 into the alpine image.
+        Assert.Equal("mcr.microsoft.com/dotnet/aspnet:8.0", Property(plan, "ContainerBaseImage"));
+        Assert.Contains(plan.Notes, n => n.Contains("ContainerFamily=alpine, which would replace"));
+        // 8080 already comes from Directory.Build.props; only the other port is written.
+        Assert.Equal(["9090"], Items(plan, "ContainerPort").Select(p => p.Attribute("Include")?.Value));
+        Assert.Contains(plan.Notes, n => n.Contains("ContainerRegistry") && n.Contains("Directory.Build.props"));
+    }
+
+    [Fact]
+    public async Task Plan_Evaluated_TargetFrameworkFromDirectoryBuildPropsKeepsTheSdkDefaultImage() {
+        Write("Directory.Build.props", "<Project><PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>\n");
+        var project = Write("App/App.csproj", "<Project Sdk=\"Microsoft.NET.Sdk.Web\" />\n");
+        var dockerfile = Write("App/Dockerfile", "FROM mcr.microsoft.com/dotnet/aspnet:8.0\nENTRYPOINT [\"dotnet\", \"App.dll\"]\n");
+
+        MSBuildService.RegisterMSBuildDefaults(_console, new bld.Models.CleaningOptions());
+        var service = new ContainerMigrationService(_console, runAsRoot: false, willWrite: true,
+            evaluate: (path, facts) => ContainerMigrationService.EvaluateProject(path, facts, new Dictionary<string, string>()));
+        var plan = await service.PlanAsync(dockerfile, [project], default);
+
+        Assert.Null(Property(plan, "ContainerBaseImage"));
+        Assert.Contains(plan.Notes, n => n.Contains("is what the SDK picks for net8.0"));
+    }
+
+    /// <summary>Regression: --delete-dockerfile removed a Dockerfile that docker-compose still built from.</summary>
+    [Theory]
+    [InlineData("docker-compose.yml", "services:\n  app:\n    build:\n      context: .\n      dockerfile: App/Dockerfile\n")]
+    [InlineData("docker-compose.yml", "services:\n  app:\n    build: ./App\n")]
+    [InlineData(".github/workflows/ci.yml", "steps:\n  - run: docker build -f App/Dockerfile -t app .\n")]
+    [InlineData("App/build.sh", "docker build -t app .\n")]
+    public async Task Apply_DeleteDockerfile_KeepsADockerfileThatIsStillUsed(string file, string content) {
+        var project = Write("App/App.csproj", WebProject);
+        var dockerfile = Write("App/Dockerfile", "FROM mcr.microsoft.com/dotnet/aspnet:8.0\nENTRYPOINT [\"dotnet\", \"App.dll\"]\n");
+        var user = Write(file, content);
+
+        var plan = await new ContainerMigrationService(_console, runAsRoot: false).PlanAsync(dockerfile, [project], default, _root);
+        Assert.Equal([user], plan.DockerfileReferences);
+
+        Assert.True(await new ContainerMigrationService(_console).ApplyAsync(plan, deleteDockerfile: true, default));
+
+        Assert.True(File.Exists(dockerfile));
+        Assert.Empty(plan.Deleted);
+        Assert.Contains("EnableSdkContainerSupport", await File.ReadAllTextAsync(project));
+    }
+
+    [Fact]
+    public async Task Plan_IgnoresFilesThatNameAnotherDockerfile() {
+        var project = Write("App/App.csproj", WebProject);
+        var dockerfile = Write("App/Dockerfile", "FROM mcr.microsoft.com/dotnet/aspnet:8.0\nENTRYPOINT [\"dotnet\", \"App.dll\"]\n");
+        Write("docker-compose.yml", "services:\n  other:\n    build:\n      context: .\n      dockerfile: Other/Dockerfile\n");
+        Write("App/Properties/launchSettings.json", "{ \"profiles\": { \"Container (Dockerfile)\": { \"commandName\": \"Docker\" } } }\n");
+
+        var plan = await new ContainerMigrationService(_console, runAsRoot: false).PlanAsync(dockerfile, [project], default, _root);
+
+        Assert.Empty(plan.DockerfileReferences);
+    }
+
+    [Fact]
+    public async Task Apply_DeleteDockerfile_RemovesTheDockerignoresOnlyItUsed() {
+        var app = Write("App/App.csproj", WebProject);
+        var appDockerfile = Write("App/Dockerfile", "FROM mcr.microsoft.com/dotnet/aspnet:8.0\nENTRYPOINT [\"dotnet\", \"App.dll\"]\n");
+        var own = Write("App/Dockerfile.dockerignore", "bin/\n");
+        var shared = Write(".dockerignore", "**/bin\n");
+        var worker = Write("Worker/Worker.csproj", WebProject);
+        var workerDockerfile = Write("Worker/Dockerfile", "FROM mcr.microsoft.com/dotnet/aspnet:8.0\nENTRYPOINT [\"dotnet\", \"Worker.dll\"]\n");
+        var service = new ContainerMigrationService(_console, runAsRoot: false);
+
+        var first = await service.PlanAsync(appDockerfile, [app, worker], default, _root);
+        Assert.True(await service.ApplyAsync(first, deleteDockerfile: true, default));
+
+        // Worker/Dockerfile still builds with the shared .dockerignore.
+        Assert.Equal([appDockerfile, own], first.Deleted);
+        Assert.True(File.Exists(shared));
+
+        var second = await service.PlanAsync(workerDockerfile, [app, worker], default, _root);
+        Assert.True(await service.ApplyAsync(second, deleteDockerfile: true, default));
+
+        Assert.Equal([workerDockerfile, shared], second.Deleted);
+        Assert.False(File.Exists(shared));
     }
 
     [Theory]
