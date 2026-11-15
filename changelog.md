@@ -2,6 +2,11 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.6.2] - 2026-11-15
+
+- [SECURITY] the tool package shipped `System.Security.Cryptography.Pkcs` 8.0.1, pulled in by `NuGet.Packaging`, which has a high-severity advisory. It ships 11.0.0 now.
+- update dependencies: `NuGet.*` 8.0.0, `System.CommandLine` 3.0.0.
+
 ## [0.6.1] - 2026-11-15
 
 - extend `containerize` command: `--enable` turns the apps under the root that have no container settings into ones `dotnet publish /t:PublishContainer` builds an image for. Each app gets `EnableSdkContainerSupport`; the settings all of them share, `ContainerFamily` (`--family`: alpine, noble, noble-chiseled, azurelinux3.0, the distroless and `-extra` variants), the platform (`--rid`: one runtime identifier as `ContainerRuntimeIdentifier`, several as `ContainerRuntimeIdentifiers` for a multi-platform image, with `RuntimeIdentifiers` covering them), `ContainerRegistry` (`--registry`) and `ContainerImageTags` (`--image-tags`), go into `Directory.Build.props` with `--build-props` (the one the projects import, or a new one in the root) or into each app. Their defaults are the answers of the last interactive run, saved in `container.json` under `BLD_HOME`, then what `Directory.Build.props` already sets, then the options. `-i` asks for them once up front, defaults preselected, asks whether to share them in `Directory.Build.props` (default yes for more than one app or an existing file), saves the answers, then asks per app. Libraries, test projects, desktop and Blazor WebAssembly apps, projects with container settings and .NET 5 or .NET Framework targets are skipped with the reason; notes cover musl vs. glibc, values already inherited, self-contained publishes, multi-targeting and a Dockerfile next to the project.
