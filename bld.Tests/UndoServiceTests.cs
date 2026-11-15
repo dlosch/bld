@@ -105,6 +105,35 @@ public class UndoServiceTests : IDisposable {
         Assert.False(Directory.Exists(_journal.DirectoryFor(_input)));
     }
 
+    /// <summary>
+    /// Regression: the journal was written only after every file, so Ctrl+C after the props file left
+    /// that file changed with no record, and undo said there was no run to take back.
+    /// </summary>
+    [Fact]
+    public async Task Apply_CancelledPartWayStillRecordsWhatItWrote() {
+        using var cts = new CancellationTokenSource();
+        var console = new TestConsole();
+        console.OnMessage = (_, message) => { if (message.Contains("Directory.Packages.props")) cts.Cancel(); };
+        var service = Apply(console);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => service.WriteUpdatesAsync(_input, "outdated --apply",
+            new Dictionary<string, Dictionary<string, (string, string?)>>(StringComparer.OrdinalIgnoreCase) {
+                [_props] = new(StringComparer.OrdinalIgnoreCase) { ["MassTransit"] = ("9.0.0", "8.4.1") },
+            },
+            new Dictionary<string, IReadOnlyCollection<string>>(),
+            new Dictionary<string, Dictionary<string, (string, string?, VersionReason)>>(StringComparer.OrdinalIgnoreCase) {
+                [_proj] = new(StringComparer.OrdinalIgnoreCase) { ["xunit"] = ("2.9.3", "2.9.0", VersionReason.PackageReferenceProj) },
+            },
+            cts.Token));
+
+        Assert.Equal(_projBytes, await File.ReadAllBytesAsync(_proj));
+        var edit = Assert.Single(Assert.Single(_journal.Load(_input, new TestConsole())).Entry.Edits);
+        Assert.Equal("MassTransit", edit.Package);
+
+        Assert.Equal(0, await UndoAsync(new TestConsole()));
+        Assert.Equal(_propsBytes, await File.ReadAllBytesAsync(_props));
+    }
+
     [Fact]
     public async Task Undo_RestoresTheFilesByteForByteAndDropsTheRun() {
         await RecordFullRunAsync();

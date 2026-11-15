@@ -1457,49 +1457,11 @@ internal class OutdatedService {
 
         if (updatePackages) {
             _console.WriteInfo("\nUpdating packages to latest versions...");
-            BeginJournal();
-
-            // Build the set of all CPM files needing changes (updates and/or orphan comments).
-            var cpmPaths = new HashSet<string>(propsUpdates.Keys, StringComparer.OrdinalIgnoreCase);
-            if (willCommentOrphans) {
-                foreach (var path in orphansToComment.Keys) cpmPaths.Add(path);
-            }
-
-            foreach (var propsPath in cpmPaths) {
-                var updates = propsUpdates.TryGetValue(propsPath, out var u)
-                    ? u
-                    : (IReadOnlyDictionary<string, (string target, string? current)>)new Dictionary<string, (string, string?)>();
-                var commentOut = (willCommentOrphans && orphansToComment.TryGetValue(propsPath, out var c))
-                    ? (IReadOnlyCollection<string>)c.Keys.ToArray()
-                    : Array.Empty<string>();
-                // Report what was actually written. The previous message printed the intended count
-                // regardless of whether any element matched, so "Updated 3 package(s)" was routine on
-                // files where nothing changed at all.
-                var applied = await UpdatePropsFileAsync(propsPath, updates, commentOut, cancellationToken);
-                if (applied == 0) {
-                    _console.WriteWarning($"No changes written to {propsPath}.");
-                }
-                else if (commentOut.Count > 0) {
-                    _console.WriteLine($"Updated {applied} entr(ies) in {propsPath} (including {commentOut.Count} orphan(s) commented out)");
-                }
-                else {
-                    _console.WriteLine($"Updated {applied} package(s) in {propsPath}");
-                }
-            }
-
-            // Update project files
-            foreach (var (projPath, updates) in projectUpdates) {
-                foreach (var (pkg, v) in updates) {
-                    if (await UpdatePackageVersionAsync(projPath, pkg, v, cancellationToken)) {
-                        _console.WriteLine($"Updated {pkg} to {v.target} in {Path.GetFileName(projPath)}");
-                    }
-                    else {
-                        _console.WriteWarning($"{pkg} was not updated in {Path.GetFileName(projPath)}.");
-                    }
-                }
-            }
-
-            RecordJournal(rootPath, interactive ? "outdated --interactive" : "outdated --apply");
+            // Only the orphans being commented out; an empty set when --comment-orphans is off.
+            var commentOut = willCommentOrphans
+                ? orphansToComment.ToDictionary(o => o.Key, o => (IReadOnlyCollection<string>)o.Value.Keys.ToArray(), StringComparer.OrdinalIgnoreCase)
+                : new Dictionary<string, IReadOnlyCollection<string>>(StringComparer.OrdinalIgnoreCase);
+            await WriteUpdatesAsync(rootPath, interactive ? "outdated --interactive" : "outdated --apply", propsUpdates, commentOut, projectUpdates, cancellationToken);
 
             if (verifyRestore) {
                 _console.WriteInfo("\nVerifying the update with dotnet restore...");
@@ -1633,6 +1595,62 @@ internal class OutdatedService {
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) {
             _console.WriteWarning($"Could not record the changes for undo: {ex.FormatMessage()}");
+        }
+    }
+
+    /// <summary>
+    /// Writes the updates, CPM files first, and records them for undo. The record is written in
+    /// finally: recorded only after both loops, a run cancelled or failing part-way left the files it
+    /// had already changed with no record, and undo reported that there was nothing to take back.
+    /// </summary>
+    internal async Task WriteUpdatesAsync(
+        string rootPath,
+        string command,
+        IReadOnlyDictionary<string, Dictionary<string, (string target, string? current)>> propsUpdates,
+        IReadOnlyDictionary<string, IReadOnlyCollection<string>> orphansToComment,
+        IReadOnlyDictionary<string, Dictionary<string, (string target, string? current, VersionReason reason)>> projectUpdates,
+        CancellationToken cancellationToken) {
+        BeginJournal();
+
+        // Build the set of all CPM files needing changes (updates and/or orphan comments).
+        var cpmPaths = new HashSet<string>(propsUpdates.Keys, StringComparer.OrdinalIgnoreCase);
+        foreach (var path in orphansToComment.Keys) cpmPaths.Add(path);
+
+        try {
+            foreach (var propsPath in cpmPaths) {
+                var updates = propsUpdates.TryGetValue(propsPath, out var u)
+                    ? u
+                    : (IReadOnlyDictionary<string, (string target, string? current)>)new Dictionary<string, (string, string?)>();
+                var commentOut = orphansToComment.TryGetValue(propsPath, out var c) ? c : Array.Empty<string>();
+                // Report what was actually written. The previous message printed the intended count
+                // regardless of whether any element matched, so "Updated 3 package(s)" was routine on
+                // files where nothing changed at all.
+                var applied = await UpdatePropsFileAsync(propsPath, updates, commentOut, cancellationToken);
+                if (applied == 0) {
+                    _console.WriteWarning($"No changes written to {propsPath}.");
+                }
+                else if (commentOut.Count > 0) {
+                    _console.WriteLine($"Updated {applied} entr(ies) in {propsPath} (including {commentOut.Count} orphan(s) commented out)");
+                }
+                else {
+                    _console.WriteLine($"Updated {applied} package(s) in {propsPath}");
+                }
+            }
+
+            // Update project files
+            foreach (var (projPath, updates) in projectUpdates) {
+                foreach (var (pkg, v) in updates) {
+                    if (await UpdatePackageVersionAsync(projPath, pkg, v, cancellationToken)) {
+                        _console.WriteLine($"Updated {pkg} to {v.target} in {Path.GetFileName(projPath)}");
+                    }
+                    else {
+                        _console.WriteWarning($"{pkg} was not updated in {Path.GetFileName(projPath)}.");
+                    }
+                }
+            }
+        }
+        finally {
+            RecordJournal(rootPath, command);
         }
     }
 

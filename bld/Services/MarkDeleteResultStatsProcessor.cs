@@ -15,7 +15,7 @@ internal class MarkDeleteResultStatsProcessor : IMarkDeleteResultProcessor {
         _options = options;
     }
 
-    public Task ProcessAsync(MarkDeleteResult result) {
+    public Task ProcessAsync(MarkDeleteResult result, CancellationToken cancellationToken = default) {
 
         if (result.IsEmpty) {
             _console.WriteLine("No directories marked for deletion.");

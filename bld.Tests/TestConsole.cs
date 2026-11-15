@@ -97,8 +97,12 @@ internal sealed class TestConsole : IConsoleOutput {
     public void WriteOutput(string caption, string? content = default) { Log("Output", caption); }
     public void WriteHeader(string caption, string? additionaltext = default) { Log("Header", caption); }
 
+    /// <summary>Called for every message after it is recorded, so a test can act at a given point of a run.</summary>
+    public Action<string, string>? OnMessage { get; set; }
+
     private void Log(string level, string message) {
         Messages.Add((level, message));
+        OnMessage?.Invoke(level, message);
         _output?.WriteLine($"[{level}] {message}");
     }
 }

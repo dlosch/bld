@@ -17,5 +17,5 @@ internal record class MarkDeleteResult(List<DirResult> Directories) {
 }
 
 internal interface IMarkDeleteResultProcessor {
-    Task ProcessAsync(MarkDeleteResult result);
+    Task ProcessAsync(MarkDeleteResult result, CancellationToken cancellationToken = default);
 }

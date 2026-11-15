@@ -44,7 +44,7 @@ internal class MarkDeleteResultDeleteProcessor : IMarkDeleteResultProcessor {
         return answer;
     }
 
-    public Task ProcessAsync(MarkDeleteResult result) {
+    public Task ProcessAsync(MarkDeleteResult result, CancellationToken cancellationToken = default) {
         if (result.IsEmpty) {
             _console.WriteLine("No directories marked for deletion.");
             return Task.CompletedTask;
@@ -55,6 +55,8 @@ internal class MarkDeleteResultDeleteProcessor : IMarkDeleteResultProcessor {
         // Package files first: they sit in directories that are never marked, so nothing below
         // removes them on the way, and a failure here is reported like a directory's.
         foreach (var entry in result.Files.OrderBy(f => f.File.FullName)) {
+            // Ctrl+C is checked between entries; a recursive delete already under way runs to its end.
+            cancellationToken.ThrowIfCancellationRequested();
             var file = entry.File;
             file.Refresh();
             if (!file.Exists) continue;
@@ -75,6 +77,7 @@ internal class MarkDeleteResultDeleteProcessor : IMarkDeleteResultProcessor {
         }
 
         foreach (var kvp in result.Directories.OrderBy(k => k.Directory.FullName)) {
+            cancellationToken.ThrowIfCancellationRequested();
             var path = kvp.Directory;
             if (path is null) continue;
             // DirectoryInfo caches Exists from when the result set was built; an earlier iteration may

@@ -562,6 +562,7 @@ internal class TfmService {
     internal List<string> GetUpdatedTfms(List<string> currentTfms, List<string> fromTfms, string toTfm, ISet<string> eolTfms) {
         var result = new List<string>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var droppedEol = new List<string>();
 
         foreach (var tfm in currentTfms) {
             // Match --from *before* dropping end-of-life frameworks. The other order discarded the very
@@ -573,9 +574,19 @@ internal class TfmService {
                 continue;
             }
 
-            if (IsEolTfm(tfm, eolTfms)) continue; // drop end-of-life frameworks
+            if (IsEolTfm(tfm, eolTfms)) { droppedEol.Add(tfm); continue; } // drop end-of-life frameworks
 
             if (seen.Add(tfm)) result.Add(tfm);
+        }
+
+        // A dropped end-of-life TFM with nothing of its kind left is replaced by the target, not just
+        // removed: <net8.0;netstandard2.0> with --from net9.0 kept only netstandard2.0, since the check
+        // below needs a comparable TFM to call the target newer, and the app lost its runtime framework.
+        if (!result.Any(t => SameTfmType(t, toTfm))) {
+            foreach (var tfm in droppedEol.Where(t => SameTfmType(t, toTfm))) {
+                var target = TargetFor(tfm, toTfm);
+                if (seen.Add(target)) result.Add(target);
+            }
         }
 
         // Auto-detect / EOL-only path: add the target when it is newer than everything kept.
@@ -618,6 +629,9 @@ internal class TfmService {
         var normalized = SplitPlatform(tfm.Trim()).Base.ToLowerInvariant();
         return eolTfms.Contains(normalized);
     }
+
+    private bool SameTfmType(string a, string b) =>
+        TryParseTfmVersion(a, out var aType, out _) && TryParseTfmVersion(b, out var bType, out _) && aType == bType;
 
     private bool IsNewerThanAny(string candidateTfm, IEnumerable<string> existingTfms) {
         if (!TryParseTfmVersion(candidateTfm, out var candidateType, out var candidateVersion)) return false;

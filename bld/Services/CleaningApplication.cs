@@ -44,7 +44,8 @@ internal class CleaningApplication(IConsoleOutput _console, Func<IConsoleOutput,
         var stopwatch = Stopwatch.StartNew();
 
         var parallelOptions = new ParallelOptions {
-            MaxDegreeOfParallelism = options.MaxDegreeOfParallelism
+            MaxDegreeOfParallelism = options.MaxDegreeOfParallelism,
+            CancellationToken = cancellationToken
         };
 
         try {
@@ -104,7 +105,7 @@ internal class CleaningApplication(IConsoleOutput _console, Func<IConsoleOutput,
 
             // Run the processor before reporting: deletion failures are recorded in the sink and must
             // be included in both the error table and the exit code.
-            await markDeleteStatsProcessor.ProcessAsync(res);
+            await markDeleteStatsProcessor.ProcessAsync(res, cancellationToken);
 
             stopwatch.Stop();
 
@@ -113,6 +114,11 @@ internal class CleaningApplication(IConsoleOutput _console, Func<IConsoleOutput,
             errorSink.WriteTo();
 
             return errorSink.HasErrors ? 1 : 0;
+        }
+        // Ctrl+C goes to BaseCommand, which reports "Cancelled." and exits 130; caught below it was a
+        // stack trace and exit 1.
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) {
+            throw;
         }
         catch (Exception ex) {
             _console.WriteException(ex);

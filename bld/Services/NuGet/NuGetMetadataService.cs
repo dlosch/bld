@@ -139,17 +139,15 @@ public static class NugetMetadataService {
             // below enumerates them for every version it checks.
             var requestedFrameworks = request.CompatibleTargetFrameworksTyped.ToList();
 
-            // A page that could not be read ends up empty rather than null, so the walk does not
-            // ask for it a second time.
+            // A page that could not be read fails the lookup. Read as empty, a 5xx or 403 on the newest
+            // page hid the newest versions, and an older one was proposed as the latest with exit code 0.
             async Task LoadPageAsync(CatalogPage2 pageItem) {
                 var pageUrl = pageItem.Id;
                 logger?.WriteDebug($"Requesting page {pageUrl} for {request.PackageId}");
 
                 using var pageResponse = await GetAsync(pageUrl);
                 if (!pageResponse.IsSuccessStatusCode) {
-                    logger?.WriteInfo($"Failed to get page {pageUrl} for {request.PackageId}. Status: {pageResponse.StatusCode}");
-                    pageItem.Items = [];
-                    return;
+                    throw new HttpRequestException($"Failed to get page {pageUrl}. Status: {(int)pageResponse.StatusCode} {pageResponse.StatusCode}", null, pageResponse.StatusCode);
                 }
 
                 var pageDetails2 = await pageResponse.Content.ReadFromJsonAsync<CatalogPage2>(CatalogJsonContext.Default.CatalogPage2, cancellationToken);

@@ -15,7 +15,7 @@ internal class MarkDeleteResultBatchFileProcessor : IMarkDeleteResultProcessor {
         _options = options;
     }
 
-    public Task ProcessAsync(MarkDeleteResult result) {
+    public Task ProcessAsync(MarkDeleteResult result, CancellationToken cancellationToken = default) {
 
         var writer = BatchFileWriterFactory.Create();
 

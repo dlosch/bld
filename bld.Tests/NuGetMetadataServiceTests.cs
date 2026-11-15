@@ -466,6 +466,45 @@ public class NuGetMetadataServiceTests {
         Assert.Equal(1, handler.RequestedUrls.Count(url => url.EndsWith("page1.json", StringComparison.OrdinalIgnoreCase)));
     }
 
+    /// <summary>
+    /// Regression: a page answered with an error status was read as empty, so a failing newest page hid
+    /// the newest versions and an older one came back as the latest, which the caller cannot tell from
+    /// a real answer. It has to fail the lookup like a network error does.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task APageThatCannotBeReadFailsTheLookupInsteadOfLookingEmpty(bool baseline) {
+        const string pagedIndex = """
+            {
+              "count": 2,
+              "items": [
+                {
+                  "@id": "https://api.nuget.org/v3/registration5-gz-semver2/my.package/page0.json",
+                  "@type": "catalog:CatalogPage",
+                  "lower": "1.2.3", "upper": "2.1.0-beta", "count": 5
+                },
+                {
+                  "@id": "https://api.nuget.org/v3/registration5-gz-semver2/my.package/page1.json",
+                  "@type": "catalog:CatalogPage",
+                  "lower": "3.0.0", "upper": "3.0.0", "count": 1
+                }
+              ]
+            }
+            """;
+        // page1, the newest, is not served: the handler answers 404.
+        using var client = new HttpClient(new StaticResponseHandler(pagedIndex, TrainPageJson));
+        var request = baseline
+            ? TrainRequest("1.2.3")
+            : new PackageVersionRequest { PackageId = "My.Package", CompatibleTargetFrameworks = ["net8.0"] };
+        var console = new TestConsole();
+
+        var result = await NugetMetadataService.GetLatestVersionWithFrameworkCheckAsync(client, new NugetMetadataOptions(), console, request);
+
+        Assert.Null(result);
+        Assert.Contains(console.Messages, m => m.Level == "Error" && m.Message.Contains("page1.json"));
+    }
+
     [Fact]
     public void PickNewest_MergesEachCandidateClassAcrossFeeds() {
         static PackageVersionResult Feed(string? patch, string? minor, string? major) => new() {

@@ -249,6 +249,42 @@ public class MarkDeleteProcessorTests {
         }
     }
 
+    /// <summary>
+    /// Regression: the token never reached the delete loop, so Ctrl+C during clean --delete went on
+    /// deleting everything that was marked.
+    /// </summary>
+    [Fact]
+    public async Task Delete_StopsWhenCancelled() {
+        var root = Path.Combine(Path.GetTempPath(), "bld_mdp_" + Guid.NewGuid().ToString("N"));
+        var projDir = Path.Combine(root, "App");
+        var tfmDir = Directory.CreateDirectory(Path.Combine(projDir, "bin", "Debug", "net8.0")).FullName;
+        await File.WriteAllTextAsync(Path.Combine(tfmDir, "App.dll"), "x");
+        var csproj = Path.Combine(projDir, "App.csproj");
+        await File.WriteAllTextAsync(csproj, "<Project Sdk=\"Microsoft.NET.Sdk\" />");
+
+        try {
+            var console = new TestConsole();
+            var errorSink = new ErrorSink(console);
+            var options = new CleaningOptions { CleanObjDirectory = false, Force = true };
+            var processor = new MarkDeleteProcessor(console, new FileSystem(console, errorSink), options, errorSink);
+            await processor.ProcessAsync(new ProjCfg(new Proj(csproj, null), "Debug"), new ProjectInfo {
+                ProjectPath = csproj, ProjectName = "App", TargetFramework = "net8.0", Configuration = "Debug", OutDir = tfmDir + Path.DirectorySeparatorChar,
+            });
+            await processor.ProcessDirs();
+            Assert.False(processor.GetResult().IsEmpty);
+            using var cancelled = new CancellationTokenSource();
+            cancelled.Cancel();
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+                new MarkDeleteResultDeleteProcessor(console, errorSink, options).ProcessAsync(processor.GetResult(), cancelled.Token));
+
+            Assert.True(Directory.Exists(tfmDir));
+        }
+        finally {
+            try { Directory.Delete(root, recursive: true); } catch { /* best effort cleanup */ }
+        }
+    }
+
     /// <summary>A1.4: the generated script carries the matching best-effort rmdir for the emptied parent.</summary>
     [Fact]
     public async Task BatchScript_SweepsTheEmptiedParent() {

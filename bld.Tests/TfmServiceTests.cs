@@ -177,4 +177,16 @@ public class GetUpdatedTfmsTests {
     public void DropsEolTfm_AndReplacesMatchedSource() {
         Assert.Equal(new[] { "net9.0" }, Run(["net6.0", "net8.0"], ["net8.0"], "net9.0", "net6.0"));
     }
+
+    /// <summary>
+    /// Regression: with nothing comparable left after dropping the EOL TFM, the target was never added,
+    /// so <c>net8.0;netstandard2.0</c> with <c>--from net9.0</c> became a netstandard-only library.
+    /// </summary>
+    [Theory]
+    [InlineData("net8.0;netstandard2.0", "netstandard2.0;net10.0")]
+    [InlineData("net8.0-windows;netstandard2.0", "netstandard2.0;net10.0-windows")]
+    [InlineData("net8.0;net48", "net48;net10.0")]
+    public void DroppedEolTfm_WithNothingOfItsKindLeft_IsReplacedByTheTarget(string current, string expected) {
+        Assert.Equal(expected.Split(';'), Run([.. current.Split(';')], ["net9.0"], "net10.0", "net8.0"));
+    }
 }
