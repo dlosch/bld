@@ -310,7 +310,7 @@ internal static class DockerfileSubstitution {
             var c = script[i];
             if (quote != '\0') {
                 current.Append(c);
-                if (c == '\\' && i + 1 < script.Length) { current.Append(script[++i]); }
+                if (c == '\\' && quote == '"' && i + 1 < script.Length) { current.Append(script[++i]); }
                 else if (c == quote) quote = '\0';
                 continue;
             }
@@ -338,7 +338,11 @@ internal static class DockerfileSubstitution {
         return commands;
     }
 
-    /// <summary>Tokenizes on whitespace, keeping quoted spans (with their quotes) together.</summary>
+    /// <summary>
+    /// Tokenizes on whitespace, keeping quoted spans (with their quotes) together. A backslash escapes
+    /// the next character outside quotes and inside double quotes; inside single quotes it is literal,
+    /// as in the shell, so `'a\'` is closed.
+    /// </summary>
     internal static List<string> Tokenize(string text) {
         var tokens = new List<string>();
         var current = new System.Text.StringBuilder();
@@ -348,7 +352,7 @@ internal static class DockerfileSubstitution {
             var c = text[i];
             if (quote != '\0') {
                 current.Append(c);
-                if (c == '\\' && i + 1 < text.Length) { current.Append(text[++i]); }
+                if (c == '\\' && quote == '"' && i + 1 < text.Length) { current.Append(text[++i]); }
                 else if (c == quote) quote = '\0';
                 continue;
             }

@@ -760,13 +760,66 @@ public class ContainerMigrationTests : IDisposable {
         Assert.DoesNotContain(plan.Notes, n => n.Contains("dotnet publish ran with"));
     }
 
+    /// <summary>
+    /// Regression: `dotnet` was only recognized as a bare word, so a Dockerfile calling it by path
+    /// lost the publish switches silently and the image was published framework-dependent.
+    /// </summary>
+    [Theory]
+    [InlineData("RUN /usr/share/dotnet/dotnet publish App.csproj -r linux-x64 --self-contained -o /out\n")]
+    [InlineData("RUN ./dotnet publish App.csproj -r linux-x64 --self-contained -o /out\n")]
+    [InlineData("RUN [\"/usr/bin/dotnet\", \"publish\", \"App.csproj\", \"-r\", \"linux-x64\", \"--self-contained\", \"-o\", \"/out\"]\n")]
+    public async Task Plan_FindsDotnetCalledByPath(string run) {
+        var project = Write("App/App.csproj", Net9WebProject);
+        var dockerfile = Write("App/Dockerfile",
+            "FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build\n" +
+            run +
+            "FROM mcr.microsoft.com/dotnet/aspnet:9.0\n" +
+            "COPY --from=build /out .\n");
+
+        var plan = await PlanAsync(false, dockerfile, project);
+
+        Assert.Equal("linux-x64", PublishProperty(plan, "RuntimeIdentifier"));
+        Assert.Equal("true", PublishProperty(plan, "SelfContained"));
+    }
+
+    /// <summary>
+    /// Regression: the redirections were taken out after the quotes, so a quoted `&gt;` or `&lt;` cut
+    /// the argument and `-p:Foo="A&gt;B"` wrote `A` into the project.
+    /// </summary>
+    [Theory]
+    [InlineData("\"-p:Foo=A>B\"", "A>B")]
+    [InlineData("'-p:Foo=A<B'", "A<B")]
+    [InlineData("\"-p:Foo=A>B;Bar=1\"", "A>B")]
+    public async Task Plan_KeepsAnOperatorInsideQuotes(string property, string expected) {
+        var project = Write("App/App.csproj", Net9WebProject);
+        var dockerfile = Write("App/Dockerfile",
+            "FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build\n" +
+            $"RUN dotnet publish App.csproj {property} -o /out > publish.log 2>&1\n" +
+            "FROM mcr.microsoft.com/dotnet/aspnet:9.0\n" +
+            "COPY --from=build /out .\n");
+
+        var plan = await PlanAsync(false, dockerfile, project);
+
+        Assert.Equal(expected, PublishProperty(plan, "Foo"));
+        Assert.DoesNotContain(plan.Notes, n => n.Contains("dotnet publish ran with"));
+    }
+
     [Theory]
     [InlineData("a && b || c | d; e & f", new[] { "a", "b", "c", "d", "e", "f" })]
     [InlineData("dotnet publish \"-p:A=1;B=2\" 'x;y' -o /out 2>&1", new[] { "dotnet publish \"-p:A=1;B=2\" 'x;y' -o /out 2>&1" })]
     [InlineData("echo \\; still one; two", new[] { "echo \\; still one", "two" })]
     [InlineData("one\ntwo\n", new[] { "one", "two" })]
+    // A backslash is literal inside single quotes, so the quote closes; inside double quotes it escapes.
+    [InlineData("echo 'a\\' && dotnet publish", new[] { "echo 'a\\'", "dotnet publish" })]
+    [InlineData("echo \"a\\\" && b\"; c", new[] { "echo \"a\\\" && b\"", "c" })]
     public void SplitShellCommands(string script, string[] expected) =>
         Assert.Equal(expected, DockerfileSubstitution.SplitShellCommands(script));
+
+    [Theory]
+    [InlineData("a 'b\\' c", new[] { "a", "'b\\'", "c" })]
+    [InlineData("a \"b\\\" c\" d", new[] { "a", "\"b\\\" c\"", "d" })]
+    public void Tokenize_ReadsABackslashAsLiteralInSingleQuotesOnly(string text, string[] expected) =>
+        Assert.Equal(expected, DockerfileSubstitution.Tokenize(text));
 
     /// <summary>
     /// Regression: up to the .NET 7 SDK, -r without --self-contained published self-contained. Taken

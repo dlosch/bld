@@ -507,7 +507,8 @@ internal sealed class ContainerizeCommand : BaseCommand {
         var outcome = new Dictionary<Services.ContainerEnableService.Plan, bool>();
 
         // Written before the first app that needs it, so a run that enables nothing leaves the file
-        // alone; a failure counts once and is not retried per app.
+        // alone; a failure is not retried per app. It is counted through the apps it keeps from being
+        // written, so the summary adds up to the project count.
         async Task<bool> EnsurePropsAsync() {
             if (!propsNeeded || propsWritten) return true;
             if (propsFailed) return false;
@@ -517,7 +518,6 @@ internal sealed class ContainerizeCommand : BaseCommand {
             }
             else {
                 propsFailed = true;
-                failures++;
             }
             return propsWritten;
         }
@@ -527,6 +527,7 @@ internal sealed class ContainerizeCommand : BaseCommand {
             if (plan.ImportsSharedProps && !await EnsurePropsAsync()) {
                 Output.WriteLine($"{indent}Not written: {Rel(plan.ProjectPath)}, since {Rel(shared.Path)} could not be.");
                 outcome[plan] = false;
+                failures++;
             }
             else if (await service.ApplyAsync(plan, choices, sharedInProps, cancellationToken)) {
                 written++;

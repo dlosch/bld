@@ -552,18 +552,22 @@ internal sealed class ContainerMigrationService {
     /// </summary>
     private static IEnumerable<(string Verb, List<string> Arguments)> DotnetCommands(string runArguments, IReadOnlyDictionary<string, string> values) {
         var vector = DockerfileSubstitution.ParseCommand(runArguments);
+        // Redirections are the shell's, so they go while the quotes are still there to tell `"A>B"` apart from `>log`.
         var commands = vector is ["/bin/sh", "-c", var script]
             ? DockerfileSubstitution.SplitShellCommands(script)
-                .Select(c => DockerfileSubstitution.Tokenize(DockerfileSubstitution.Substitute(c, values)).Select(DockerfileSubstitution.Unquote).ToList())
+                .Select(c => WithoutRedirections(DockerfileSubstitution.Tokenize(DockerfileSubstitution.Substitute(c, values))).Select(DockerfileSubstitution.Unquote).ToList())
             : [vector];
-        foreach (var command in commands) {
-            var tokens = WithoutRedirections(command);
-            var dotnet = tokens.FindIndex(t => t.Equals("dotnet", StringComparison.OrdinalIgnoreCase));
+        foreach (var tokens in commands) {
+            var dotnet = tokens.FindIndex(IsDotnet);
             if (dotnet < 0 || dotnet + 1 >= tokens.Count) continue;
             var verb = tokens[dotnet + 1].ToLowerInvariant();
             if (verb is "publish" or "build") yield return (verb, tokens[(dotnet + 2)..]);
         }
     }
+
+    /// <summary>`dotnet` by name or by path (`/usr/share/dotnet/dotnet`), as a Dockerfile that does not rely on PATH calls it.</summary>
+    private static bool IsDotnet(string token) =>
+        token.Equals("dotnet", StringComparison.OrdinalIgnoreCase) || token.EndsWith("/dotnet", StringComparison.OrdinalIgnoreCase);
 
     // A redirection, possibly glued to the word before it (`publish>&2`, `/out>log`): `>out`, `2>>log`,
     // `2>&1`, `&>/dev/null`, `<in`; a bare operator (`> out`, `2> log`, `&> log`) takes the next token.
@@ -573,13 +577,34 @@ internal sealed class ContainerMigrationService {
     private static List<string> WithoutRedirections(List<string> tokens) {
         var result = new List<string>();
         for (var i = 0; i < tokens.Count; i++) {
-            var match = RedirectionRegex.Match(tokens[i]);
+            var match = RedirectionRegex.Match(MaskQuoted(tokens[i]));
             if (!match.Success) { result.Add(tokens[i]); continue; }
-            if (match.Groups["word"].Length > 0) result.Add(match.Groups["word"].Value);
+            if (match.Groups["word"].Length > 0) result.Add(tokens[i][..match.Groups["word"].Length]);
             // `>&1` names its target in the operator; `>` and `&>` without one take the next token.
             if (match.Groups["target"].Length == 0 && !match.Groups["op"].Value.EndsWith('&')) i++;
         }
         return result;
+    }
+
+    /// <summary>
+    /// The token with its quoted spans (quotes included) blanked out, at the same length, so the regex
+    /// only sees the operators the shell would: `"-p:A=x>y"` is one argument, `>"out dir"` a redirection.
+    /// </summary>
+    private static string MaskQuoted(string token) {
+        if (token.IndexOfAny(['"', '\'']) < 0) return token;
+        var chars = token.ToCharArray();
+        var quote = '\0';
+        for (var i = 0; i < chars.Length; i++) {
+            var c = chars[i];
+            if (quote == '\0') {
+                if (c is '"' or '\'') { quote = c; chars[i] = '_'; }
+                continue;
+            }
+            chars[i] = '_';
+            if (c == '\\' && quote == '"' && i + 1 < chars.Length) chars[++i] = '_';
+            else if (c == quote) quote = '\0';
+        }
+        return new string(chars);
     }
 
     /// <summary>`-r x`, `-r:x` and `--runtime=x` alike; advances past a separate value.</summary>
