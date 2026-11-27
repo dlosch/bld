@@ -2,6 +2,10 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.6.3] - 2026-11-27
+
+- [BUG] every command failed with "No instances of MSBuild could be detected" on a machine with a .NET 10 runtime but only a newer SDK (11.0.100), as a Visual Studio update leaves it. The tool stayed on the .NET 10 runtime, and an SDK newer than the runtime in use cannot be loaded. It runs on the newest installed runtime now (`RollForward` `LatestMajor`); the error also names the runtime in use and the `DOTNET_ROLL_FORWARD` override.
+
 ## [0.6.2] - 2026-11-15
 
 - [SECURITY] the tool package shipped `System.Security.Cryptography.Pkcs` 8.0.1, pulled in by `NuGet.Packaging`, which has a high-severity advisory. It ships 11.0.0 now.
