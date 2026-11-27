@@ -51,6 +51,8 @@ internal class MSBuildService : IMSBuildService, IDisposable {
                 }
                 catch (Exception ex) {
                     console?.WriteError($"Failed to register MSBuild: {ex.FormatMessage()}");
+                    // The locator skips SDKs newer than the runtime of this process.
+                    console?.WriteError($"bld is running on .NET {Environment.Version} and can only use a .NET SDK of that version or older. Check 'dotnet --list-sdks' and 'dotnet --list-runtimes'; setting DOTNET_ROLL_FORWARD=LatestMajor (plus DOTNET_ROLL_FORWARD_TO_PRERELEASE=1 for a preview SDK) runs bld on the newest installed runtime.");
                     throw;
                 }
             }

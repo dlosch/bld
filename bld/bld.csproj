@@ -3,7 +3,9 @@
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net10.0</TargetFramework>
-    <RollForward>Major</RollForward>
+    <!-- LatestMajor, not Major: MSBuildLocator hides SDKs newer than the runtime the process runs on,
+         and Major stays on .NET 10 for as long as a 10.x runtime is installed, even when the only SDK is 11. -->
+    <RollForward>LatestMajor</RollForward>
     <LangVersion>latest</LangVersion>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>

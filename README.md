@@ -26,7 +26,7 @@ dotnet bld
 
 This is especially handy when working with agentic coding tools or large repos where TFMs, CPM, package references, and build outputs can drift.
 
-> Note on the target framework: the tool targets `net10.0` (`<TargetFramework>net10.0</TargetFramework>` in `bld/bld.csproj`) and sets `<RollForward>Major</RollForward>`, so it also runs on newer runtimes. (Earlier 0.2.x builds multi-targeted `net8.0;net10.0`; `net8.0` support was dropped.)
+> Note on the target framework: the tool targets `net10.0` (`<TargetFramework>net10.0</TargetFramework>` in `bld/bld.csproj`) and sets `<RollForward>LatestMajor</RollForward>`, so it runs on the newest installed runtime. That matters because it can only load a .NET SDK that is not newer than the runtime it runs on. (Earlier 0.2.x builds multi-targeted `net8.0;net10.0`; `net8.0` support was dropped.)
 
 ## Microsoft.Build & Visual Studio integration
 
